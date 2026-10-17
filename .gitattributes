@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Show licensing files clearly in diffs and language stats
+LICENSE.md linguist-documentation
+*/LICENSE.md linguist-documentation

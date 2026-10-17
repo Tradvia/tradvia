@@ -1,0 +1,14 @@
+# Default owners for everything
+*                     @Tradvia/maintainers
+
+# Enterprise Edition: commercial code, company employees only
+/ee/                  @Tradvia/ee-maintainers
+
+# Licensing, governance and repository rules: admins only
+/LICENSE.md           @Tradvia/admins
+/core/LICENSE.md      @Tradvia/admins
+/ee/LICENSE.md        @Tradvia/admins
+/CLA.md               @Tradvia/admins
+/TRADEMARKS.md        @Tradvia/admins
+/.github/             @Tradvia/admins
+/scripts/check-license-boundary.sh  @Tradvia/admins

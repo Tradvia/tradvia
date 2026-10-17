@@ -1,0 +1,26 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+license-keys/
+
+# Build output and dependencies
+dist/
+build/
+out/
+coverage/
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+target/
+bin/

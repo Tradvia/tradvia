@@ -1,0 +1,110 @@
+{
+  "$comment": "SPDX-License-Identifier: FSL-1.1-ALv2 — Card state contract v1 for Tradvia v0.1",
+  "version": 1,
+  "statuses": {
+    "BACKLOG": {
+      "description": "Card exists and is prioritized; nobody is working on it.",
+      "owner": "human"
+    },
+    "AGENT_WORKING": {
+      "description": "Agents are planning, coding in the sandbox or testing.",
+      "owner": "agent"
+    },
+    "WAITING_HUMAN": {
+      "description": "An agent asked a question and paused the run until a human answers.",
+      "owner": "human"
+    },
+    "IN_REVIEW_PR": {
+      "description": "A pull request is open and checks or human review are pending.",
+      "owner": "human"
+    },
+    "DONE": {
+      "description": "Pull request merged. Card is closed with cost and time recorded.",
+      "owner": "none"
+    }
+  },
+  "card_metadata": {
+    "id": "string — stable card id",
+    "title": "string",
+    "description": "string — the task as written by the human",
+    "source": "object — { provider: 'github', issue_url: string }",
+    "status": "one of statuses",
+    "assignee": "string — '@human:<login>' or '@Agent-Architect' | '@Agent-Coder' | '@Agent-Reviewer'",
+    "plan": "array<object> — subtasks written by @Agent-Architect: { id, title, done }",
+    "branch": "string | null",
+    "pull_request_url": "string | null",
+    "pending_question": "object | null — { asked_by, text, channel, asked_at }",
+    "approvals": "array<object> — { by, decision: 'approved' | 'rejected', comment, at }",
+    "run_id": "string | null — orchestrator thread id, used to resume after WAITING_HUMAN",
+    "cost": "object — { usd: number, tokens_in: number, tokens_out: number, by_model: object }",
+    "history": "array<object> — every transition: { from, to, by, reason, at }",
+    "updated_at": "ISO 8601 timestamp"
+  },
+  "transitions": [
+    {
+      "from": "BACKLOG",
+      "to": "AGENT_WORKING",
+      "by": "human",
+      "trigger": "Human moves the card or assigns it to an agent",
+      "agent_reads": ["title", "description", "source"],
+      "agent_writes": ["assignee", "run_id", "plan", "history"]
+    },
+    {
+      "from": "AGENT_WORKING",
+      "to": "WAITING_HUMAN",
+      "by": "agent",
+      "trigger": "Agent is blocked, uncertain, or reached an approval gate",
+      "agent_reads": ["plan", "approvals"],
+      "agent_writes": ["pending_question", "history"],
+      "side_effects": ["Post the question to Slack/Discord with a link to the card", "Pause the orchestrator run"]
+    },
+    {
+      "from": "WAITING_HUMAN",
+      "to": "AGENT_WORKING",
+      "by": "human",
+      "trigger": "Human answers or replies 'Aprovado' / 'Approved' in the chat",
+      "agent_reads": ["pending_question", "approvals", "run_id"],
+      "agent_writes": ["approvals", "pending_question:null", "history"],
+      "side_effects": ["Resume the orchestrator run from run_id"]
+    },
+    {
+      "from": "AGENT_WORKING",
+      "to": "IN_REVIEW_PR",
+      "by": "agent",
+      "trigger": "@Agent-Reviewer passed tests and @Agent-Coder opened a pull request",
+      "agent_reads": ["plan", "branch"],
+      "agent_writes": ["branch", "pull_request_url", "cost", "history"]
+    },
+    {
+      "from": "IN_REVIEW_PR",
+      "to": "AGENT_WORKING",
+      "by": "human_or_ci",
+      "trigger": "Changes requested on the PR or checks failed",
+      "agent_reads": ["pull_request_url"],
+      "agent_writes": ["plan", "history"]
+    },
+    {
+      "from": "IN_REVIEW_PR",
+      "to": "DONE",
+      "by": "human",
+      "trigger": "Pull request merged",
+      "agent_reads": [],
+      "agent_writes": ["cost", "history", "updated_at"]
+    },
+    {
+      "from": "*",
+      "to": "BACKLOG",
+      "by": "human",
+      "trigger": "Human cancels or deprioritizes the card",
+      "agent_reads": [],
+      "agent_writes": ["run_id:null", "pending_question:null", "history"],
+      "side_effects": ["Stop the orchestrator run"]
+    }
+  ],
+  "rules": [
+    "Only humans move a card into AGENT_WORKING from BACKLOG and into DONE.",
+    "An agent never merges a pull request.",
+    "A card in WAITING_HUMAN has exactly one pending_question.",
+    "Every transition appends one entry to history."
+  ]
+}

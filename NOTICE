@@ -1,0 +1,12 @@
+Tradvia
+Copyright (c) 2026 Anderson dos Santos Dutra
+
+core/  Licensed under the Functional Source License, Version 1.1,
+       Apache 2.0 Future License (FSL-1.1-ALv2). See core/LICENSE.md.
+ee/    Licensed under the Tradvia Enterprise Edition License.
+       See ee/LICENSE.md.
+
+Third-party components
+----------------------
+List each bundled third-party component here with its name, version,
+license and copyright notice as dependencies are added.
