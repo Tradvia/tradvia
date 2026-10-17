@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradvia"
+version = "0.0.1"
+description = "Tradvia core: AI agents as members of a hybrid Kanban board"
+requires-python = ">=3.11"
+license = { file = "LICENSE.md" }
+dependencies = [
+  "langgraph>=1.0",
+  "litellm>=1.70",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+tradvia = "tradvia.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
