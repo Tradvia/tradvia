@@ -357,13 +357,24 @@ function getRepo() {
   return q && /^[\w.-]+\/[\w.-]+$/.test(q) ? q : "Tradvia/tradvia";
 }
 
+// Same-origin read-only proxy on app.tradvia.org; GitHub direct elsewhere.
+let GH_API = "https://api.github.com";
+
+async function detectApi() {
+  if (location.hostname !== "app.tradvia.org") return;
+  try {
+    const r = await fetch("/api/healthz", { headers: { Accept: "application/json" } });
+    if (r.status === 200 && (await r.json()).ok === true) GH_API = "/api/github";
+  } catch (e) { /* keep calling GitHub directly */ }
+}
+
 // In-memory cache of timelines (promises): one request per card.
 const timelineCache = new Map();
 
 function loadTimeline(repo, n) {
   const key = repo + "#" + n;
   if (!timelineCache.has(key)) {
-    const p = getJson("https://api.github.com/repos/" + repo + "/issues/" + n + "/timeline?per_page=100")
+    const p = getJson(GH_API + "/repos/" + repo + "/issues/" + n + "/timeline?per_page=100")
       .then(buildTimeline);
     p.catch(() => timelineCache.delete(key));
     timelineCache.set(key, p);
@@ -372,7 +383,7 @@ function loadTimeline(repo, n) {
 }
 
 async function loadData(repo) {
-  const base = "https://api.github.com/repos/" + repo;
+  const base = GH_API + "/repos/" + repo;
   const [agent, claude, issues, prs] = await Promise.all([
     getJson(base + "/actions/workflows/agent.yml/runs?per_page=30"),
     getJson(base + "/actions/workflows/claude.yml/runs?per_page=30"),
@@ -704,7 +715,7 @@ async function refresh() {
 document.getElementById("refresh").addEventListener("click", refresh);
 document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
-refresh();
+detectApi().then(refresh);
 </script>
 </body>
 </html>
