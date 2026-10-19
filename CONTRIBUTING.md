@@ -10,6 +10,15 @@ Thanks for your interest in Tradvia!
 2. **Open an issue first** for anything larger than a small fix, so we can
    agree on the approach.
 
+## Development environment
+
+Open a ready-to-code workspace in one click with **Code → Codespaces**, or use
+the Dev Container locally. Then run `make test`. Details, plus how Tradvia
+works on its own issues, are in [docs/dev-environment.md](docs/dev-environment.md).
+
+Looking for something to do? Pick an issue labelled `good first issue`, or
+propose one that the agent can take with the `agent:ready` label.
+
 ## Where your change goes
 
 | You are changing | Directory | License |

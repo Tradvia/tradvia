@@ -15,7 +15,7 @@ import sys
 from langgraph.types import Command
 
 from .graph import build_graph
-from .integrations import DiscordREST, GitHubREST
+from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -37,9 +37,18 @@ def env(name: str) -> str:
     return value
 
 
-def run(issue: int, wait_timeout: int) -> dict:
-    github = GitHubREST(env("GITHUB_TOKEN"), env("TRADVIA_REPO"))
-    chat = DiscordREST(env("DISCORD_BOT_TOKEN"), env("DISCORD_CHANNEL_ID"))
+def make_chat(kind: str, issue: int):
+    if kind == "github":
+        return GitHubIssueChat(env("GITHUB_TOKEN"), env("TRADVIA_REPO"), issue)
+    if kind == "discord":
+        return DiscordREST(env("DISCORD_BOT_TOKEN"), env("DISCORD_CHANNEL_ID"))
+    sys.exit(f"Unknown chat {kind!r}: use github or discord")
+
+
+def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
+    github = GitHubREST(env("GITHUB_TOKEN"), env("TRADVIA_REPO"),
+                        os.getenv("TRADVIA_BASE_BRANCH", "main"))
+    chat = make_chat(chat_kind, issue)
     app = build_graph(github, chat)
 
     card_id = f"CARD-{issue}"
@@ -49,7 +58,7 @@ def run(issue: int, wait_timeout: int) -> dict:
 
     while result.get("__interrupt__"):
         pending = result["__interrupt__"][0].value
-        print(f"⏸  {card_id} WAITING_HUMAN — answer in Discord (timeout {wait_timeout}s)")
+        print(f"⏸  {card_id} WAITING_HUMAN — answer in {chat.name} (timeout {wait_timeout}s)", flush=True)
         reply = chat.wait_for_reply(pending["message_id"], wait_timeout)
         if reply is None:
             print("⌛ No answer in time. The card stays in WAITING_HUMAN.")
@@ -64,10 +73,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
     parser.add_argument("--wait", type=int, default=1800, help="seconds to wait for a human reply")
+    parser.add_argument("--chat", choices=["github", "discord"],
+                        default=os.getenv("TRADVIA_CHAT", "discord"),
+                        help="approval channel: the issue's comments (github) or Discord")
     args = parser.parse_args()
     load_dotenv()
 
-    card = run(args.issue, args.wait)
+    card = run(args.issue, args.wait, args.chat)
     summary = {k: card.get(k) for k in ("id", "status", "assignee", "file_path",
                                         "pull_request_url", "cost")}
     print(json.dumps(summary, indent=2, ensure_ascii=False))

@@ -1,94 +1,117 @@
 # Tradvia
 
-**AI agents as real members of your team's Kanban board.**
+**The open-core AgentOps & hybrid execution control plane.**
+Orchestrate humans, multi-model APIs and isolated container sessions in a single control plane.
 
-> 🚧 Pre-alpha. We are building Tradvia in public, with Tradvia.
+> 🚧 Pre-alpha, building in public. Every capability below carries its real status.
 > **[Join the waitlist for the managed Cloud / Enterprise edition →](#waitlist)**
 > · Website: [tradvia.org](https://tradvia.org)
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Tradvia/tradvia)
+
 ---
 
-## The manifesto: end coordination fatigue
+## Why
 
-Software teams don't lose their days to writing code. They lose them to
-*coordination*: chasing status in Jira, waiting on code review, re-explaining
-context on WhatsApp and Teams, and turning every decision into another meeting.
+Tradvia removes the coordination friction between project management and
+autonomous execution. Instead of isolated chat prompts, work is dispatched as
+cards on a hybrid Kanban, routed to the right runtime — a multi-vendor API pool
+or a stateful browser/CLI container — tracked to the token and the compute
+second, and handed back and forth between AI agents and human engineers
+without losing context.
 
-AI coding agents were supposed to fix this. Instead they added a new kind of
-noise: autonomous scripts that run in a terminal nobody watches, then stall,
-hallucinate or open pull requests no one asked for.
+## Architecture pillars
 
-We believe:
+| # | Pillar | What it means | Status |
+|---|---|---|---|
+| 1 | **Dual-runtime execution** | Stateless LLM APIs (OpenAI, Anthropic, Gemini, Ollama) side by side with stateful **session workers**: containers running authenticated CLI tools or browser sessions (Playwright/CDP), guarded by session mutex locks and persistent auth contexts. | 🟦 Partial — APIs via LiteLLM |
+| 2 | **Multi-account pool & Token FinOps** | Pool accounts across vendors, spread load **within each account's RPM/TPM quota**, fall back across vendors when one is saturated or down, and record exact cost per token or per compute second on the card, with budget circuit breakers. | 🟦 Partial — cost per card |
+| 3 | **Executable hybrid Kanban & Live Session Takeover** | Every card is a durable state machine. On a blocker (2FA, CAPTCHA, complex UI, architecture decision) Tradvia freezes the session, alerts a human on Slack/WhatsApp and streams the terminal or browser (WebRTC/VNC) so they can resolve it and hand control back. | 🔨 In progress — state machine + approval in chat |
+| 4 | **Zero-trust sandbox** | Ephemeral Firecracker MicroVMs per execution and session, PostgreSQL Row-Level Security, encrypted credential and session vaults. | 🗓️ Planned |
+| 5 | **Native MCP & AST GraphRAG** | Plug-and-play MCP tools; AST-based code indexing with episodic knowledge distillation to cut token cost over time. | 🗓️ Planned |
+| 6 | **Open-core monorepo** | Self-hosted `/core` via Docker Compose; `/ee` + Cloud with team session pools, RBAC and FinOps governance. | 🔨 In progress — monorepo, licenses, CI |
 
-1. **Agents belong on the board, not in a terminal.** Every agent task is a
-   card. You see who is working on what, human or agent, in one place.
-2. **Humans approve; agents execute.** When an agent is unsure, it asks
-   you, in the chat you already use, and waits. You answer from your phone;
-   the card moves on.
-3. **Cost is a design constraint.** Reasoning models plan; cheaper models
-   type. Every card shows what it cost.
-4. **Your tools, not ours.** Agents act through open MCP connectors to
-   GitHub, Slack, Discord, Jira and more.
-5. **Source you can read and run.** The core is free to self-host and
-   becomes Apache 2.0 two years after each release.
+**Ground rules.** The account pool respects each vendor's rate limits and
+terms; it never tries to bypass them. Session workers only operate accounts
+and portals the customer is authorized to use, and 2FA or CAPTCHA prompts are
+always resolved by a human through Live Session Takeover.
+
+See [ADR 0003](docs/adr/0003-agentops-hybrid-execution-control-plane.md).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    H([Human<br/>Tech Lead / Dev]) <-->|approve · answer · move cards| K
+    H([Human<br/>engineer / PM]) <-->|approve · decide · live takeover| K
 
     subgraph CORE["core/ — FSL-1.1-ALv2"]
-        K[Hybrid Kanban<br/>humans + agents]
-        O{{Orchestrator<br/>LangGraph state machine}}
-        A1[@Agent-Architect<br/>plans and splits]
-        A2[@Agent-Coder<br/>writes code in sandbox]
-        A3[@Agent-Reviewer<br/>tests and validates]
-        R[Model Router<br/>LiteLLM]
-        M[MCP Host]
-        K <-->|card state contract| O
-        O --> A1 & A2 & A3
-        A1 & A2 & A3 --> R
-        A1 & A2 & A3 --> M
+        K[Executable hybrid Kanban<br/>card = durable state machine]
+        O{{Orchestrator<br/>LangGraph}}
+        D[Dispatcher<br/>dual runtime]
+        P[Account pool + Token FinOps<br/>quotas · fallback · breakers]
+        W[Session workers<br/>CLI · Browser Playwright/CDP<br/>mutex · auth context]
+        M[MCP host + AST GraphRAG]
+        K <--> O --> D
+        D --> P
+        D --> W
+        O --> M
     end
 
-    R -->|planning| LLM1[(Reasoning models)]
-    R -->|bulk coding| LLM2[(Low-cost coding models)]
-    A2 --> SB[[Docker / E2B sandbox]]
-    M --> GH[GitHub MCP<br/>branches · PRs · Projects]
-    M --> CH[Slack / Discord<br/>human-in-the-loop]
+    P --> LLM[(OpenAI · Anthropic<br/>Gemini · Ollama)]
+    W --> VM[[Firecracker MicroVMs<br/>encrypted vaults]]
+    W -.WebRTC/VNC stream.-> H
+    K <--> CH[Slack · WhatsApp · Discord]
+    K <--> TR[Jira · Trello · ClickUp · Monday.com<br/>Asana · and more]
 
-    subgraph EE["ee/ — Enterprise"]
-        SSO[SSO SAML/OIDC]
-        WA[WhatsApp Business API]
-        TM[Microsoft Teams]
-        ROI[CTO ROI dashboard]
+    subgraph EE["ee/ — Enterprise & Cloud"]
+        TP[Team session pools]
+        RBAC[SSO · RBAC]
+        GOV[FinOps governance]
     end
     EE -.extends.-> CORE
 ```
 
-### How a card moves
+### Card lifecycle
 
 | Status | Who acts | What happens |
 |---|---|---|
 | `BACKLOG` | Human | Card created and prioritized |
-| `AGENT_WORKING` | Agents | Architect plans, Coder writes in a sandbox, Reviewer tests |
-| `WAITING_HUMAN` | Human | An agent asked a question in Slack/Discord and paused |
+| `AGENT_WORKING` | Agents | Dispatched to an API runtime or a session worker |
+| `WAITING_HUMAN` | Human | Approval gate in chat, or a frozen session waiting for live takeover |
 | `IN_REVIEW_PR` | Human + Reviewer | Pull request open, checks running |
-| `DONE` | — | PR merged, cost and time recorded on the card |
+| `DONE` | — | Delivered; tokens, compute seconds and time recorded on the card |
 
-The full contract is in
+The contract is in
 [`core/contracts/card-state.v1.json`](core/contracts/card-state.v1.json).
+
+## What runs today (v0.1)
+
+- LangGraph orchestrator with the card state machine and an approval gate in
+  chat (Discord) before opening a pull request — [PR #1](https://github.com/tradvia/tradvia/pull/1).
+- LiteLLM API runtime with cost recorded on each card.
+- A neutral work model with Kanban, Gantt, Burndown, WBS, calendar and
+  capacity projections, plus the `TrackerConnector` interface —
+  [PR #2](https://github.com/tradvia/tradvia/pull/2).
+
+## Develop with us — and with Tradvia
+
+Open the dev workspace in Codespaces (badge above) or a local Dev Container and
+run `make test`. Tradvia already works on its own issues: a maintainer labels an
+issue `agent:ready`, the agent posts a plan as a comment, a maintainer approves
+it in the thread, and the agent opens the pull request. See
+[docs/dev-environment.md](docs/dev-environment.md).
 
 ## Roadmap
 
-- [ ] **v0.1 — headless engine:** orchestrator with 3 agents, LiteLLM routing,
-      GitHub MCP, Slack/Discord approvals
-- [ ] **v0.2 — the machine builds the machine:** v0.1 agents build the web
-      Kanban (Next.js)
-- [ ] **Live board:** public read-only view of our own development
-- [ ] **Community MCP connectors:** Trello, Linear, Notion, Telegram
-- [ ] **Enterprise:** SSO, WhatsApp Business, Teams, ROI dashboard
+- [x] **Phase 0 — Foundation:** open-core monorepo, CLA, CI, card contract
+- [ ] **Phase 1 — Engine v0.1:** orchestrator, LiteLLM API runtime, GitHub,
+      approval gates in chat *(in progress)*
+- [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
+      Firecracker MicroVMs with session mutex, live takeover over WebRTC,
+      multi-account pool with budget breakers, MCP, Docker Compose
+- [ ] **Phase 3 — Enterprise & Cloud:** team session pools, SSO/RBAC,
+      WhatsApp and Teams, AST GraphRAG with distillation, FinOps governance,
+      project-tool connectors
 
 ## Repository layout
 
@@ -96,7 +119,9 @@ The full contract is in
 .
 ├── core/            # Community edition — FSL-1.1-ALv2
 │   ├── contracts/           # Card state contract and schemas
-│   └── src/
+│   └── src/tradvia/
+│       ├── graph.py     # LangGraph orchestrator (card state machine)
+│       └── work/        # Work model, projections, connector interface
 ├── ee/              # Enterprise Edition — commercial license
 │   ├── auth/sso/
 │   └── integrations/{whatsapp,teams}/
@@ -109,12 +134,13 @@ The full contract is in
 
 ## Waitlist
 
-Don't want to run Docker, MCP servers and API keys yourself? The managed
-version is coming. **Waitlist link: coming soon.**
+Don't want to run Docker, session workers, MCP servers and API keys yourself?
+The managed Cloud version, with team session pools, is coming. **Waitlist link: coming soon.**
 
 ## Contributing
 
-We will open `good first issue` bounties for MCP connectors soon. Read
+Good first contributions: project-tool connectors (one shared
+`TrackerConnector` interface), MCP servers and session-worker drivers. Read
 [CONTRIBUTING.md](CONTRIBUTING.md); every contributor signs the
 [CLA](CLA.md) once, through a bot on the first pull request.
 
