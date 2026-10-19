@@ -59,7 +59,9 @@ jobs:
 
       - name: Upload compose, Caddyfile and dashboard
         run: |
-          rsync -az --delete infra/oci/compose.yaml infra/oci/Caddyfile oci:/opt/tradvia/
+          # --inplace keeps the inode: Caddyfile is a single-file bind mount, and a replaced file
+          # would stay invisible to the running Caddy container.
+          rsync -az --inplace infra/oci/compose.yaml infra/oci/Caddyfile oci:/opt/tradvia/
           rsync -az --delete dashboard/ oci:/opt/tradvia/dashboard/
           # Build context for images built on the host (API service): the package and infra/oci only.
           ssh oci 'mkdir -p /opt/tradvia/src/core /opt/tradvia/src/infra/oci'
@@ -67,14 +69,15 @@ jobs:
           rsync -az --delete infra/oci/ oci:/opt/tradvia/src/infra/oci/
 
       - name: Start services
-        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose ps && docker image prune -f'
+        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose up -d --no-deps --force-recreate caddy && docker compose ps && docker image prune -f'
 
       - name: Health check
         env:
           TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
         run: |
           for i in $(seq 1 20); do
-            curl -fsS "https://$TRADVIA_DOMAIN/healthz" && exit 0
+            curl -fsS "https://$TRADVIA_DOMAIN/healthz" \
+              && curl -fsS "https://$TRADVIA_DOMAIN/api/healthz" | grep -q '"ok":true' && exit 0
             sleep 6
           done
           echo "Health check failed" && exit 1
