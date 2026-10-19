@@ -21,12 +21,13 @@ option with an always-on machine.
 
 ## Decision
 
-Run Tradvia's own infrastructure on one OCI Always Free Ampere A1 instance in
-the account's home region:
+Run Tradvia's own infrastructure on one OCI Always Free instance in the
+account's home region:
 
 | Resource (Always Free, Oct 2026) | Use |
 |---|---|
-| A1.Flex, 2 OCPU / 12 GB RAM (1,500 OCPU-h and 9,000 GB-h per month) | Docker host: reverse proxy, API, database, later session workers |
+| E2.1.Micro, 1 OCPU / 1 GB RAM, plus 2 GB swap (current host) | Docker host: reverse proxy, dashboard, database, small API |
+| A1.Flex, up to 2 OCPU / 12 GB RAM (1,500 OCPU-h and 9,000 GB-h per month) | Target host when capacity allows: adds room for session workers |
 | Block volume, 200 GB total | Boot volume and data |
 | Outbound transfer, 10 TB per month | Dashboard and API traffic |
 
@@ -65,8 +66,11 @@ a separate decision.
   first session workers.
 - The founder owns the OCI account: sign-up, card verification, 2FA and the
   choice of home region (it cannot be changed later).
-- Capacity for A1 instances is sometimes unavailable in busy regions. Retrying
-  later or choosing another availability domain is part of the setup guide.
+- Capacity for A1 instances is often unavailable in busy regions. In São Paulo
+  (one availability domain) it failed on 2026-10-19, so the first host is an
+  E2.1.Micro. It is enough for Caddy, the dashboard and a small Postgres; the
+  API must stay light. Moving to A1 later means a new instance and a new
+  deploy, since the shape family cannot be changed in place.
 - Free limits change without notice, as Oracle did in June 2026 (A1 went from
   4 OCPU / 24 GB to 2 OCPU / 12 GB). The setup stays small enough to fit and
   is documented so it can move elsewhere.

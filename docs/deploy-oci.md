@@ -23,14 +23,16 @@ Console: **Compute > Instances > Create instance**.
 | Field | Value |
 |---|---|
 | Name | `tradvia-host` |
-| Image | Canonical Ubuntu 24.04 (aarch64) |
-| Shape | `VM.Standard.A1.Flex`, **2 OCPU, 12 GB** (the Always Free maximum) |
+| Image | Canonical Ubuntu 24.04 |
+| Shape | `VM.Standard.E2.1.Micro` (Always Free, x86, 1 GB RAM). If available, `VM.Standard.A1.Flex` up to 2 OCPU / 12 GB is better |
 | Networking | New VCN with a public subnet, assign a public IPv4 address |
 | SSH keys | Upload **your own** public key (keep the private key on your computer) |
 | Boot volume | 50 GB (default) |
 | Initialization script | Paste the content of [`infra/oci/cloud-init.yaml`](../infra/oci/cloud-init.yaml) |
 
-If you get "Out of capacity", try another availability domain or retry later.
+A1.Flex often returns "Out of capacity" in regions with a single availability
+domain (São Paulo did on 2026-10-19, even at 1 OCPU / 6 GB). E2.1.Micro usually
+has capacity. The cloud-init works on both and adds 2 GB of swap.
 
 Then open HTTP/HTTPS in the subnet: **Networking > Virtual cloud networks >
 (your VCN) > Security Lists > Default** → add two ingress rules, source

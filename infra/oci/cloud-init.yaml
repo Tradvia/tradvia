@@ -1,6 +1,7 @@
 #cloud-config
 # SPDX-License-Identifier: FSL-1.1-ALv2
-# First-boot setup for the Tradvia host on OCI (Ubuntu 24.04, Ampere A1).
+# First-boot setup for the Tradvia host on OCI (Ubuntu 24.04).
+# Works on both Always Free shapes: E2.1.Micro (x86, 1 GB) and A1.Flex (arm64).
 # Paste this file in "Advanced options > Initialization script" when creating
 # the instance. It installs Docker, hardens SSH and opens only 80/443 besides SSH.
 
@@ -31,11 +32,13 @@ write_files:
       bantime = 1h
 
 runcmd:
-  # Docker Engine from Docker's official repository (arm64).
+  # 2 GB swap: E2.1.Micro has only 1 GB of RAM.
+  - fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  # Docker Engine from Docker's official repository, for this machine's architecture.
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   - chmod a+r /etc/apt/keyrings/docker.asc
-  - echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   - usermod -aG docker ubuntu
