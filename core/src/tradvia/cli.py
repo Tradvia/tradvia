@@ -109,6 +109,12 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["backfill"]:
+        from .backfill import main as backfill_main
+
+        load_dotenv()
+        backfill_main()
+        return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
     parser.add_argument("--wait", type=int, default=1800, help="seconds to wait for a human reply")

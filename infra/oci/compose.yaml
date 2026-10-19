@@ -31,11 +31,18 @@ services:
     environment:
       TRADVIA_REPO: ${TRADVIA_REPO:-Tradvia/tradvia}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-    networks: [edge]
+      DATABASE_URL: postgresql://tradvia:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/tradvia
+      TRADVIA_WEBHOOK_SECRET: ${TRADVIA_WEBHOOK_SECRET:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [edge, internal]
 
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    command: [postgres, -c, shared_buffers=64MB, -c, max_connections=20, -c, work_mem=2MB]
     environment:
       POSTGRES_DB: tradvia
       POSTGRES_USER: tradvia

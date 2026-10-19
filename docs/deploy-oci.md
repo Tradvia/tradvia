@@ -84,7 +84,7 @@ services and checks `https://app.tradvia.org/healthz`.
 |---|---|---|
 | Caddy | ports 80/443 | Automatic HTTPS, security headers |
 | Dashboard | `/runs/` via Caddy | Static files from `dashboard/` |
-| PostgreSQL 16 | internal Docker network only | Not used yet; for the API login slice |
+| PostgreSQL 16 | internal Docker network only | Webhook storage (API slice 2) |
 | API | `/api/*` via Caddy, no published port | Read-only GitHub proxy with cache |
 
 ## API
@@ -113,8 +113,52 @@ API works at the anonymous GitHub limit. The token is never returned or logged.
 | Capability | Status |
 |---|---|
 | Read-only GitHub proxy with cache | Shipped |
+| GitHub webhooks stored in Postgres | Shipped |
+| Dashboard reading from the database | Planned |
 | GitHub login | Planned |
-| Postgres use by the API | Planned |
+| Actions from the dashboard | Planned |
+
+## Webhooks
+
+GitHub notifies the API of every change and the API stores it in the Postgres
+that already runs on the host (tables are created on first connection from
+`core/src/tradvia/schema.sql`). The dashboard does not read from it yet.
+
+Owner step, in the repository: **Settings > Webhooks > Add webhook**.
+
+- Payload URL: `https://app.tradvia.org/api/webhooks/github`
+- Content type: `application/json`
+- Secret: the same value as the `TRADVIA_WEBHOOK_SECRET` secret of the
+  `production` environment
+- Events (select individually): **Issues**, **Issue comments**,
+  **Pull requests** and **Workflow runs**
+
+Behavior of `POST /api/webhooks/github`:
+
+- No secret configured, or a missing or invalid `X-Hub-Signature-256`: 401,
+  nothing is stored. Bodies over 1 MB: 413.
+- Other repositories, unhandled events and `ping`: 202, ignored.
+- Idempotent by `X-GitHub-Delivery`: a repeated delivery is acknowledged (202)
+  and not stored twice. A record is only replaced by one with a newer
+  `updated_at`.
+- Database down: 503. Unexpected error: 500 (the delivery is rolled back as a
+  whole). In both cases redeliver from **Settings > Webhooks > Recent
+  Deliveries > Redeliver**; it is processed normally.
+- `GET /api/store/health` returns `{"ok": true, "issues": n, "runs": n,
+  "last_delivery": "..."}` (503 if the database is down). It never returns
+  comment bodies.
+
+Initial load (safe to repeat; everything is an upsert), on the host:
+
+```bash
+docker compose exec api tradvia backfill
+```
+
+It reads issues labelled `agent:ready`, their comments, pull requests and the
+runs of `agent.yml` and `claude.yml`. `GITHUB_TOKEN` is optional (it raises the
+GitHub rate limit). On the 1 GB host the database is capped at 256 MB
+(`shared_buffers=64MB`, `max_connections=20`) and the API uses at most 3
+connections.
 
 ## Idle reclamation
 

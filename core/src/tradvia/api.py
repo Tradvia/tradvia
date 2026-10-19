@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
-"""Read-only GitHub proxy with an in-memory cache for the dashboard (API slice 1).
+"""Read-only GitHub proxy with cache (slice 1) and GitHub webhooks stored in Postgres (slice 2).
 
 Run with: uvicorn tradvia.api:app
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import re
 import time
@@ -20,7 +23,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from .events import HANDLED_EVENTS, PayloadError, payload_ops
+from .store import PgStore, Store, StoreUnavailable
+
 GITHUB_API = "https://api.github.com"
+MAX_WEBHOOK_BYTES = 1024 * 1024
 ALLOWED_PARAMS = ("state", "per_page", "page", "labels", "sort", "direction")
 MAX_ENTRIES = 500
 UPSTREAM_TIMEOUT = 10
@@ -76,8 +83,13 @@ def _not_found() -> JSONResponse:
 def create_app(
     fetch: Fetch | None = None,
     now: Callable[[], float] = time.monotonic,
+    store: Store | None = None,
 ) -> Starlette:
     fetch = fetch or default_fetch
+    webhook_secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
+    db: Store | None = store
+    if db is None and os.environ.get("DATABASE_URL"):
+        db = PgStore(os.environ["DATABASE_URL"])  # lazy: does not connect here
     repo = os.environ.get("TRADVIA_REPO", "Tradvia/tradvia")
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -101,7 +113,7 @@ def create_app(
             headers=headers,
         )
 
-    def store(url: str, entry: _Entry) -> None:
+    def remember(url: str, entry: _Entry) -> None:
         cache[url] = entry
         cache.move_to_end(url)
         while len(cache) > MAX_ENTRIES:
@@ -145,17 +157,85 @@ def create_app(
             return JSONResponse({"error": "upstream unavailable"}, status_code=502)
         if up.status == 304 and entry:
             entry = entry._replace(expires=now() + ttl)
-            store(url, entry)
+            remember(url, entry)
             return reply(entry)
         if 200 <= up.status < 300:
             entry = _Entry(now() + ttl, up.etag, up.status, up.body, up.content_type)
-            store(url, entry)
+            remember(url, entry)
             return reply(entry)
         status = 502 if up.status == 304 else up.status
         return JSONResponse({"error": "upstream error"}, status_code=status)
 
+    def valid_signature(body: bytes, header: str) -> bool:
+        digest = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+        expected = ("sha256=" + digest).encode()
+        return hmac.compare_digest(expected, header.encode("utf-8", "replace"))
+
+    async def read_body(request: Request) -> bytes | None:
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_WEBHOOK_BYTES:
+            return None
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_WEBHOOK_BYTES:
+                return None
+        return bytes(body)
+
+    async def webhook(request: Request) -> Response:
+        if not webhook_secret:  # fail closed
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await read_body(request)
+        if body is None:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
+        signature = request.headers.get("x-hub-signature-256", "")
+        if not signature or not valid_signature(body, signature):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+
+        accepted = JSONResponse({"ok": True}, status_code=202)
+        event = request.headers.get("x-github-event", "")
+        if event not in HANDLED_EVENTS:  # includes ping
+            return accepted
+        repository = payload.get("repository")
+        if not isinstance(repository, dict) or repository.get("full_name") != repo:
+            return accepted
+        delivery = request.headers.get("x-github-delivery", "")
+        if not delivery:
+            return JSONResponse({"error": "missing delivery id"}, status_code=400)
+        try:
+            ops = payload_ops(event, payload)
+        except PayloadError:
+            return JSONResponse({"error": "invalid payload"}, status_code=400)
+        if db is None:
+            return JSONResponse({"error": "storage not configured"}, status_code=503)
+        try:
+            await run_in_threadpool(db.apply, delivery, event, ops)
+        except StoreUnavailable:
+            return JSONResponse({"error": "storage unavailable"}, status_code=503)
+        except Exception:  # never log or echo: payloads and DSNs may be sensitive
+            return JSONResponse({"error": "internal error"}, status_code=500)
+        return accepted  # also for duplicate deliveries
+
+    async def store_health(request: Request) -> Response:
+        if db is None:
+            return JSONResponse({"ok": False}, status_code=503)
+        try:
+            stats = await run_in_threadpool(db.stats)
+        except Exception:
+            return JSONResponse({"ok": False}, status_code=503)
+        return JSONResponse({"ok": True, **stats})
+
     return Starlette(
         routes=[
+            Route("/api/webhooks/github", webhook, methods=["POST"]),
+            Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
             Route("/api/github/{path:path}", github, methods=["GET"]),
         ]
