@@ -22,6 +22,17 @@ services:
       - caddy_config:/config
     networks: [edge]
 
+  api:
+    build:
+      context: ./src
+      dockerfile: infra/oci/Dockerfile.api
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      TRADVIA_REPO: ${TRADVIA_REPO:-Tradvia/tradvia}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    networks: [edge]
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
