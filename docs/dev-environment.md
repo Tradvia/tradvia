@@ -67,3 +67,26 @@ cd core && TRADVIA_OFFLINE=1 tradvia --issue <n> --chat github
 
 Use your **fork** as `TRADVIA_REPO` while experimenting, so test branches and
 pull requests stay out of the main repository.
+
+## 4. Claude Code CLI as planner and executor (subscription, no API key)
+
+Two optional environment variables choose who plans and who implements. Both
+default to today's behavior, so nothing changes unless you set them.
+
+| Variable | Values | Default |
+|---|---|---|
+| `TRADVIA_PLANNER` | `claude-code` (`claude -p`, read-only tools), `litellm`, `offline` | `litellm` (offline when `TRADVIA_OFFLINE=1`) |
+| `TRADVIA_EXECUTOR` | `claude-code` (edits the working tree), `note` (one file via the API) | `note` |
+
+With `claude-code` the CLI must be installed and on `PATH`, authenticated with
+`CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`); no `ANTHROPIC_API_KEY` is needed.
+`TRADVIA_CLAUDE_TIMEOUT` (seconds, default 900) limits each call.
+
+After approval, Claude Code implements the plan in the current directory (start from a
+clean checkout: every changed file goes into the PR). Tradvia then commits all changed
+files to `tradvia/issue-<n>` and opens the PR with Claude's summary, cost and time. If
+any changed file is under `.github/` or `.git/`, or is `LICENSE.md`, `CLA.md` or
+`CODEOWNERS`, no PR is opened and the card goes back to `WAITING_HUMAN`.
+
+Status: the CLI wiring is **Partial**. Deleted files are not propagated to the PR, and
+the `agent.yml` workflow does not install the CLI yet (a maintainer does that).

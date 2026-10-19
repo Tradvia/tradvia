@@ -42,6 +42,7 @@ def add_cost(a: dict | None, b: dict | None) -> dict:
         "usd": round(a.get("usd", 0.0) + b.get("usd", 0.0), 6),
         "tokens_in": a.get("tokens_in", 0) + b.get("tokens_in", 0),
         "tokens_out": a.get("tokens_out", 0) + b.get("tokens_out", 0),
+        "duration_s": round(a.get("duration_s", 0.0) + b.get("duration_s", 0.0), 3),
     }
 
 
