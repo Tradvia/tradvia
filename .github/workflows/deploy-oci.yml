@@ -69,7 +69,7 @@ jobs:
           rsync -az --delete infra/oci/ oci:/opt/tradvia/src/infra/oci/
 
       - name: Start services
-        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile && docker compose ps && docker image prune -f'
+        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose up -d --no-deps --force-recreate caddy && docker compose ps && docker image prune -f'
 
       - name: Health check
         env:
