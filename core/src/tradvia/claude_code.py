@@ -20,6 +20,8 @@ EXEC_TOOLS = "Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test)"
 
 PLAN_PROMPT = """You are @Agent-Architect in a software team. Read the repository as needed
 and propose the smallest change that solves the GitHub issue below. Do not modify anything.
+Tradvia creates the branch, makes the commit and opens the pull request, so the plan must
+contain only code, test and docs changes: no git or pull request steps.
 Answer ONLY with JSON, no markdown fences:
 {{"summary": "<one sentence>",
  "plan": ["<step>", "..."],
@@ -31,7 +33,11 @@ Issue #{number}: {title}
 
 EXEC_PROMPT = """You are @Agent-Coder. Implement the approved plan below in the working tree.
 Follow CLAUDE.md, run `make check` when done and fix failures. Do not touch .github/, .git/,
-LICENSE.md, CLA.md or CODEOWNERS. Finish with a short summary of what you changed.
+LICENSE.md, CLA.md or CODEOWNERS.
+Tradvia creates the branch, makes the commit and opens the pull request. Do not run git
+commands (checkout, commit, push) or open a pull request: only edit the working tree and run
+`make check`. Finish with a short summary of what you changed, with no git or pull request
+steps and no statement about whether a pull request was opened.
 
 Issue #{number}: {title}
 
