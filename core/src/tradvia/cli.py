@@ -18,6 +18,7 @@ from .claude_code import ClaudeCodeExecutor, claude_code_plan
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 from .llm import _offline_plan, architect_plan
+from .policy import Policy, PolicyError, load_policy, role_of
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -39,9 +40,9 @@ def env(name: str) -> str:
     return value
 
 
-def make_chat(kind: str, issue: int):
+def make_chat(kind: str, issue: int, policy: Policy | None = None):
     if kind == "github":
-        return GitHubIssueChat(env("GITHUB_TOKEN"), env("TRADVIA_REPO"), issue)
+        return GitHubIssueChat(env("GITHUB_TOKEN"), env("TRADVIA_REPO"), issue, policy=policy)
     if kind == "discord":
         return DiscordREST(env("DISCORD_BOT_TOKEN"), env("DISCORD_CHANNEL_ID"))
     sys.exit(f"Unknown chat {kind!r}: use github or discord")
@@ -70,10 +71,26 @@ def make_executor(kind: str | None = None):
 def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     github = GitHubREST(env("GITHUB_TOKEN"), env("TRADVIA_REPO"),
                         os.getenv("TRADVIA_BASE_BRANCH", "main"))
-    chat = make_chat(chat_kind, issue)
+    card_id = f"CARD-{issue}"
+    not_started = {"id": card_id, "status": "BACKLOG",
+                   "source": {"provider": "github", "issue_number": issue}}
+
+    try:
+        policy = load_policy(github)
+    except PolicyError as e:
+        github.comment(issue, f"Invalid .tradvia.yml on {github.base}: {e}. "
+                              "The card was not started.")
+        return not_started
+
+    actor = os.getenv("TRADVIA_ACTOR")
+    if actor and not policy.allows("start_card", role_of(github, actor)):
+        github.comment(issue, f"@{actor} does not have permission to start a card: "
+                              f"it needs at least the `{policy.interactions.start_card}` role.")
+        return not_started
+
+    chat = make_chat(chat_kind, issue, policy)
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor())
 
-    card_id = f"CARD-{issue}"
     config = {"configurable": {"thread_id": card_id}}
     result = app.invoke({"id": card_id, "status": "BACKLOG",
                          "source": {"provider": "github", "issue_number": issue}}, config)

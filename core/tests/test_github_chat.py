@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
+import pytest
+
 from tradvia.integrations import GitHubIssueChat
+from tradvia.policy import Interactions, Policy
 
 
 class Resp:
@@ -35,7 +38,7 @@ class FakeSession:
             login = url.split("/collaborators/")[1].split("/")[0]
             self.permission_calls.append(login)
             if login in self.permissions:
-                return Resp({"permission": self.permissions[login]})
+                return Resp({"role_name": self.permissions[login]})
             return Resp({"message": "Not Found"}, 404)
         assert params.get("since") == "2026-10-19T00:00:00Z"
         return Resp(self.comments)
@@ -53,7 +56,7 @@ def test_only_trusted_humans_after_the_question_can_answer():
         comment(1003, "ok", "MEMBER", "ci-bot", kind="Bot"),     # bot
         comment(1005, "Ajuste: use docs/notes", "COLLABORATOR", "maria"),
         comment(1004, "Aprovado", "OWNER", "anderson"),          # earliest valid one wins
-    ])
+    ], permissions={"anderson": "admin", "maria": "write", "past-pr-author": "read"})
     chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
     mid = chat.post("plan?")
     assert mid == "1000" and s.headers["Authorization"] == "Bearer t"
@@ -75,3 +78,29 @@ def test_private_org_member_with_write_access_can_approve():
     chat = GitHubIssueChat("t", "Tradvia/tradvia", 5, poll_s=0, session=s)
     assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) == {"text": "Aprovado", "by": "adutraadm"}
     assert s.permission_calls == ["drive-by", "adutraadm"]
+
+
+@pytest.mark.parametrize("role,accepted", [("read", False), ("triage", False),
+                                           ("write", True), ("admin", True)])
+def test_approve_plan_default_policy_by_role(role, accepted):
+    s = FakeSession([comment(1001, "Aprovado", "COLLABORATOR", "pat")], permissions={"pat": role})
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
+    expected = {"text": "Aprovado", "by": "pat"} if accepted else None
+    assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) == expected
+
+
+@pytest.mark.parametrize("role,accepted", [("write", False), ("maintain", False), ("admin", True)])
+def test_approve_plan_policy_requiring_admin(role, accepted):
+    s = FakeSession([comment(1001, "Aprovado", "OWNER", "pat")], permissions={"pat": role})
+    policy = Policy(interactions=Interactions(approve_plan="admin"))
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s, policy=policy)
+    expected = {"text": "Aprovado", "by": "pat"} if accepted else None
+    assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) == expected
+
+
+@pytest.mark.parametrize("login,kind", [("ci[bot]", "User"), ("robot", "Bot")])
+def test_bots_never_approve_even_with_admin_role(login, kind):
+    s = FakeSession([comment(1001, "Aprovado", "OWNER", login, kind=kind)],
+                    permissions={login: "admin"})
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
+    assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) is None

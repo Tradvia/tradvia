@@ -52,7 +52,7 @@ def safe_path(path: str) -> str:
     parts = [s for s in raw.split("/") if s not in ("", ".")]
     p = "/".join(parts)
     if (not p or raw.startswith("/") or ".." in parts or parts[0] in (".github", ".git")
-            or parts[-1] in ("LICENSE.md", "CLA.md", "CODEOWNERS")):
+            or parts[-1] in ("LICENSE.md", "CLA.md", "CODEOWNERS", ".tradvia.yml")):
         raise ValueError(f"Path not allowed for agents: {path!r}")
     return p
 

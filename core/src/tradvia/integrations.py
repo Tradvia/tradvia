@@ -14,6 +14,8 @@ from typing import Protocol
 
 import requests
 
+from .policy import Policy, role_of
+
 TIMEOUT = 30
 
 
@@ -23,6 +25,8 @@ class GitHub(Protocol):
     def put_file(self, branch: str, path: str, content: str, message: str) -> None: ...
     def open_pull_request(self, branch: str, title: str, body: str) -> str: ...
     def comment(self, number: int, body: str) -> None: ...
+    def get_file(self, path: str, ref: str) -> str | None: ...
+    def get_collaborator_role(self, login: str) -> str | None: ...
 
 
 class Chat(Protocol):
@@ -81,23 +85,42 @@ class GitHubREST:
     def comment(self, number: int, body: str) -> None:
         self._req("POST", f"/issues/{number}/comments", json={"body": body})
 
+    def get_file(self, path: str, ref: str) -> str | None:
+        """Text of a file at `ref`, or None when it does not exist."""
+        r = self.s.get(self._url(f"/contents/{path}"), params={"ref": ref}, timeout=TIMEOUT)
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise RuntimeError(f"GitHub GET /contents/{path} -> {r.status_code}: {r.text[:300]}")
+        return base64.b64decode(r.json()["content"]).decode("utf-8")
+
+    def get_collaborator_role(self, login: str) -> str | None:
+        """role_name (admin, maintain, write, triage, read), or None for a non-collaborator."""
+        r = self.s.get(self._url(f"/collaborators/{login}/permission"), timeout=TIMEOUT)
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise RuntimeError(f"GitHub GET /collaborators/{login}/permission -> "
+                               f"{r.status_code}: {r.text[:300]}")
+        return r.json().get("role_name")
+
 
 class GitHubIssueChat:
     """Uses the issue's own comment thread as the approval channel.
 
-    Only replies from people with write access to the repository count and
-    bots are ignored, so an outsider commenting on a public issue cannot
-    approve a plan. author_association is not enough on its own: members with
-    private organization membership show up as CONTRIBUTOR or NONE to the
-    Actions token, so the collaborator permission endpoint is checked too.
+    Only replies from people whose GitHub role meets the policy's approve_plan
+    minimum count (write by default) and bots are ignored, so an outsider
+    commenting on a public issue cannot approve a plan. The role comes from the
+    collaborator permission endpoint (role_name): author_association cannot
+    tell triage from write.
     """
 
     name = "GitHub"
-    TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
-    WRITE = ("admin", "maintain", "write")
 
-    def __init__(self, token: str, repo: str, issue: int, poll_s: float = 15.0, session=None):
+    def __init__(self, token: str, repo: str, issue: int, poll_s: float = 15.0, session=None,
+                 policy: Policy | None = None):
         self.repo, self.issue, self.poll_s = repo, issue, poll_s
+        self.policy = policy or Policy()
         self.s = session or requests.Session()
         self.s.headers.update({
             "Authorization": f"Bearer {token}",
@@ -105,7 +128,7 @@ class GitHubIssueChat:
             "X-GitHub-Api-Version": "2022-11-28",
         })
         self._created_at: dict[str, str] = {}
-        self._can_write: dict[str, bool] = {}
+        self._roles: dict[str, str | None] = {}
 
     def _url(self) -> str:
         return f"https://api.github.com/repos/{self.repo}/issues/{self.issue}/comments"
@@ -128,24 +151,19 @@ class GitHubIssueChat:
             for c in sorted(r.json(), key=lambda c: c["id"]):
                 user = c.get("user") or {}
                 if (c["id"] > int(after_message_id) and user.get("type") != "Bot"
-                        and (c.get("author_association") in self.TRUSTED
-                             or self.can_write(user.get("login", "")))):
+                        and self.policy.allows("approve_plan",
+                                               role_of(self, user.get("login", "")))):
                     return {"text": c.get("body") or "", "by": user["login"]}
             if time.monotonic() >= deadline:
                 return None
             time.sleep(self.poll_s)
-
-
-    def can_write(self, login: str) -> bool:
-        """True when the user has write, maintain or admin permission on the repo."""
-        if not login:
-            return False
-        if login not in self._can_write:
+    def get_collaborator_role(self, login: str) -> str | None:
+        """Cached role_name of `login`; None when not a collaborator."""
+        if login not in self._roles:
             r = self.s.get(f"https://api.github.com/repos/{self.repo}/collaborators/{login}/permission",
                            timeout=TIMEOUT)
-            ok = r.status_code == 200 and r.json().get("permission") in self.WRITE
-            self._can_write[login] = ok
-        return self._can_write[login]
+            self._roles[login] = r.json().get("role_name") if r.status_code == 200 else None
+        return self._roles[login]
 
 
 class DiscordREST:
