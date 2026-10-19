@@ -35,8 +35,14 @@ jobs:
           OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$OCI_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          printf '%s\n' "$OCI_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          # Secrets pasted from Windows may carry CRLF line endings, which OpenSSH rejects.
+          printf '%s\n' "$OCI_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$OCI_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -y -f ~/.ssh/deploy > /dev/null; then
+            echo "::error::OCI_SSH_KEY is not a valid private key. Paste the whole file, including the BEGIN and END lines."
+            exit 1
+          fi
+          echo "Deploy key fingerprint: $(ssh-keygen -l -f ~/.ssh/deploy | cut -d' ' -f2)"
           printf 'Host oci\n  HostName %s\n  User ubuntu\n  IdentityFile ~/.ssh/deploy\n  StrictHostKeyChecking yes\n' "$OCI_HOST" > ~/.ssh/config
 
       - name: Write .env on the host (secrets never stored in the repo)
