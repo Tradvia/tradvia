@@ -1,0 +1,49 @@
+#cloud-config
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# First-boot setup for the Tradvia host on OCI (Ubuntu 24.04, Ampere A1).
+# Paste this file in "Advanced options > Initialization script" when creating
+# the instance. It installs Docker, hardens SSH and opens only 80/443 besides SSH.
+
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - fail2ban
+  - unattended-upgrades
+  - rsync
+  - iptables-persistent
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-tradvia.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      X11Forwarding no
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 5
+      bantime = 1h
+
+runcmd:
+  # Docker Engine from Docker's official repository (arm64).
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - usermod -aG docker ubuntu
+  # OCI Ubuntu images reject everything except SSH in iptables: allow HTTP/HTTPS.
+  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+  - netfilter-persistent save
+  # App directory, owned by the deploy user; secrets file readable only by it.
+  - install -d -o ubuntu -g ubuntu -m 0750 /opt/tradvia
+  - systemctl enable --now fail2ban
+  - systemctl restart ssh

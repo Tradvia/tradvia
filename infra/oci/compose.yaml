@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# Tradvia services on the OCI host. Only Caddy is published to the internet.
+# Secrets come from /opt/tradvia/.env (chmod 600, never committed).
+
+name: tradvia
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      TRADVIA_DOMAIN: ${TRADVIA_DOMAIN:?set TRADVIA_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./dashboard:/srv/dashboard:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tradvia
+      POSTGRES_USER: tradvia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradvia -d tradvia"]
+      interval: 10s
+      retries: 5
+
+networks:
+  edge: {}
+  internal:
+    internal: true   # no route to the internet, not reachable from outside
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  pg_data: {}

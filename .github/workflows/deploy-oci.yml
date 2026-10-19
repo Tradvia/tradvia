@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# Deploys infra/oci and the dashboard to the OCI host (ADR 0005).
+# Runs in the protected "production" environment: a maintainer approves each
+# deploy. Secrets live only in that environment.
+name: deploy-oci
+
+on:
+  push:
+    branches: [main]
+    paths: ["infra/oci/**", "dashboard/**", ".github/workflows/deploy-oci.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-oci
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      OCI_HOST: ${{ secrets.OCI_HOST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure SSH (deploy-only key, pinned host key)
+        env:
+          OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
+          OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$OCI_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$OCI_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          printf 'Host oci\n  HostName %s\n  User ubuntu\n  IdentityFile ~/.ssh/deploy\n  StrictHostKeyChecking yes\n' "$OCI_HOST" > ~/.ssh/config
+
+      - name: Write .env on the host (secrets never stored in the repo)
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+        run: |
+          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\n' \
+            "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" \
+            | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
+
+      - name: Upload compose, Caddyfile and dashboard
+        run: |
+          rsync -az --delete infra/oci/compose.yaml infra/oci/Caddyfile oci:/opt/tradvia/
+          rsync -az --delete dashboard/ oci:/opt/tradvia/dashboard/
+
+      - name: Start services
+        run: ssh oci 'cd /opt/tradvia && docker compose pull -q && docker compose up -d --remove-orphans && docker compose ps'
+
+      - name: Health check
+        env:
+          TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
+        run: |
+          for i in $(seq 1 20); do
+            curl -fsS "https://$TRADVIA_DOMAIN/healthz" && exit 0
+            sleep 6
+          done
+          echo "Health check failed" && exit 1
