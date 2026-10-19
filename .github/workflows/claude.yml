@@ -3,6 +3,11 @@
 # Authenticates with a Claude subscription token (CLAUDE_CODE_OAUTH_TOKEN,
 # generated with `claude setup-token`). The action only runs for users with
 # write access to the repository and ignores bots.
+#
+# Claude may run only the commands listed in --allowedTools: the project's
+# checks, read-only git, and opening/viewing a pull request. Everything else
+# (arbitrary shell, pip, network) stays blocked. The project is installed by
+# the workflow before Claude starts, so Claude never needs pip.
 name: claude
 
 on:
@@ -34,11 +39,22 @@ jobs:
       issues: write
       id-token: write
       actions: read
+    env:
+      TRADVIA_OFFLINE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install core for make check
+        run: make setup
       - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--max-turns 25"
+          claude_args: |
+            --max-turns 30
+            --allowedTools "Bash(make check),Bash(make test),Bash(make boundary),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(gh pr create:*),Bash(gh pr view:*)"
