@@ -7,6 +7,8 @@ Orchestrate humans, multi-model APIs and isolated container sessions in a single
 > **[Join the waitlist for the managed Cloud / Enterprise edition →](#waitlist)**
 > · Website: [tradvia.org](https://tradvia.org)
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Tradvia/tradvia)
+
 ---
 
 ## Why
@@ -90,6 +92,14 @@ The contract is in
 - A neutral work model with Kanban, Gantt, Burndown, WBS, calendar and
   capacity projections, plus the `TrackerConnector` interface —
   [PR #2](https://github.com/tradvia/tradvia/pull/2).
+
+## Develop with us — and with Tradvia
+
+Open the dev workspace in Codespaces (badge above) or a local Dev Container and
+run `make test`. Tradvia already works on its own issues: a maintainer labels an
+issue `agent:ready`, the agent posts a plan as a comment, a maintainer approves
+it in the thread, and the agent opens the pull request. See
+[docs/dev-environment.md](docs/dev-environment.md).
 
 ## Roadmap
 

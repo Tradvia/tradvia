@@ -92,7 +92,8 @@ def build_graph(github: GitHub, chat: Chat,
                 f"Arquivo: `{card['file_path']}`\n\n❓ {q['text']}\n"
                 f"Responda **Aprovado**, **Rejeitado** ou escreva um ajuste.")
         message_id = chat.post(text)
-        return {"pending_question": {**q, "channel": "discord", "message_id": message_id},
+        return {"pending_question": {**q, "channel": getattr(chat, "name", "chat").lower(),
+                                     "message_id": message_id},
                 **transition(card["status"], "WAITING_HUMAN", "@Agent-Architect",
                              "Approval gate before writing code")}
 
@@ -125,7 +126,8 @@ def build_graph(github: GitHub, chat: Chat,
         github.create_branch(branch)
         github.put_file(branch, card["file_path"], card["file_content"],
                         f"feat: {card['title']} (#{number})")
-        body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in Discord.\n\n"
+        body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
+                f"{getattr(chat, 'name', 'chat')}.\n\n"
                 f"Card `{card['id']}` · cost so far: ${card.get('cost', {}).get('usd', 0):.4f}")
         url = github.open_pull_request(branch, f"feat: {card['title']}", body)
         github.comment(number, f"🤖 Pull request opened: {url}")

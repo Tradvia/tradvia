@@ -26,6 +26,8 @@ class GitHub(Protocol):
 
 
 class Chat(Protocol):
+    name: str
+
     def post(self, text: str) -> str: ...
     def wait_for_reply(self, after_message_id: str, timeout_s: int) -> dict | None: ...
 
@@ -80,10 +82,60 @@ class GitHubREST:
         self._req("POST", f"/issues/{number}/comments", json={"body": body})
 
 
+class GitHubIssueChat:
+    """Uses the issue's own comment thread as the approval channel.
+
+    Only replies from people with write access to the repository count
+    (author_association OWNER, MEMBER or COLLABORATOR) and bots are ignored,
+    so an outsider commenting on a public issue cannot approve a plan.
+    """
+
+    name = "GitHub"
+    TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+
+    def __init__(self, token: str, repo: str, issue: int, poll_s: float = 15.0, session=None):
+        self.repo, self.issue, self.poll_s = repo, issue, poll_s
+        self.s = session or requests.Session()
+        self.s.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        self._created_at: dict[str, str] = {}
+
+    def _url(self) -> str:
+        return f"https://api.github.com/repos/{self.repo}/issues/{self.issue}/comments"
+
+    def post(self, text: str) -> str:
+        r = self.s.post(self._url(), json={"body": text}, timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        self._created_at[str(data["id"])] = data["created_at"]
+        return str(data["id"])
+
+    def wait_for_reply(self, after_message_id: str, timeout_s: int) -> dict | None:
+        deadline = time.monotonic() + timeout_s
+        params = {"per_page": 100}
+        if after_message_id in self._created_at:
+            params["since"] = self._created_at[after_message_id]
+        while True:
+            r = self.s.get(self._url(), params=params, timeout=TIMEOUT)
+            r.raise_for_status()
+            for c in sorted(r.json(), key=lambda c: c["id"]):
+                if (c["id"] > int(after_message_id)
+                        and c.get("author_association") in self.TRUSTED
+                        and (c.get("user") or {}).get("type") != "Bot"):
+                    return {"text": c.get("body") or "", "by": c["user"]["login"]}
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(self.poll_s)
+
+
 class DiscordREST:
     """Posts to a channel and polls for the first human reply after a message."""
 
     API = "https://discord.com/api/v10"
+    name = "Discord"
 
     def __init__(self, bot_token: str, channel_id: str, poll_s: float = 3.0):
         self.channel = channel_id

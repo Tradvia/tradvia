@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# Dogfooding: Tradvia works on its own issues.
+#
+# A maintainer adds the `agent:ready` label to an issue. @Agent-Architect posts a
+# plan as a comment and waits for a maintainer to answer "Aprovado" / "Approved",
+# "Rejeitado" / "Rejected", or an adjustment. On approval @Agent-Coder opens a PR.
+#
+# Only people with triage access can add labels, and only OWNER / MEMBER /
+# COLLABORATOR replies are read, so outsiders cannot start or approve a run.
+# Without the ANTHROPIC_API_KEY secret the run uses the offline planner.
+name: agent
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    name: agent
+    if: github.event.label.name == 'agent:ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Run the card
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRADVIA_REPO: ${{ github.repository }}
+          TRADVIA_BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          TRADVIA_CHAT: github
+          TRADVIA_PLANNER_MODEL: ${{ vars.TRADVIA_PLANNER_MODEL || 'anthropic/claude-sonnet-5-5' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TRADVIA_OFFLINE: ${{ secrets.ANTHROPIC_API_KEY == '' && '1' || '0' }}
+        run: tradvia --issue ${{ github.event.issue.number }} --wait 3600
