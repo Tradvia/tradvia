@@ -35,11 +35,18 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
   .kpi .v { font-size: 22px; font-weight: 600; }
   .kpi .l { color: var(--muted); font-size: 12px; }
-  .kpi.soon .v { font-size: 14px; font-weight: 500; color: var(--muted); }
   .board { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
   .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-height: 80px; }
   .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
-  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
+  .card:focus-visible { outline: 2px solid var(--info); }
+  .card .cost { color: var(--muted); font-size: 12px; }
+  .activity { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; font-size: 12px; }
+  .activity h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
+  .activity li, .recent li { padding: 3px 0; }
+  .when { color: var(--muted); }
+  .activity ol { margin: 4px 0 0 18px; padding: 0; }
   .card .n { color: var(--muted); font-size: 12px; }
   .col.AGENT_WORKING h3 { color: var(--info); }
   .col.WAITING_HUMAN h3 { color: var(--warn); }
@@ -71,6 +78,8 @@
 <main>
   <div id="status" class="msg" hidden></div>
   <div id="content" hidden>
+    <h2 data-i18n="recent"></h2>
+    <div class="recent" id="recent"></div>
     <h2 data-i18n="kpis"></h2>
     <div class="kpis" id="kpis"></div>
     <h2 data-i18n="board"></h2>
@@ -172,6 +181,166 @@ function tagRuns(workflowFile, payload) {
   return ((payload && payload.workflow_runs) || []).map((r) => ({ ...r, workflowFile }));
 }
 
+/* ----- Activity timeline and cost (pure) ----- */
+
+// Extracts the estimated cost from a PR/comment body: {usd, seconds, label} or null.
+function parseCost(body) {
+  if (typeof body !== "string") return null;
+  const num = "(\\d+(?:\\.\\d+)?)";
+  const secs = "(?:\\s*[·•|-]\\s*" + num + "\\s*s\\b)?";
+  const patterns = [
+    new RegExp("estimated cost \\(api-equivalent\\):\\s*\\$" + num + secs, "i"),
+    new RegExp("\\bcost:\\s*\\$" + num + secs, "i"),
+    new RegExp("cost so far[^$\\n]*\\$" + num, "i"),
+  ];
+  for (const re of patterns) {
+    const m = re.exec(body);
+    if (!m) continue;
+    const usd = parseFloat(m[1]);
+    const seconds = m[2] != null ? parseFloat(m[2]) : null;
+    return { usd, seconds, label: "$" + usd.toFixed(4) + (seconds != null ? " · " + Math.round(seconds) + "s" : "") };
+  }
+  return null;
+}
+
+// Only https links to github.com are rendered as links.
+function safeGithubUrl(u) {
+  try {
+    const p = new URL(u);
+    return p.protocol === "https:" && (p.hostname === "github.com" || p.hostname === "www.github.com") ? p.href : null;
+  } catch (e) { return null; }
+}
+
+function isBotUser(u) {
+  return !!u && (u.type === "Bot" || (typeof u.login === "string" && u.login.endsWith("[bot]")));
+}
+
+// Plan posted by ask_human (graph.py): contains "❓" and "Responda **Aprovado**, ...".
+function isPlanComment(body) {
+  return typeof body === "string" && (body.includes("❓") || /Responda\s+\**Aprovado/i.test(body));
+}
+
+function parsePlan(body) {
+  const lines = String(body).split("\n").map((l) => l.trim()).filter(Boolean);
+  const steps = lines.filter((l) => /^\d+\.\s/.test(l));
+  const summary = lines.slice(1).filter((l) =>
+    !/^\d+\.\s/.test(l) && !l.includes("❓") && !/^Responda/i.test(l) && !/^Arquivo:/i.test(l)).join(" ");
+  return { summary, steps };
+}
+
+function firstLine(body) {
+  const l = String(body || "").split("\n").map((x) => x.replace(/[*_`#>]/g, "").trim()).find(Boolean) || "";
+  return l.length > 160 ? l.slice(0, 157) + "…" : l;
+}
+
+// Rejection notice posted by the agent (no fixed text in graph.py, so matched by keyword).
+function isRejectionComment(body) {
+  return typeof body === "string" && /rejeitad|rejected/i.test(body);
+}
+
+// Classifies one GitHub timeline event. ctx = {planSeen: bool}.
+// Human replies after a plan come back as "noEffect"; buildTimeline sets the final
+// effect from the next agent action.
+// Returns {kind, actor, textKey, url, time, detail} or null.
+function classifyTimelineEvent(ev, ctx) {
+  if (!ev || typeof ev !== "object") return null;
+  const c = ctx || {};
+  const time = ev.created_at || ev.submitted_at || null;
+  const url = safeGithubUrl(ev.html_url);
+  const mk = (kind, actor, textKey, detail) => ({ kind, actor, textKey, url, time, detail: detail || null });
+  if (ev.event === "labeled") {
+    if (!ev.label || ev.label.name !== "agent:ready") return null;
+    return mk("started", ev.actor && ev.actor.login, "started");
+  }
+  if (ev.event === "closed" || ev.event === "merged") {
+    return mk("done", ev.actor && ev.actor.login, "done");
+  }
+  if (ev.event !== "commented") return null;
+  const login = ev.user && ev.user.login;
+  const body = ev.body || "";
+  if (login === "github-actions[bot]") {
+    if (isPlanComment(body)) return mk("plan", "Agent-Architect", "planPosted", parsePlan(body));
+    if (c.planSeen && isRejectionComment(body)) return mk("rejection", "Agent-Architect", null);
+    if (/PR aberto|Pull request opened/i.test(body)) {
+      const m = /\/pull\/(\d+)/.exec(body);
+      return mk("pr", "Agent-Coder", "openedPr", { number: m ? m[1] : null });
+    }
+    return null;
+  }
+  if (login === "claude[bot]") return mk("claude", "claude[bot]", "claudeCode", { status: firstLine(body) });
+  if (!isBotUser(ev.user) && c.planSeen) {
+    return mk("reply", login, "noEffect");
+  }
+  return null;
+}
+
+// Sorts events by time and classifies them. After each plan, the last human reply before
+// the next agent action is the one that counts, and that action defines its effect:
+// PR opened -> approved, new plan -> adjustment, rejection message -> rejected.
+// Other replies stay "noEffect"; with no agent action yet, the last one is "awaiting".
+function buildTimeline(events) {
+  const sorted = (Array.isArray(events) ? events : [])
+    .filter((e) => e && (e.created_at || e.submitted_at))
+    .sort((a, b) => Date.parse(a.created_at || a.submitted_at) - Date.parse(b.created_at || b.submitted_at));
+  const ctx = { planSeen: false };
+  const out = [];
+  let pending = []; // human replies since the last plan, in order
+  const settle = (textKey) => {
+    if (pending.length) pending[pending.length - 1].textKey = textKey;
+    pending = [];
+  };
+  for (const ev of sorted) {
+    const item = classifyTimelineEvent(ev, ctx);
+    if (!item) continue;
+    if (item.kind === "reply") pending.push(item);
+    else if (item.kind === "pr") settle("approved");
+    else if (item.kind === "plan") { settle("adjust"); ctx.planSeen = true; }
+    else if (item.kind === "rejection") { settle("rejected"); continue; }
+    out.push(item);
+  }
+  settle("awaiting");
+  return out;
+}
+
+// cards: [{number, title, items}]; returns the newest `limit` events across cards.
+function recentActivity(cards, limit = 10) {
+  const all = [];
+  for (const c of cards) {
+    for (const it of c.items) all.push({ ...it, cardNumber: c.number, cardTitle: c.title });
+  }
+  return all.sort((a, b) => Date.parse(b.time) - Date.parse(a.time)).slice(0, limit);
+}
+
+// Cost of the agent PR that belongs to an issue (newest PR with a parsable cost).
+function costForIssue(issue, prs) {
+  const mine = prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  for (const p of mine) {
+    const c = parseCost(p.body);
+    if (c) return c;
+  }
+  return null;
+}
+
+// Total and median cost over agent PRs with a parsable cost: {total, median, count}.
+function totalAndMedianCost(prs) {
+  const costs = prs
+    .filter((p) => isAgentBranch(p.head && p.head.ref))
+    .map((p) => parseCost(p.body))
+    .filter(Boolean)
+    .map((c) => c.usd);
+  return { total: costs.reduce((a, b) => a + b, 0), median: median(costs), count: costs.length };
+}
+
+// Up to `max` cards for recent activity: open first, then most recently closed.
+function pickCardsForRecent(issues, max = 5) {
+  const ts = (i) => Date.parse(i.state === "closed" ? i.closed_at || i.updated_at : i.updated_at) || 0;
+  const open = issues.filter((i) => i.state !== "closed").sort((a, b) => ts(b) - ts(a));
+  const closed = issues.filter((i) => i.state === "closed").sort((a, b) => ts(b) - ts(a));
+  return open.concat(closed).slice(0, max);
+}
+
 /* ---------- Data layer ---------- */
 
 class RateLimitError extends Error {}
@@ -186,6 +355,20 @@ async function getJson(url) {
 function getRepo() {
   const q = new URLSearchParams(location.search).get("repo");
   return q && /^[\w.-]+\/[\w.-]+$/.test(q) ? q : "Tradvia/tradvia";
+}
+
+// In-memory cache of timelines (promises): one request per card.
+const timelineCache = new Map();
+
+function loadTimeline(repo, n) {
+  const key = repo + "#" + n;
+  if (!timelineCache.has(key)) {
+    const p = getJson("https://api.github.com/repos/" + repo + "/issues/" + n + "/timeline?per_page=100")
+      .then(buildTimeline);
+    p.catch(() => timelineCache.delete(key));
+    timelineCache.set(key, p);
+  }
+  return timelineCache.get(key);
 }
 
 async function loadData(repo) {
@@ -213,7 +396,14 @@ const I18N = {
     emptyCards: "Nenhum card", emptyRuns: "Nenhuma execução encontrada.",
     success: "Taxa de sucesso", medDur: "Duração mediana", mergedPrs: "PRs de agentes mesclados",
     medPr: "Mediana PR → merge", costTitle: "Custo por card",
-    cost: "em breve (registrado pelo executor Claude Code, #13)",
+    recent: "Atividade recente", activity: "Atividade", loadingActivity: "Carregando atividade…",
+    noActivity: "Sem atividade.", cardStarted: "Card iniciado por", planPosted: "postou o plano",
+    approved: "Aprovado", rejected: "Rejeitado", adjust: "Ajuste pedido", by: "por",
+    noEffect: "Comentário de", noEffectSuffix: "(sem efeito)", awaiting: "Aguardando o agente",
+    openedPr: "abriu o PR", claudeCode: "Claude Code", done: "Concluído", plan: "Plano", steps: "Passos",
+    costLabel: "custo estimado (equivalente à API)", total: "total", median: "mediana",
+    activityRateLimit: "Limite de requisições da API do GitHub (60/h) atingido: a atividade não pôde ser carregada. Tente de novo em alguns minutos.",
+    activityError: "Não foi possível carregar a atividade.",
     executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
     duration: "Duração", started: "Início", link: "Run", open: "abrir",
     inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em",
@@ -228,7 +418,14 @@ const I18N = {
     emptyCards: "No cards", emptyRuns: "No runs found.",
     success: "Success rate", medDur: "Median duration", mergedPrs: "Agent PRs merged",
     medPr: "Median PR → merge", costTitle: "Cost per card",
-    cost: "coming soon (recorded by the Claude Code executor, #13)",
+    recent: "Recent activity", activity: "Activity", loadingActivity: "Loading activity…",
+    noActivity: "No activity.", cardStarted: "Card started by", planPosted: "posted the plan",
+    approved: "Approved", rejected: "Rejected", adjust: "Adjustment requested", by: "by",
+    noEffect: "Comment by", noEffectSuffix: "(no effect)", awaiting: "Waiting for the agent",
+    openedPr: "opened PR", claudeCode: "Claude Code", done: "Done", plan: "Plan", steps: "Steps",
+    costLabel: "estimated cost (API-equivalent)", total: "total", median: "median",
+    activityRateLimit: "GitHub API rate limit (60/h) reached: activity could not be loaded. Try again in a few minutes.",
+    activityError: "Could not load activity.",
     executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
     duration: "Duration", started: "Started", link: "Run", open: "open",
     inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at",
@@ -273,9 +470,110 @@ function renderKpis(k) {
     d.append(el("div", v, "v"), el("div", l, "l"));
     root.append(d);
   }
-  const soon = el("div", null, "kpi soon");
-  soon.append(el("div", t("cost"), "v"), el("div", t("costTitle"), "l"));
-  root.append(soon);
+  const cost = totalAndMedianCost(data ? data.prs : []);
+  const usd = (v) => (v == null ? "—" : "$" + v.toFixed(4));
+  for (const [k, v] of [["total", cost.total], ["median", cost.median]]) {
+    const d = el("div", null, "kpi");
+    d.append(el("div", cost.count ? usd(v) : "—", "v"),
+      el("div", t("costTitle") + " · " + t(k) + " (" + t("costLabel") + ")", "l"));
+    root.append(d);
+  }
+}
+
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleString(lang === "pt" ? "pt-BR" : "en-GB");
+}
+
+function eventText(it) {
+  const who = it.actor ? "@" + it.actor : "";
+  switch (it.textKey) {
+    case "started": return t("cardStarted") + " " + who;
+    case "awaiting": return t("awaiting") + " — " + who;
+    case "planPosted": return who + " " + t("planPosted");
+    case "approved": case "rejected": case "adjust": return t(it.textKey) + " " + t("by") + " " + who;
+    case "noEffect": return t("noEffect") + " " + who + " " + t("noEffectSuffix");
+    case "openedPr": return who + " " + t("openedPr") + (it.detail && it.detail.number ? " #" + it.detail.number : "");
+    case "claudeCode": return t("claudeCode") + (it.detail && it.detail.status ? ": " + it.detail.status : "");
+    case "done": return t("done");
+    default: return "";
+  }
+}
+
+function renderEventLi(it, withCard) {
+  const li = el("li");
+  if (withCard) li.append(el("strong", "#" + it.cardNumber + " "));
+  li.append(el("span", eventText(it)), el("span", " · " + fmtTime(it.time), "when"));
+  if (it.url) {
+    const a = el("a", " ↗");
+    a.href = it.url; a.target = "_blank"; a.rel = "noopener";
+    li.append(a);
+  }
+  if (it.kind === "plan" && it.detail && (it.detail.summary || it.detail.steps.length)) {
+    const det = el("details");
+    det.append(el("summary", t("plan")));
+    if (it.detail.summary) det.append(el("div", it.detail.summary));
+    if (it.detail.steps.length) {
+      const ol = el("ol");
+      it.detail.steps.forEach((s) => ol.append(el("li", s.replace(/^\d+\.\s*/, ""))));
+      det.append(el("div", t("steps"), "when"), ol);
+    }
+    li.append(det);
+  }
+  return li;
+}
+
+// Fills `root` with a message or a list for a timeline promise.
+async function fillActivity(root, number, withCard) {
+  root.replaceChildren(el("div", t("loadingActivity"), "when"));
+  try {
+    const items = await loadTimeline(getRepo(), number);
+    if (!items.length) { root.replaceChildren(el("div", t("noActivity"), "when")); return; }
+    const ul = el("ul");
+    items.forEach((it) => ul.append(renderEventLi(it, withCard)));
+    root.replaceChildren(ul);
+  } catch (e) {
+    root.replaceChildren(el("div", e instanceof RateLimitError ? t("activityRateLimit") : t("activityError"), "msg error"));
+  }
+}
+
+const openCards = new Set();
+let recentState = { status: "idle", items: [] }; // idle | loading | ok | ratelimit | error
+let recentToken = 0;
+
+function renderRecent() {
+  const root = document.getElementById("recent");
+  root.replaceChildren();
+  if (recentState.status === "loading") root.append(el("div", t("loadingActivity"), "when"));
+  else if (recentState.status === "ratelimit") root.append(el("div", t("activityRateLimit"), "msg error"));
+  else if (recentState.status === "error") root.append(el("div", t("activityError"), "msg error"));
+  else if (!recentState.items.length) root.append(el("div", t("noActivity"), "when"));
+  else {
+    const ul = el("ul");
+    recentState.items.forEach((it) => ul.append(renderEventLi(it, true)));
+    root.append(ul);
+  }
+}
+
+// Loads up to 5 timelines after the initial render, without blocking the board.
+async function loadRecent() {
+  const token = ++recentToken;
+  const repo = getRepo();
+  recentState = { status: "loading", items: [] };
+  renderRecent();
+  const cards = [];
+  try {
+    for (const issue of pickCardsForRecent(data.issues, 5)) {
+      const items = await loadTimeline(repo, issue.number);
+      if (token !== recentToken) return;
+      cards.push({ number: issue.number, title: issue.title, items });
+    }
+    recentState = { status: "ok", items: recentActivity(cards, 10) };
+  } catch (e) {
+    if (token !== recentToken) return;
+    recentState = { status: e instanceof RateLimitError ? "ratelimit" : "error", items: recentActivity(cards, 10) };
+  }
+  renderRecent();
 }
 
 function renderBoard(issues, prs, agentRuns) {
@@ -293,10 +591,34 @@ function renderBoard(issues, prs, agentRuns) {
     const s = deriveCardState(issue, prs, agentRuns);
     counts[s]++;
     const card = el("div", null, "card");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
     const a = el("a", issue.title);
     a.href = issue.html_url;
     a.target = "_blank"; a.rel = "noopener";
+    a.addEventListener("click", (e) => e.stopPropagation());
     card.append(el("div", "#" + issue.number, "n"), a);
+    const cost = costForIssue(issue, prs);
+    if (cost) card.append(el("div", cost.label + " · " + t("costLabel"), "cost"));
+    const panel = el("div", null, "activity");
+    panel.hidden = true;
+    panel.addEventListener("click", (e) => e.stopPropagation());
+    const toggle = () => {
+      const open = panel.hidden;
+      panel.hidden = !open;
+      card.setAttribute("aria-expanded", String(open));
+      if (open) {
+        openCards.add(issue.number);
+        panel.replaceChildren(el("h4", t("activity")), el("div"));
+        fillActivity(panel.lastChild, issue.number, false);
+      } else openCards.delete(issue.number);
+    };
+    card.addEventListener("click", toggle);
+    card.addEventListener("keydown", (e) => {
+      if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(); }
+    });
+    card.append(panel);
+    if (openCards.has(issue.number)) { panel.hidden = true; toggle(); }
     cols[s].append(card);
   }
   STATES.forEach((s) => {
@@ -354,6 +676,7 @@ function render() {
     : fetchState === "ratelimit" ? t("rateLimit") : fetchState === "error" ? t("error") : "";
   content.hidden = fetchState !== "ok" || !data;
   if (!content.hidden) {
+    renderRecent();
     renderKpis(computeKpis(data.runs, data.prs));
     renderBoard(data.issues, data.prs, data.agentRuns);
     renderRuns(visibleRuns(data.runs, showSkipped));
@@ -361,6 +684,9 @@ function render() {
 }
 
 async function refresh() {
+  timelineCache.clear();
+  recentToken++;
+  recentState = { status: "idle", items: [] };
   fetchState = "loading";
   render();
   try {
@@ -372,6 +698,7 @@ async function refresh() {
     fetchState = e instanceof RateLimitError ? "ratelimit" : "error";
   }
   render();
+  if (fetchState === "ok") loadRecent();
 }
 
 document.getElementById("refresh").addEventListener("click", refresh);
