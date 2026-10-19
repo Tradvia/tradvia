@@ -15,7 +15,9 @@
 		-Server
 	}
 
-	# The API (next card) will be added here: handle /api/* { reverse_proxy api:8000 }
+	handle /api/* {
+		reverse_proxy api:8000
+	}
 
 	handle /healthz {
 		respond "ok" 200
