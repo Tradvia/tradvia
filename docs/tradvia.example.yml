@@ -1,0 +1,12 @@
+# Example .tradvia.yml (ADR 0004). Copy it to the repository root.
+# Read from the default branch only. Unknown keys or invalid roles make the
+# policy fail closed. Roles: read < triage < write < maintain < admin.
+# Nothing can be configured below `read`.
+access:
+  view: inherit            # inherit | read | triage | write | maintain | admin
+interactions:
+  start_card: triage       # enforced when TRADVIA_ACTOR is set
+  approve_plan: write      # enforced
+  mention_assistant: write # parsed, not yet enforced by core
+  live_takeover: maintain  # parsed, not yet enforced by core
+  budget_control: admin    # parsed, not yet enforced by core
