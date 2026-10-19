@@ -190,6 +190,75 @@ def test_prompts_leave_git_and_pr_to_tradvia():
     assert "Do not run git" in EXEC_PROMPT
 
 
+def test_exec_prompt_forbids_temporary_files():
+    from tradvia.claude_code import EXEC_PROMPT
+
+    assert "Do not create temporary or verification files in the repository" in EXEC_PROMPT
+    assert "outside the repository" in EXEC_PROMPT
+
+
+@pytest.mark.parametrize("path, expected", [
+    (".tmpchk/check.js", True), (".cache/x", True), ("a/.claude/y.md", True),
+    ("x.tmp", True), ("d/x.bak", True), ("x~", True),
+    ("core/src/a.py", False), (".gitignore", False), ("docs/a.md", False),
+])
+def test_is_scratch(path, expected):
+    from tradvia.graph import is_scratch
+
+    assert is_scratch(path) is expected
+
+
+def test_untracked_files_parses_only_untracked(tmp_path):
+    from tradvia.claude_code import untracked_files
+
+    runner = fake_runner(tmp_path, "x", status=["?? .tmpchk/check.js", " M docs/a.md",
+                                                "R  docs/b.md", "docs/old.md", "?? n.py"])
+    assert untracked_files(str(tmp_path), runner) == [".tmpchk/check.js", "n.py"]
+
+
+def test_scratch_files_are_left_out_of_pr_and_cited(tmp_path):
+    files = [".tmpchk/check.js", "core/src/a.py"]
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "done", files))
+    gh = FakeGitHub()
+    result = approved_card_app(gh, FakeChat(), ex, tmp_path)
+
+    assert result["status"] == "IN_REVIEW_PR"
+    assert [p for _, p in gh.files] == ["core/src/a.py"]
+    assert "Ignored scratch files" in gh.prs[0][2] and "`.tmpchk/check.js`" in gh.prs[0][2]
+
+
+def test_tracked_file_in_dot_directory_is_included(tmp_path):
+    ex = ClaudeCodeExecutor(runner=fake_runner(
+        tmp_path, "done", [".devcontainer/devcontainer.json"],
+        status=[" M .devcontainer/devcontainer.json"]))
+    gh = FakeGitHub()
+    result = approved_card_app(gh, FakeChat(), ex, tmp_path)
+
+    assert result["status"] == "IN_REVIEW_PR"
+    assert [p for _, p in gh.files] == [".devcontainer/devcontainer.json"]
+    assert "Ignored scratch files" not in gh.prs[0][2]
+
+
+def test_scratch_named_files_are_ignored(tmp_path):
+    files = ["x.tmp", "x.bak", "x~", "docs/a.md"]
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "done", files))
+    gh = FakeGitHub()
+    approved_card_app(gh, FakeChat(), ex, tmp_path)
+
+    assert [p for _, p in gh.files] == ["docs/a.md"]
+    assert all(f"`{s}`" in gh.prs[0][2] for s in ("x.tmp", "x.bak", "x~"))
+
+
+def test_only_scratch_files_returns_to_waiting_human(tmp_path):
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "done", [".tmpchk/check.js"]))
+    gh, chat = FakeGitHub(), FakeChat()
+    result = approved_card_app(gh, chat, ex, tmp_path)
+
+    assert result["status"] == "WAITING_HUMAN"
+    assert gh.prs == [] and gh.branches == [] and gh.files == {}
+    assert ".tmpchk/check.js" in chat.messages[-1]
+
+
 def test_pr_body_labels_cost_as_estimate(tmp_path):
     ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "did it", ["docs/a.md"]))
     gh = FakeGitHub()

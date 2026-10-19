@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
@@ -54,6 +55,21 @@ def safe_path(path: str) -> str:
             or parts[-1] in ("LICENSE.md", "CLA.md", "CODEOWNERS")):
         raise ValueError(f"Path not allowed for agents: {path!r}")
     return p
+
+
+def _is_protected(path: str) -> bool:
+    try:
+        safe_path(path)
+    except ValueError:
+        return True
+    return False
+
+
+def is_scratch(path: str) -> bool:
+    """Executor scratch: inside a dot directory (.tmpchk, .cache, .claude) or a *.tmp/*.bak/*~ file."""
+    parts = [s for s in path.replace("\\", "/").split("/") if s]
+    return (any(d.startswith(".") for d in parts[:-1])
+            or bool(parts and any(fnmatch(parts[-1], g) for g in ("*.tmp", "*.bak", "*~"))))
 
 
 def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
@@ -146,22 +162,30 @@ def build_graph(github: GitHub, chat: Chat,
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
             run = executor.execute(card, cwd)
+            scratch = [f for f in run.get("untracked_files", [])
+                       if is_scratch(f) and not _is_protected(f)]
+            changed = [f for f in run["changed_files"] if f not in scratch]
             blocked = []
-            for f in run["changed_files"]:
+            for f in changed:
                 try:
                     safe_path(f)
                 except ValueError:
                     blocked.append(f)
             cost = {"usd": run["cost_usd"], "duration_s": run["duration_s"]}
-            if blocked or not run["changed_files"]:
-                why = (f"alterou arquivos protegidos: {', '.join('`' + b + '`' for b in blocked)}"
-                       if blocked else "não alterou nenhum arquivo")
+            if blocked or not changed:
+                if blocked:
+                    why = f"alterou arquivos protegidos: {', '.join('`' + b + '`' for b in blocked)}"
+                elif scratch:
+                    why = ("só criou arquivos temporários ignorados: "
+                           + ", ".join(f"`{s}`" for s in scratch))
+                else:
+                    why = "não alterou nenhum arquivo"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto; "
                           "revise o working tree e responda com um ajuste.")
                 return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             files, skipped = {}, []
-            for f in run["changed_files"]:
+            for f in changed:
                 if not Path(cwd, f).is_file():
                     continue
                 try:
@@ -178,6 +202,10 @@ def build_graph(github: GitHub, chat: Chat,
             if skipped:
                 extra += ("\n\nBinary files not included in this PR (add them manually): "
                           + ", ".join(f"`{b}`" for b in skipped))
+            if scratch:
+                extra += ("\n\n### Ignored scratch files\n"
+                          + "\n".join(f"- `{s}`" for s in scratch)
+                          + "\n\nNot included in this PR; a human should review them.")
         github.create_branch(branch)
         for path, content in files.items():
             github.put_file(branch, path, content, f"{_conventional_title(card['title'])} (#{number})")
