@@ -85,13 +85,16 @@ class GitHubREST:
 class GitHubIssueChat:
     """Uses the issue's own comment thread as the approval channel.
 
-    Only replies from people with write access to the repository count
-    (author_association OWNER, MEMBER or COLLABORATOR) and bots are ignored,
-    so an outsider commenting on a public issue cannot approve a plan.
+    Only replies from people with write access to the repository count and
+    bots are ignored, so an outsider commenting on a public issue cannot
+    approve a plan. author_association is not enough on its own: members with
+    private organization membership show up as CONTRIBUTOR or NONE to the
+    Actions token, so the collaborator permission endpoint is checked too.
     """
 
     name = "GitHub"
     TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+    WRITE = ("admin", "maintain", "write")
 
     def __init__(self, token: str, repo: str, issue: int, poll_s: float = 15.0, session=None):
         self.repo, self.issue, self.poll_s = repo, issue, poll_s
@@ -102,6 +105,7 @@ class GitHubIssueChat:
             "X-GitHub-Api-Version": "2022-11-28",
         })
         self._created_at: dict[str, str] = {}
+        self._can_write: dict[str, bool] = {}
 
     def _url(self) -> str:
         return f"https://api.github.com/repos/{self.repo}/issues/{self.issue}/comments"
@@ -122,13 +126,26 @@ class GitHubIssueChat:
             r = self.s.get(self._url(), params=params, timeout=TIMEOUT)
             r.raise_for_status()
             for c in sorted(r.json(), key=lambda c: c["id"]):
-                if (c["id"] > int(after_message_id)
-                        and c.get("author_association") in self.TRUSTED
-                        and (c.get("user") or {}).get("type") != "Bot"):
-                    return {"text": c.get("body") or "", "by": c["user"]["login"]}
+                user = c.get("user") or {}
+                if (c["id"] > int(after_message_id) and user.get("type") != "Bot"
+                        and (c.get("author_association") in self.TRUSTED
+                             or self.can_write(user.get("login", "")))):
+                    return {"text": c.get("body") or "", "by": user["login"]}
             if time.monotonic() >= deadline:
                 return None
             time.sleep(self.poll_s)
+
+
+    def can_write(self, login: str) -> bool:
+        """True when the user has write, maintain or admin permission on the repo."""
+        if not login:
+            return False
+        if login not in self._can_write:
+            r = self.s.get(f"https://api.github.com/repos/{self.repo}/collaborators/{login}/permission",
+                           timeout=TIMEOUT)
+            ok = r.status_code == 200 and r.json().get("permission") in self.WRITE
+            self._can_write[login] = ok
+        return self._can_write[login]
 
 
 class DiscordREST:
