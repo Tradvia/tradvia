@@ -35,6 +35,7 @@ runcmd:
   # 2 GB swap: E2.1.Micro has only 1 GB of RAM.
   - fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
   # Docker Engine from Docker's official repository, for this machine's architecture.
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban unattended-upgrades rsync iptables-persistent
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   - chmod a+r /etc/apt/keyrings/docker.asc
@@ -43,8 +44,9 @@ runcmd:
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   - usermod -aG docker ubuntu
   # OCI Ubuntu images reject everything except SSH in iptables: allow HTTP/HTTPS.
-  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-  - iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+  # Oracle images end INPUT with a REJECT rule: insert 80/443 before it, not after.
+  - pos=$(iptables -L INPUT --line-numbers -n | awk '$2=="REJECT"{print $1; exit}'); iptables -I INPUT ${pos:-1} -m state --state NEW -p tcp --dport 443 -j ACCEPT
+  - pos=$(iptables -L INPUT --line-numbers -n | awk '$2=="REJECT"{print $1; exit}'); iptables -I INPUT ${pos:-1} -m state --state NEW -p tcp --dport 80 -j ACCEPT
   - netfilter-persistent save
   # App directory, owned by the deploy user; secrets file readable only by it.
   - install -d -o ubuntu -g ubuntu -m 0750 /opt/tradvia
