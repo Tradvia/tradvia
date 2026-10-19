@@ -122,6 +122,37 @@ def test_executor_checks_both_sides_of_a_rename(tmp_path):
         == ["docs/b.md", "CODEOWNERS"]
 
 
+def test_claude_code_plan_without_executor_returns_to_waiting_human(tmp_path):
+    def no_file_planner(title, body, number):
+        return {**PLAN, "_cost": {"usd": 0.01}}
+
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=no_file_planner, executor=None, cwd=str(tmp_path))
+    _, config = start(app)
+    result = app.invoke(Command(resume={"text": "Aprovado", "by": "anderson"}), config)
+
+    assert result["status"] == "WAITING_HUMAN"
+    assert gh.prs == [] and gh.branches == [] and gh.files == {}
+    assert "TRADVIA_EXECUTOR" in chat.messages[-1]
+
+
+def test_executor_skips_binary_files_and_cites_them(tmp_path):
+    inner = fake_runner(tmp_path, "done", ["docs/a.md", "img.png"])
+
+    def runner(cmd, **kw):
+        out = inner(cmd, **kw)
+        if cmd[0] != "git":
+            (tmp_path / "img.png").write_bytes(b"\x89PNG\xff\xfe")
+        return out
+
+    gh, chat = FakeGitHub(), FakeChat()
+    result = approved_card_app(gh, chat, ClaudeCodeExecutor(runner=runner), tmp_path)
+
+    assert result["status"] == "IN_REVIEW_PR"
+    assert [p for _, p in gh.files] == ["docs/a.md"]
+    assert "`img.png`" in gh.prs[0][2]
+
+
 def test_defaults_stay_offline_note(monkeypatch):
     monkeypatch.delenv("TRADVIA_PLANNER", raising=False)
     monkeypatch.delenv("TRADVIA_EXECUTOR", raising=False)

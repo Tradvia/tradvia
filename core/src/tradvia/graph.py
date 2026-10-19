@@ -131,8 +131,13 @@ def build_graph(github: GitHub, chat: Chat,
     def open_pr(card: Card) -> dict:
         number = card["source"]["issue_number"]
         branch = f"tradvia/issue-{number}"
-        files = {card["file_path"]: card["file_content"]}
+        files = {card["file_path"]: card["file_content"]} if card.get("file_path") else {}
         extra, cost = "", {}
+        if not executor and not files:
+            why = ("o plano não trouxe `file_path` e nenhum executor está configurado "
+                   "(use `TRADVIA_EXECUTOR=claude-code` com `TRADVIA_PLANNER=claude-code`)")
+            chat.post(f"🟡 **{card['id']}** — {why}. Nenhum PR foi aberto.")
+            return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
             run = executor.execute(card, cwd)
             blocked = []
@@ -149,10 +154,24 @@ def build_graph(github: GitHub, chat: Chat,
                           "revise o working tree e responda com um ajuste.")
                 return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
-            files = {f: Path(cwd, f).read_text(encoding="utf-8") for f in run["changed_files"]
-                     if Path(cwd, f).is_file()}
+            files, skipped = {}, []
+            for f in run["changed_files"]:
+                if not Path(cwd, f).is_file():
+                    continue
+                try:
+                    files[f] = Path(cwd, f).read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    skipped.append(f)
+            if not files:
+                why = "só alterou arquivos binários ou removidos, que não vão para o PR"
+                chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto.")
+                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
+                                                   "@Agent-Coder", f"Executor {why}")}
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Cost: ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s")
+            if skipped:
+                extra += ("\n\nBinary files not included in this PR (add them manually): "
+                          + ", ".join(f"`{b}`" for b in skipped))
         github.create_branch(branch)
         for path, content in files.items():
             github.put_file(branch, path, content, f"feat: {card['title']} (#{number})")
