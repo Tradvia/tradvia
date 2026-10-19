@@ -183,19 +183,6 @@ function tagRuns(workflowFile, payload) {
 
 /* ----- Activity timeline and cost (pure) ----- */
 
-// Same words as classify_reply in core/src/tradvia/graph.py.
-const APPROVE_WORDS = ["aprovado", "aprovo", "approved", "approve", "sim", "yes", "ok", "pode", "lgtm"];
-const REJECT_WORDS = ["rejeitado", "rejeito", "reject", "rejected", "nao", "no", "cancela", "cancel"];
-
-// Returns "approved", "rejected" or "feedback".
-function classifyReply(text) {
-  const norm = String(text == null ? "" : text).normalize("NFKD").replace(/[^\x00-\x7f]/g, "").toLowerCase().trim();
-  const first = norm ? norm.split(/[\s,.!:;]+/)[0] : "";
-  if (APPROVE_WORDS.includes(first)) return "approved";
-  if (REJECT_WORDS.includes(first)) return "rejected";
-  return "feedback";
-}
-
 // Extracts the estimated cost from a PR/comment body: {usd, seconds, label} or null.
 function parseCost(body) {
   if (typeof body !== "string") return null;
@@ -246,9 +233,14 @@ function firstLine(body) {
   return l.length > 160 ? l.slice(0, 157) + "…" : l;
 }
 
-const TRUSTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+// Rejection notice posted by the agent (no fixed text in graph.py, so matched by keyword).
+function isRejectionComment(body) {
+  return typeof body === "string" && /rejeitad|rejected/i.test(body);
+}
 
-// Classifies one GitHub timeline event. ctx = {planSeen: bool, replyUsed: bool}.
+// Classifies one GitHub timeline event. ctx = {planSeen: bool}.
+// Human replies after a plan come back as "noEffect"; buildTimeline sets the final
+// effect from the next agent action.
 // Returns {kind, actor, textKey, url, time, detail} or null.
 function classifyTimelineEvent(ev, ctx) {
   if (!ev || typeof ev !== "object") return null;
@@ -268,6 +260,7 @@ function classifyTimelineEvent(ev, ctx) {
   const body = ev.body || "";
   if (login === "github-actions[bot]") {
     if (isPlanComment(body)) return mk("plan", "Agent-Architect", "planPosted", parsePlan(body));
+    if (c.planSeen && isRejectionComment(body)) return mk("rejection", "Agent-Architect", null);
     if (/PR aberto|Pull request opened/i.test(body)) {
       const m = /\/pull\/(\d+)/.exec(body);
       return mk("pr", "Agent-Coder", "openedPr", { number: m ? m[1] : null });
@@ -276,28 +269,36 @@ function classifyTimelineEvent(ev, ctx) {
   }
   if (login === "claude[bot]") return mk("claude", "claude[bot]", "claudeCode", { status: firstLine(body) });
   if (!isBotUser(ev.user) && c.planSeen) {
-    // Only the first reply after each plan, from a trusted author, has an effect.
-    if (c.replyUsed || !TRUSTED_ASSOCIATIONS.includes(ev.author_association)) return mk("reply", login, "noEffect");
-    c.replyUsed = true;
-    const r = classifyReply(body);
-    return mk("reply", login, r === "approved" ? "approved" : r === "rejected" ? "rejected" : "adjust");
+    return mk("reply", login, "noEffect");
   }
   return null;
 }
 
-// Sorts events by time and classifies them, tracking whether the plan was already posted.
+// Sorts events by time and classifies them. After each plan, the last human reply before
+// the next agent action is the one that counts, and that action defines its effect:
+// PR opened -> approved, new plan -> adjustment, rejection message -> rejected.
+// Other replies stay "noEffect"; with no agent action yet, the last one is "awaiting".
 function buildTimeline(events) {
   const sorted = (Array.isArray(events) ? events : [])
     .filter((e) => e && (e.created_at || e.submitted_at))
     .sort((a, b) => Date.parse(a.created_at || a.submitted_at) - Date.parse(b.created_at || b.submitted_at));
   const ctx = { planSeen: false };
   const out = [];
+  let pending = []; // human replies since the last plan, in order
+  const settle = (textKey) => {
+    if (pending.length) pending[pending.length - 1].textKey = textKey;
+    pending = [];
+  };
   for (const ev of sorted) {
     const item = classifyTimelineEvent(ev, ctx);
     if (!item) continue;
-    if (item.kind === "plan") { ctx.planSeen = true; ctx.replyUsed = false; }
+    if (item.kind === "reply") pending.push(item);
+    else if (item.kind === "pr") settle("approved");
+    else if (item.kind === "plan") { settle("adjust"); ctx.planSeen = true; }
+    else if (item.kind === "rejection") { settle("rejected"); continue; }
     out.push(item);
   }
+  settle("awaiting");
   return out;
 }
 
@@ -396,9 +397,9 @@ const I18N = {
     success: "Taxa de sucesso", medDur: "Duração mediana", mergedPrs: "PRs de agentes mesclados",
     medPr: "Mediana PR → merge", costTitle: "Custo por card",
     recent: "Atividade recente", activity: "Atividade", loadingActivity: "Carregando atividade…",
-    noActivity: "Sem atividade.", started: "Card iniciado por", planPosted: "postou o plano",
+    noActivity: "Sem atividade.", cardStarted: "Card iniciado por", planPosted: "postou o plano",
     approved: "Aprovado", rejected: "Rejeitado", adjust: "Ajuste pedido", by: "por",
-    noEffect: "Comentário de", noEffectSuffix: "(sem efeito)",
+    noEffect: "Comentário de", noEffectSuffix: "(sem efeito)", awaiting: "Aguardando o agente",
     openedPr: "abriu o PR", claudeCode: "Claude Code", done: "Concluído", plan: "Plano", steps: "Passos",
     costLabel: "custo estimado (equivalente à API)", total: "total", median: "mediana",
     activityRateLimit: "Limite de requisições da API do GitHub (60/h) atingido: a atividade não pôde ser carregada. Tente de novo em alguns minutos.",
@@ -418,9 +419,9 @@ const I18N = {
     success: "Success rate", medDur: "Median duration", mergedPrs: "Agent PRs merged",
     medPr: "Median PR → merge", costTitle: "Cost per card",
     recent: "Recent activity", activity: "Activity", loadingActivity: "Loading activity…",
-    noActivity: "No activity.", started: "Card started by", planPosted: "posted the plan",
+    noActivity: "No activity.", cardStarted: "Card started by", planPosted: "posted the plan",
     approved: "Approved", rejected: "Rejected", adjust: "Adjustment requested", by: "by",
-    noEffect: "Comment by", noEffectSuffix: "(no effect)",
+    noEffect: "Comment by", noEffectSuffix: "(no effect)", awaiting: "Waiting for the agent",
     openedPr: "opened PR", claudeCode: "Claude Code", done: "Done", plan: "Plan", steps: "Steps",
     costLabel: "estimated cost (API-equivalent)", total: "total", median: "median",
     activityRateLimit: "GitHub API rate limit (60/h) reached: activity could not be loaded. Try again in a few minutes.",
@@ -487,7 +488,8 @@ function fmtTime(iso) {
 function eventText(it) {
   const who = it.actor ? "@" + it.actor : "";
   switch (it.textKey) {
-    case "started": return t("started") + " " + who;
+    case "started": return t("cardStarted") + " " + who;
+    case "awaiting": return t("awaiting") + " — " + who;
     case "planPosted": return who + " " + t("planPosted");
     case "approved": case "rejected": case "adjust": return t(it.textKey) + " " + t("by") + " " + who;
     case "noEffect": return t("noEffect") + " " + who + " " + t("noEffectSuffix");
