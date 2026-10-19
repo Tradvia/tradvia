@@ -246,7 +246,9 @@ function firstLine(body) {
   return l.length > 160 ? l.slice(0, 157) + "…" : l;
 }
 
-// Classifies one GitHub timeline event. ctx = {planSeen: bool}.
+const TRUSTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+// Classifies one GitHub timeline event. ctx = {planSeen: bool, replyUsed: bool}.
 // Returns {kind, actor, textKey, url, time, detail} or null.
 function classifyTimelineEvent(ev, ctx) {
   if (!ev || typeof ev !== "object") return null;
@@ -274,6 +276,9 @@ function classifyTimelineEvent(ev, ctx) {
   }
   if (login === "claude[bot]") return mk("claude", "claude[bot]", "claudeCode", { status: firstLine(body) });
   if (!isBotUser(ev.user) && c.planSeen) {
+    // Only the first reply after each plan, from a trusted author, has an effect.
+    if (c.replyUsed || !TRUSTED_ASSOCIATIONS.includes(ev.author_association)) return mk("reply", login, "noEffect");
+    c.replyUsed = true;
     const r = classifyReply(body);
     return mk("reply", login, r === "approved" ? "approved" : r === "rejected" ? "rejected" : "adjust");
   }
@@ -290,7 +295,7 @@ function buildTimeline(events) {
   for (const ev of sorted) {
     const item = classifyTimelineEvent(ev, ctx);
     if (!item) continue;
-    if (item.kind === "plan") ctx.planSeen = true;
+    if (item.kind === "plan") { ctx.planSeen = true; ctx.replyUsed = false; }
     out.push(item);
   }
   return out;
@@ -393,6 +398,7 @@ const I18N = {
     recent: "Atividade recente", activity: "Atividade", loadingActivity: "Carregando atividade…",
     noActivity: "Sem atividade.", started: "Card iniciado por", planPosted: "postou o plano",
     approved: "Aprovado", rejected: "Rejeitado", adjust: "Ajuste pedido", by: "por",
+    noEffect: "Comentário de", noEffectSuffix: "(sem efeito)",
     openedPr: "abriu o PR", claudeCode: "Claude Code", done: "Concluído", plan: "Plano", steps: "Passos",
     costLabel: "custo estimado (equivalente à API)", total: "total", median: "mediana",
     activityRateLimit: "Limite de requisições da API do GitHub (60/h) atingido: a atividade não pôde ser carregada. Tente de novo em alguns minutos.",
@@ -414,6 +420,7 @@ const I18N = {
     recent: "Recent activity", activity: "Activity", loadingActivity: "Loading activity…",
     noActivity: "No activity.", started: "Card started by", planPosted: "posted the plan",
     approved: "Approved", rejected: "Rejected", adjust: "Adjustment requested", by: "by",
+    noEffect: "Comment by", noEffectSuffix: "(no effect)",
     openedPr: "opened PR", claudeCode: "Claude Code", done: "Done", plan: "Plan", steps: "Steps",
     costLabel: "estimated cost (API-equivalent)", total: "total", median: "median",
     activityRateLimit: "GitHub API rate limit (60/h) reached: activity could not be loaded. Try again in a few minutes.",
@@ -483,6 +490,7 @@ function eventText(it) {
     case "started": return t("started") + " " + who;
     case "planPosted": return who + " " + t("planPosted");
     case "approved": case "rejected": case "adjust": return t(it.textKey) + " " + t("by") + " " + who;
+    case "noEffect": return t("noEffect") + " " + who + " " + t("noEffectSuffix");
     case "openedPr": return who + " " + t("openedPr") + (it.detail && it.detail.number ? " #" + it.detail.number : "");
     case "claudeCode": return t("claudeCode") + (it.detail && it.detail.status ? ": " + it.detail.status : "");
     case "done": return t("done");
