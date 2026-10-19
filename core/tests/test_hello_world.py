@@ -105,6 +105,28 @@ def test_feedback_replans_and_asks_again():
     assert result["cost"]["usd"] == pytest.approx(0.02)  # two planner calls
 
 
+def approve_and_open_pr(gh, chat):
+    app = build_graph(gh, chat, planner=planner)
+    _, config = start(app)
+    app.invoke(Command(resume={"text": "Aprovado", "by": "anderson"}), config)
+
+
+def test_github_chat_on_same_issue_posts_single_pr_comment():
+    gh, chat = FakeGitHub(), FakeChat()
+    gh.repo = chat.repo = "Tradvia/tradvia"
+    chat.issue = 1
+    approve_and_open_pr(gh, chat)
+    assert gh.comments == []
+    assert sum("/pull/2" in m for m in chat.messages) == 1
+
+
+def test_other_chat_keeps_issue_comment_and_chat_message():
+    gh, chat = FakeGitHub(), FakeChat()  # e.g. Discord: no repo/issue attributes
+    approve_and_open_pr(gh, chat)
+    assert len(gh.comments) == 1 and "/pull/2" in gh.comments[0][1]
+    assert sum("/pull/2" in m for m in chat.messages) == 1
+
+
 @pytest.mark.parametrize("text,expected", [
     ("Aprovado", "approved"), ("aprovado, pode seguir", "approved"), ("LGTM", "approved"),
     ("Não", "rejected"), ("rejeitado", "rejected"), ("mude o nome do arquivo", "feedback"),

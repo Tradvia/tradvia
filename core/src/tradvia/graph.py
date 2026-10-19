@@ -49,6 +49,12 @@ def safe_path(path: str) -> str:
     return p
 
 
+def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
+    repo = getattr(chat, "repo", None)
+    return (repo is not None and repo == getattr(github, "repo", None)
+            and getattr(chat, "issue", None) == number)
+
+
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
                 checkpointer=None):
@@ -130,7 +136,9 @@ def build_graph(github: GitHub, chat: Chat,
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
                 f"Card `{card['id']}` · cost so far: ${card.get('cost', {}).get('usd', 0):.4f}")
         url = github.open_pull_request(branch, f"feat: {card['title']}", body)
-        github.comment(number, f"🤖 Pull request opened: {url}")
+        # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
+        if not _chat_is_issue_thread(chat, github, number):
+            github.comment(number, f"🤖 Pull request opened: {url}")
         chat.post(f"🟢 PR aberto para **{card['id']}**: {url}")
         return {"assignee": "@Agent-Coder", "branch": branch, "pull_request_url": url,
                 "plan": [{**s, "done": True} for s in card["plan"]],
