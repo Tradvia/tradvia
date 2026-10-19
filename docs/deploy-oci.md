@@ -84,8 +84,37 @@ services and checks `https://app.tradvia.org/healthz`.
 |---|---|---|
 | Caddy | ports 80/443 | Automatic HTTPS, security headers |
 | Dashboard | `/runs/` via Caddy | Static files from `dashboard/` |
-| PostgreSQL 16 | internal Docker network only | For the API (next card) |
-| API | Planned | GitHub data proxy with cache and GitHub sign-in (ADR 0004) |
+| PostgreSQL 16 | internal Docker network only | Not used yet; for the API login slice |
+| API | `/api/*` via Caddy, no published port | Read-only GitHub proxy with cache |
+
+## API
+
+The `api` service (`core/src/tradvia/api.py`, Starlette + uvicorn, 256 MB limit)
+removes the 60 requests/hour anonymous limit per visitor IP that the dashboard
+hits when it calls GitHub from the browser. On `app.tradvia.org` the dashboard
+detects `/api/healthz` and uses `/api/github/...`; elsewhere it still calls
+GitHub directly.
+
+- `GET /api/healthz` returns `{"ok": true}`.
+- `GET /api/github/{path}` forwards to `https://api.github.com/{path}` only for
+  `TRADVIA_REPO` (default `Tradvia/tradvia`): `issues`, `issues/{n}/timeline`,
+  `issues/{n}/comments`, `pulls`, `actions/runs` and the `agent.yml` and
+  `claude.yml` workflow runs. Everything else is 404. Only `state`, `per_page`,
+  `page`, `labels`, `sort` and `direction` are forwarded.
+- Cache: in memory, per URL, 60 s TTL (`TRADVIA_API_CACHE_TTL`), 500 entries,
+  revalidated with `ETag`. If GitHub fails, an expired entry is served with
+  `X-Tradvia-Stale: 1`.
+
+Optional secret `TRADVIA_GITHUB_TOKEN`: a fine-grained token with read-only
+access to Issues, Pull requests and Actions on `Tradvia/tradvia`. A maintainer
+wires it into the deploy workflow as `GITHUB_TOKEN` in `.env`. Without it the
+API works at the anonymous GitHub limit. The token is never returned or logged.
+
+| Capability | Status |
+|---|---|
+| Read-only GitHub proxy with cache | Shipped |
+| GitHub login | Planned |
+| Postgres use by the API | Planned |
 
 ## Idle reclamation
 
