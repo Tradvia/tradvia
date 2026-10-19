@@ -12,6 +12,7 @@ license = { file = "LICENSE.md" }
 dependencies = [
   "langgraph>=1.0",
   "litellm>=1.70",
+  "pyyaml>=6",
   "requests>=2.31",
 ]
 
