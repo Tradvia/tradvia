@@ -34,16 +34,29 @@ jobs:
         working-directory: core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tradvia talks to GitHub through the API; no git credentials on disk
+          # for code the executor runs (make check).
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
-      - run: pip install -e .
+      - run: pip install -e ".[dev]"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code && claude --version
       - name: Run the card
+        # Repository root: the executor edits files and git reports root-relative paths.
+        working-directory: ${{ github.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRADVIA_REPO: ${{ github.repository }}
           TRADVIA_BASE_BRANCH: ${{ github.event.repository.default_branch }}
           TRADVIA_CHAT: github
+          # Claude Code (subscription) plans and implements when the token exists;
+          # otherwise the previous behavior (LiteLLM or offline planner, note executor).
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TRADVIA_PLANNER: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'claude-code' || '' }}
+          TRADVIA_EXECUTOR: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && 'claude-code' || 'note' }}
           TRADVIA_PLANNER_MODEL: ${{ vars.TRADVIA_PLANNER_MODEL || 'anthropic/claude-sonnet-5-5' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TRADVIA_OFFLINE: ${{ secrets.ANTHROPIC_API_KEY == '' && '1' || '0' }}
