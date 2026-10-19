@@ -34,6 +34,16 @@ Kanban. Read `README.md` and `docs/adr/` before larger changes.
 - Use Conventional Commits: `feat(core): ...`, `fix(agent): ...`, `docs: ...`.
 - Keep pull requests small and focused on one issue; reference it with `Closes #N`.
 
+## When running as the GitHub Action (@claude)
+
+1. Make the change on your branch and run `make check`. If it fails, fix the
+   code and run it again; never open a pull request with failing checks.
+2. After pushing, open the pull request yourself against `main`:
+   `gh pr create --base main --title "<conventional commit title>" --body "<summary>\n\nCloses #N"`.
+   Say in the body what you changed and paste the last lines of `make check`.
+3. Reply on the issue with the pull request link. Merging is always done by a
+   maintainer.
+
 ## Style
 
 - Python: type hints, small pure functions where possible, no new dependencies
