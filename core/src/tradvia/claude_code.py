@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# Copyright (c) 2026 Anderson dos Santos Dutra
+"""Claude Code CLI (`claude -p`) as planner and executor.
+
+Authenticated by the subscription (CLAUDE_CODE_OAUTH_TOKEN), no ANTHROPIC_API_KEY.
+Tradvia governs (card, human gate, PR); Claude Code edits the working tree.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from typing import Callable
+
+from .llm import _parse_json
+
+PLAN_TOOLS = "Read,Glob,Grep"
+EXEC_TOOLS = "Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test)"
+
+PLAN_PROMPT = """You are @Agent-Architect in a software team. Read the repository as needed
+and propose the smallest change that solves the GitHub issue below. Do not modify anything.
+Answer ONLY with JSON, no markdown fences:
+{{"summary": "<one sentence>",
+ "plan": ["<step>", "..."],
+ "question": "<one short question for the human to approve or adjust the plan>"}}
+
+Issue #{number}: {title}
+
+{body}"""
+
+EXEC_PROMPT = """You are @Agent-Coder. Implement the approved plan below in the working tree.
+Follow CLAUDE.md, run `make check` when done and fix failures. Do not touch .github/, .git/,
+LICENSE.md, CLA.md or CODEOWNERS. Finish with a short summary of what you changed.
+
+Issue #{number}: {title}
+
+{body}
+
+Approved plan:
+{plan}"""
+
+
+def _timeout() -> int:
+    return int(os.getenv("TRADVIA_CLAUDE_TIMEOUT", "900"))
+
+
+def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
+               runner: Callable = subprocess.run, timeout: int | None = None) -> dict:
+    """Run `claude -p` headless and return its JSON result."""
+    cmd = ["claude", "-p", prompt, "--output-format", "json",
+           "--max-turns", str(max_turns), "--allowedTools", allowed_tools]
+    try:
+        proc = runner(cmd, cwd=cwd, capture_output=True, text=True,
+                      timeout=timeout or _timeout())
+    except FileNotFoundError:
+        raise RuntimeError("Claude Code CLI not found: install it "
+                           "(npm i -g @anthropic-ai/claude-code) and put `claude` on PATH") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Claude Code timed out after {timeout or _timeout()}s") from None
+    try:
+        data = json.loads(proc.stdout)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"Claude Code returned invalid JSON (exit {proc.returncode}): "
+                           f"{(proc.stderr or proc.stdout or '')[:300]}") from None
+    if proc.returncode != 0 or data.get("is_error"):
+        raise RuntimeError(f"Claude Code failed: {str(data.get('result', ''))[:300]}")
+    return data
+
+
+def _cost(data: dict) -> dict:
+    return {"usd": float(data.get("total_cost_usd") or 0.0), "tokens_in": 0, "tokens_out": 0,
+            "duration_s": round((data.get("duration_ms") or 0) / 1000, 3)}
+
+
+def claude_code_plan(title: str, body: str, number: int, runner: Callable = subprocess.run,
+                     cwd: str = ".") -> dict:
+    """Same signature and return shape as `architect_plan`, minus the single-file fields."""
+    data = run_claude(PLAN_PROMPT.format(number=number, title=title, body=body), cwd,
+                      PLAN_TOOLS, max_turns=10, runner=runner)
+    try:
+        plan = _parse_json(data.get("result", ""))
+    except ValueError as e:
+        raise ValueError(f"Claude Code plan is not valid JSON: {e}") from None
+    steps = plan.get("plan")
+    if not (isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps)):
+        raise ValueError("Claude Code plan is missing a non-empty 'plan' list of strings")
+    if not isinstance(plan.get("question"), str) or not plan["question"]:
+        raise ValueError("Claude Code plan is missing 'question'")
+    plan.setdefault("summary", "")
+    plan["_cost"] = _cost(data)
+    return plan
+
+
+def changed_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
+    """Paths changed in the working tree (renames report both old and new path)."""
+    out = runner(["git", "status", "--porcelain", "-z", "-uall"], cwd=cwd,
+                 capture_output=True, text=True).stdout or ""
+    entries, files, i = out.split("\0"), [], 0
+    while i < len(entries):
+        e = entries[i]
+        i += 1
+        if len(e) < 4:
+            continue
+        files.append(e[3:])
+        if e[0] in "RC" and i < len(entries):  # next entry is the original path
+            files.append(entries[i])
+            i += 1
+    return files
+
+
+class ClaudeCodeExecutor:
+    def __init__(self, runner: Callable = subprocess.run, max_turns: int = 30):
+        self.runner, self.max_turns = runner, max_turns
+
+    def execute(self, card: dict, cwd: str = ".") -> dict:
+        steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
+        prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
+                                    body=card.get("description", ""), plan=steps)
+        data = run_claude(prompt, cwd, EXEC_TOOLS, self.max_turns, self.runner)
+        cost = _cost(data)
+        return {"changed_files": changed_files(cwd, self.runner), "cost_usd": cost["usd"],
+                "duration_s": cost["duration_s"], "summary": str(data.get("result", "")).strip()}

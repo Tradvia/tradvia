@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from pathlib import Path
 from typing import Callable
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -57,7 +58,7 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
-                checkpointer=None):
+                checkpointer=None, executor=None, cwd: str = "."):
     def start_work(card: Card) -> dict:
         number = card["source"]["issue_number"]
         issue = github.get_issue(number)
@@ -84,8 +85,8 @@ def build_graph(github: GitHub, chat: Chat,
         return {
             "assignee": "@Agent-Architect",
             "plan": [{"id": i + 1, "title": s, "done": False} for i, s in enumerate(p.get("plan", []))],
-            "file_path": safe_path(p["file_path"]),
-            "file_content": p["file_content"],
+            "file_path": safe_path(p["file_path"]) if p.get("file_path") else "",
+            "file_content": p.get("file_content", ""),
             "pending_question": {"asked_by": "@Agent-Architect", "text": p["question"],
                                  "summary": p.get("summary", "")},
             "cost": p.get("_cost", {}),
@@ -94,8 +95,9 @@ def build_graph(github: GitHub, chat: Chat,
     def ask_human(card: Card) -> dict:
         q = card["pending_question"]
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card["plan"])
+        target = f"Arquivo: `{card['file_path']}`\n" if card.get("file_path") else ""
         text = (f"🟡 **{card['id']} — {card['title']}**\n{q.get('summary', '')}\n{steps}\n"
-                f"Arquivo: `{card['file_path']}`\n\n❓ {q['text']}\n"
+                f"{target}\n❓ {q['text']}\n"
                 f"Responda **Aprovado**, **Rejeitado** ou escreva um ajuste.")
         message_id = chat.post(text)
         return {"pending_question": {**q, "channel": getattr(chat, "name", "chat").lower(),
@@ -129,18 +131,60 @@ def build_graph(github: GitHub, chat: Chat,
     def open_pr(card: Card) -> dict:
         number = card["source"]["issue_number"]
         branch = f"tradvia/issue-{number}"
+        files = {card["file_path"]: card["file_content"]} if card.get("file_path") else {}
+        extra, cost = "", {}
+        if not executor and not files:
+            why = ("o plano não trouxe `file_path` e nenhum executor está configurado "
+                   "(use `TRADVIA_EXECUTOR=claude-code` com `TRADVIA_PLANNER=claude-code`)")
+            chat.post(f"🟡 **{card['id']}** — {why}. Nenhum PR foi aberto.")
+            return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
+        if executor:
+            run = executor.execute(card, cwd)
+            blocked = []
+            for f in run["changed_files"]:
+                try:
+                    safe_path(f)
+                except ValueError:
+                    blocked.append(f)
+            cost = {"usd": run["cost_usd"], "duration_s": run["duration_s"]}
+            if blocked or not run["changed_files"]:
+                why = (f"alterou arquivos protegidos: {', '.join('`' + b + '`' for b in blocked)}"
+                       if blocked else "não alterou nenhum arquivo")
+                chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto; "
+                          "revise o working tree e responda com um ajuste.")
+                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
+                                                   "@Agent-Coder", f"Executor {why}")}
+            files, skipped = {}, []
+            for f in run["changed_files"]:
+                if not Path(cwd, f).is_file():
+                    continue
+                try:
+                    files[f] = Path(cwd, f).read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    skipped.append(f)
+            if not files:
+                why = "só alterou arquivos binários ou removidos, que não vão para o PR"
+                chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto.")
+                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
+                                                   "@Agent-Coder", f"Executor {why}")}
+            extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
+                     f"Cost: ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s")
+            if skipped:
+                extra += ("\n\nBinary files not included in this PR (add them manually): "
+                          + ", ".join(f"`{b}`" for b in skipped))
         github.create_branch(branch)
-        github.put_file(branch, card["file_path"], card["file_content"],
-                        f"feat: {card['title']} (#{number})")
+        for path, content in files.items():
+            github.put_file(branch, path, content, f"feat: {card['title']} (#{number})")
         body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
-                f"Card `{card['id']}` · cost so far: ${card.get('cost', {}).get('usd', 0):.4f}")
+                f"Card `{card['id']}` · cost so far: "
+                f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}{extra}")
         url = github.open_pull_request(branch, f"feat: {card['title']}", body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
             github.comment(number, f"🤖 Pull request opened: {url}")
         chat.post(f"🟢 PR aberto para **{card['id']}**: {url}")
-        return {"assignee": "@Agent-Coder", "branch": branch, "pull_request_url": url,
+        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "pull_request_url": url,
                 "plan": [{**s, "done": True} for s in card["plan"]],
                 **transition(card["status"], "IN_REVIEW_PR", "@Agent-Coder", "Pull request opened")}
 
