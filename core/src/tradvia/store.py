@@ -208,13 +208,13 @@ class PgStore:
     @contextmanager
     def _conn(self) -> Iterator[Any]:
         import psycopg
-        from psycopg_pool import PoolError
+        from psycopg_pool import PoolClosed, PoolTimeout
 
         pool = self._get_pool()
         try:
             with pool.connection() as conn:
                 yield conn
-        except (psycopg.OperationalError, PoolError):
+        except (psycopg.OperationalError, PoolTimeout, PoolClosed):
             raise StoreUnavailable("database unavailable") from None
 
     def close(self) -> None:

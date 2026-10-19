@@ -255,6 +255,29 @@ def test_no_store_configured_is_503():
     assert post(c, issue_payload()).status_code == 503
 
 
+def test_pgstore_driver_imports_resolve():
+    """Every name PgStore imports from psycopg/psycopg_pool must exist (even lazy imports)."""
+    import importlib
+
+    pytest.importorskip("psycopg")
+    pytest.importorskip("psycopg_pool")
+    import tradvia.store as store_module
+
+    tree = ast.parse(Path(store_module.__file__).read_text(encoding="utf-8"))
+    checked = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in {
+            "psycopg",
+            "psycopg_pool",
+        }:
+            module = importlib.import_module(node.module)
+            for alias in node.names:
+                assert hasattr(module, alias.name), f"{node.module}.{alias.name} does not exist"
+                checked += 1
+    assert checked >= 3
+    from psycopg_pool import PoolClosed, PoolTimeout  # noqa: F401
+
+
 def test_unreachable_database_does_not_break_the_proxy(monkeypatch):
     pytest.importorskip("psycopg_pool")
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@127.0.0.1:1/none")
