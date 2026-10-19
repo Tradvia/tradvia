@@ -90,3 +90,23 @@ any changed file is under `.github/` or `.git/`, or is `LICENSE.md`, `CLA.md` or
 
 Status: the CLI wiring is **Partial**. Deleted files are not propagated to the PR, and
 the `agent.yml` workflow does not install the CLI yet (a maintainer does that).
+
+## 5. Access policy (`.tradvia.yml`)
+
+Status: **Partial** (ADR 0004, phase 1). See `docs/tradvia.example.yml`.
+
+- The file lives at the repository root and is read **from the default branch only**
+  (`TRADVIA_BASE_BRANCH`), never from the working tree or a pull request branch.
+  Agents cannot edit it. Without the file, the defaults apply.
+- It fails closed: an unknown key or an invalid role makes the card not start, and
+  the reason is posted on the issue. Nothing can be configured below `read`.
+- Roles follow GitHub: `read < triage < write < maintain < admin`, taken from the
+  collaborator permission API (`role_name`). Non-collaborators have no role and bots
+  never count.
+- Defaults: `start_card: triage`, `approve_plan: write`, `mention_assistant: write`,
+  `live_takeover: maintain`, `budget_control: admin`.
+- Enforced today: `approve_plan` (who may answer a plan) and `start_card`, which is
+  checked only when `TRADVIA_ACTOR` (the login that applied the label) is set.
+- Planned: the workflow passing `TRADVIA_ACTOR` (phase 2, done by a maintainer).
+  `mention_assistant`, `live_takeover` and `budget_control` are parsed but not yet
+  enforced by core.
