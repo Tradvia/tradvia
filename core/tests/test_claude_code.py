@@ -153,6 +153,53 @@ def test_executor_skips_binary_files_and_cites_them(tmp_path):
     assert "`img.png`" in gh.prs[0][2]
 
 
+class MessageGitHub(FakeGitHub):
+    def __init__(self, title):
+        super().__init__()
+        self.title, self.messages = title, []
+
+    def get_issue(self, number):
+        return {**super().get_issue(number), "title": self.title}
+
+    def put_file(self, branch, path, content, message):
+        self.messages.append(message)
+        super().put_file(branch, path, content, message)
+
+
+@pytest.mark.parametrize("issue_title, expected", [
+    ("feat(dashboard): add panel", "feat(dashboard): add panel"),
+    ("fix: crash on start", "fix: crash on start"),
+    ("fix(agent)!: breaking", "fix(agent)!: breaking"),
+    ("Add hello world", "feat: Add hello world"),
+    ("feature request", "feat: feature request"),
+])
+def test_pr_title_and_commit_prefix_not_duplicated(tmp_path, issue_title, expected):
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "done", ["docs/a.md"]))
+    gh = MessageGitHub(issue_title)
+    approved_card_app(gh, FakeChat(), ex, tmp_path)
+
+    assert gh.prs[0][1] == expected
+    assert gh.messages == [f"{expected} (#1)"]
+
+
+def test_prompts_leave_git_and_pr_to_tradvia():
+    from tradvia.claude_code import EXEC_PROMPT, PLAN_PROMPT
+
+    for prompt in (PLAN_PROMPT, EXEC_PROMPT):
+        assert "Tradvia creates the branch, makes the commit and opens the pull request" in prompt
+    assert "Do not run git" in EXEC_PROMPT
+
+
+def test_pr_body_labels_cost_as_estimate(tmp_path):
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "did it", ["docs/a.md"]))
+    gh = FakeGitHub()
+    approved_card_app(gh, FakeChat(), ex, tmp_path)
+
+    body = gh.prs[0][2].lower()
+    assert body.count("estimated cost") == 2 and "(api-equivalent)" in body
+    assert "cost: $" not in body
+
+
 def test_defaults_stay_offline_note(monkeypatch):
     monkeypatch.delenv("TRADVIA_PLANNER", raising=False)
     monkeypatch.delenv("TRADVIA_EXECUTOR", raising=False)

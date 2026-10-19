@@ -24,6 +24,7 @@ from .llm import architect_plan
 from .state import Card, transition
 
 MAX_REPLANS = 3
+_CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
 APPROVE = ("aprovado", "aprovo", "approved", "approve", "sim", "yes", "ok", "pode", "lgtm")
 REJECT = ("rejeitado", "rejeito", "reject", "rejected", "nao", "no", "cancela", "cancel")
 
@@ -37,6 +38,11 @@ def classify_reply(text: str) -> str:
     if first in REJECT:
         return "rejected"
     return "feedback"
+
+
+def _conventional_title(title: str) -> str:
+    """Prefix `feat: ` unless the title already starts with a Conventional Commit type."""
+    return title if _CONVENTIONAL.match(title.strip()) else f"feat: {title}"
 
 
 def safe_path(path: str) -> str:
@@ -168,18 +174,18 @@ def build_graph(github: GitHub, chat: Chat,
                 return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
-                     f"Cost: ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s")
+                     f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s")
             if skipped:
                 extra += ("\n\nBinary files not included in this PR (add them manually): "
                           + ", ".join(f"`{b}`" for b in skipped))
         github.create_branch(branch)
         for path, content in files.items():
-            github.put_file(branch, path, content, f"feat: {card['title']} (#{number})")
+            github.put_file(branch, path, content, f"{_conventional_title(card['title'])} (#{number})")
         body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
-                f"Card `{card['id']}` · cost so far: "
+                f"Card `{card['id']}` · estimated cost so far (API-equivalent): "
                 f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}{extra}")
-        url = github.open_pull_request(branch, f"feat: {card['title']}", body)
+        url = github.open_pull_request(branch, _conventional_title(card["title"]), body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
             github.comment(number, f"🤖 Pull request opened: {url}")
