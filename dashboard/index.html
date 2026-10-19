@@ -76,6 +76,7 @@
     <h2 data-i18n="board"></h2>
     <div class="board" id="board"></div>
     <h2 data-i18n="runs"></h2>
+    <label class="sub"><input type="checkbox" id="show-skipped"> <span data-i18n="showSkipped"></span></label>
     <div id="runs"></div>
   </div>
 </main>
@@ -124,9 +125,14 @@ function median(values) {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 
-// Success rate over completed runs, or null when there are none.
+// Completed runs that count for metrics: skipped and cancelled are ignored.
+function isMeasurable(r) {
+  return r.status === "completed" && r.conclusion !== "skipped" && r.conclusion !== "cancelled";
+}
+
+// Success rate over measurable runs, or null when there are none.
 function successRate(runs) {
-  const done = runs.filter((r) => r.status === "completed");
+  const done = runs.filter(isMeasurable);
   if (!done.length) return null;
   return done.filter((r) => r.conclusion === "success").length / done.length;
 }
@@ -141,7 +147,7 @@ function computeKpis(runs, prs) {
   const pr = agentPrStats(prs);
   return {
     successRate: successRate(runs),
-    medianDurationMs: median(runs.filter((r) => r.status === "completed").map(runDuration)),
+    medianDurationMs: median(runs.filter(isMeasurable).map(runDuration)),
     mergedPrs: pr.merged,
     medianPrMs: pr.medianMs,
   };
@@ -156,6 +162,10 @@ function formatDuration(ms) {
   const h = Math.floor(m / 60);
   if (h < 24) return h + "h " + (m % 60) + "m";
   return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function visibleRuns(runs, showSkipped) {
+  return showSkipped ? runs : runs.filter((r) => r.conclusion !== "skipped");
 }
 
 function tagRuns(workflowFile, payload) {
@@ -206,7 +216,7 @@ const I18N = {
     cost: "em breve (registrado pelo executor Claude Code, #13)",
     executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
     duration: "Duração", started: "Início", link: "Run", open: "abrir",
-    inProgress: "em andamento", updated: "Atualizado em",
+    inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -221,7 +231,7 @@ const I18N = {
     cost: "coming soon (recorded by the Claude Code executor, #13)",
     executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
     duration: "Duration", started: "Started", link: "Run", open: "open",
-    inProgress: "in progress", updated: "Updated at",
+    inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -229,7 +239,8 @@ const I18N = {
 
 /* ---------- Rendering ---------- */
 
-let lang = (navigator.language || "").toLowerCase().startsWith("en") ? "en" : "pt";
+let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
+let showSkipped = false;
 let data = null;
 let fetchState = "loading"; // loading | ok | ratelimit | error
 let updatedAt = null;
@@ -345,7 +356,7 @@ function render() {
   if (!content.hidden) {
     renderKpis(computeKpis(data.runs, data.prs));
     renderBoard(data.issues, data.prs, data.agentRuns);
-    renderRuns(data.runs);
+    renderRuns(visibleRuns(data.runs, showSkipped));
   }
 }
 
@@ -365,6 +376,7 @@ async function refresh() {
 
 document.getElementById("refresh").addEventListener("click", refresh);
 document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
+document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
 refresh();
 </script>
 </body>
