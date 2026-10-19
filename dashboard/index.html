@@ -1,0 +1,383 @@
+<!-- SPDX-License-Identifier: FSL-1.1-ALv2 -->
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tradvia · Runs</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d37; --text: #e6e9ee;
+    --muted: #8b95a3; --ok: #3fb68b; --bad: #e5605a; --warn: #d9a441; --info: #5b9bf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--info); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header, main { max-width: 1200px; margin: 0 auto; padding: 12px 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  button, select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); }
+  .msg.error { border-color: var(--bad); color: var(--text); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .kpi .v { font-size: 22px; font-weight: 600; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi.soon .v { font-size: 14px; font-weight: 500; color: var(--muted); }
+  .board { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-height: 80px; }
+  .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; }
+  .card .n { color: var(--muted); font-size: 12px; }
+  .col.AGENT_WORKING h3 { color: var(--info); }
+  .col.WAITING_HUMAN h3 { color: var(--warn); }
+  .col.IN_REVIEW_PR h3 { color: var(--info); }
+  .col.DONE h3 { color: var(--ok); }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.title { white-space: normal; min-width: 180px; overflow-wrap: anywhere; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .run { color: var(--info); } .neutral { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Tradvia · <span data-i18n="title"></span></h1>
+    <div class="sub" id="meta"></div>
+  </div>
+  <div class="controls">
+    <select id="lang" aria-label="Language">
+      <option value="pt">PT-BR</option>
+      <option value="en">EN</option>
+    </select>
+    <button id="refresh" data-i18n="refresh"></button>
+  </div>
+</header>
+<main>
+  <div id="status" class="msg" hidden></div>
+  <div id="content" hidden>
+    <h2 data-i18n="kpis"></h2>
+    <div class="kpis" id="kpis"></div>
+    <h2 data-i18n="board"></h2>
+    <div class="board" id="board"></div>
+    <h2 data-i18n="runs"></h2>
+    <label class="sub"><input type="checkbox" id="show-skipped"> <span data-i18n="showSkipped"></span></label>
+    <div id="runs"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+/* ---------- Pure logic (no DOM) ---------- */
+
+const STATES = ["BACKLOG", "AGENT_WORKING", "WAITING_HUMAN", "IN_REVIEW_PR", "DONE"];
+const EXECUTORS = { "agent.yml": "Tradvia agent", "claude.yml": "Claude Code" };
+
+function isAgentBranch(ref) {
+  return typeof ref === "string" && (ref.startsWith("tradvia/") || ref.startsWith("claude/"));
+}
+
+function branchMatchesIssue(ref, n) {
+  if (typeof ref !== "string") return false;
+  return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
+}
+
+// agentRuns: runs of agent.yml only.
+function deriveCardState(issue, prs, agentRuns) {
+  if (issue.state === "closed") return "DONE";
+  const hasOpenPr = prs.some(
+    (p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number)
+  );
+  if (hasOpenPr) return "IN_REVIEW_PR";
+  const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
+  if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
+  if (mine.some((r) => r.status === "completed")) return "WAITING_HUMAN";
+  return "BACKLOG";
+}
+
+// Duration in ms, or null when timestamps are missing.
+function runDuration(run) {
+  const a = Date.parse(run.run_started_at), b = Date.parse(run.updated_at);
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.max(0, b - a);
+}
+
+function median(values) {
+  const v = values.filter((x) => typeof x === "number" && !isNaN(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+// Completed runs that count for metrics: skipped and cancelled are ignored.
+function isMeasurable(r) {
+  return r.status === "completed" && r.conclusion !== "skipped" && r.conclusion !== "cancelled";
+}
+
+// Success rate over measurable runs, or null when there are none.
+function successRate(runs) {
+  const done = runs.filter(isMeasurable);
+  if (!done.length) return null;
+  return done.filter((r) => r.conclusion === "success").length / done.length;
+}
+
+function agentPrStats(prs) {
+  const merged = prs.filter((p) => p.merged_at && isAgentBranch(p.head && p.head.ref));
+  const times = merged.map((p) => Date.parse(p.merged_at) - Date.parse(p.created_at));
+  return { merged: merged.length, medianMs: median(times) };
+}
+
+function computeKpis(runs, prs) {
+  const pr = agentPrStats(prs);
+  return {
+    successRate: successRate(runs),
+    medianDurationMs: median(runs.filter(isMeasurable).map(runDuration)),
+    mergedPrs: pr.merged,
+    medianPrMs: pr.medianMs,
+  };
+}
+
+function formatDuration(ms) {
+  if (ms == null) return "—";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m " + (s % 60) + "s";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h " + (m % 60) + "m";
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function visibleRuns(runs, showSkipped) {
+  return showSkipped ? runs : runs.filter((r) => r.conclusion !== "skipped");
+}
+
+function tagRuns(workflowFile, payload) {
+  return ((payload && payload.workflow_runs) || []).map((r) => ({ ...r, workflowFile }));
+}
+
+/* ---------- Data layer ---------- */
+
+class RateLimitError extends Error {}
+
+async function getJson(url) {
+  const res = await fetch(url, { headers: { Accept: "application/vnd.github+json" } });
+  if (res.status === 403 || res.status === 429) throw new RateLimitError(url);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function getRepo() {
+  const q = new URLSearchParams(location.search).get("repo");
+  return q && /^[\w.-]+\/[\w.-]+$/.test(q) ? q : "Tradvia/tradvia";
+}
+
+async function loadData(repo) {
+  const base = "https://api.github.com/repos/" + repo;
+  const [agent, claude, issues, prs] = await Promise.all([
+    getJson(base + "/actions/workflows/agent.yml/runs?per_page=30"),
+    getJson(base + "/actions/workflows/claude.yml/runs?per_page=30"),
+    getJson(base + "/issues?labels=agent:ready&state=all&per_page=50"),
+    getJson(base + "/pulls?state=all&per_page=50"),
+  ]);
+  const agentRuns = tagRuns("agent.yml", agent);
+  const runs = agentRuns.concat(tagRuns("claude.yml", claude))
+    .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
+  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs };
+}
+
+/* ---------- i18n ---------- */
+
+const I18N = {
+  pt: {
+    title: "Execuções", refresh: "Atualizar", loading: "Carregando…",
+    kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
+    rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
+    error: "Não foi possível carregar os dados do GitHub.",
+    emptyCards: "Nenhum card", emptyRuns: "Nenhuma execução encontrada.",
+    success: "Taxa de sucesso", medDur: "Duração mediana", mergedPrs: "PRs de agentes mesclados",
+    medPr: "Mediana PR → merge", costTitle: "Custo por card",
+    cost: "em breve (registrado pelo executor Claude Code, #13)",
+    executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
+    duration: "Duração", started: "Início", link: "Run", open: "abrir",
+    inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em",
+    COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
+    COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+  },
+  en: {
+    title: "Runs", refresh: "Refresh", loading: "Loading…",
+    kpis: "KPIs", board: "Cards", runs: "Recent runs",
+    rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
+    error: "Could not load data from GitHub.",
+    emptyCards: "No cards", emptyRuns: "No runs found.",
+    success: "Success rate", medDur: "Median duration", mergedPrs: "Agent PRs merged",
+    medPr: "Median PR → merge", costTitle: "Cost per card",
+    cost: "coming soon (recorded by the Claude Code executor, #13)",
+    executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
+    duration: "Duration", started: "Started", link: "Run", open: "open",
+    inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at",
+    COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
+    COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+  },
+};
+
+/* ---------- Rendering ---------- */
+
+let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
+let showSkipped = false;
+let data = null;
+let fetchState = "loading"; // loading | ok | ratelimit | error
+let updatedAt = null;
+const t = (k) => I18N[lang][k];
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function statusInfo(run) {
+  if (run.status !== "completed") return [run.status === "queued" ? "queued" : t("inProgress"), "run"];
+  const c = run.conclusion || "completed";
+  return [c, c === "success" ? "ok" : c === "failure" || c === "timed_out" ? "bad" : "neutral"];
+}
+
+function renderKpis(k) {
+  const root = document.getElementById("kpis");
+  root.replaceChildren();
+  const items = [
+    [t("success"), k.successRate == null ? "—" : Math.round(k.successRate * 100) + "%"],
+    [t("medDur"), formatDuration(k.medianDurationMs)],
+    [t("mergedPrs"), String(k.mergedPrs)],
+    [t("medPr"), formatDuration(k.medianPrMs)],
+  ];
+  for (const [l, v] of items) {
+    const d = el("div", null, "kpi");
+    d.append(el("div", v, "v"), el("div", l, "l"));
+    root.append(d);
+  }
+  const soon = el("div", null, "kpi soon");
+  soon.append(el("div", t("cost"), "v"), el("div", t("costTitle"), "l"));
+  root.append(soon);
+}
+
+function renderBoard(issues, prs, agentRuns) {
+  const root = document.getElementById("board");
+  root.replaceChildren();
+  const cols = {};
+  for (const s of STATES) {
+    const c = el("div", null, "col " + s);
+    cols[s] = el("div");
+    c.append(el("h3"), cols[s]);
+    root.append(c);
+  }
+  const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
+  for (const issue of issues) {
+    const s = deriveCardState(issue, prs, agentRuns);
+    counts[s]++;
+    const card = el("div", null, "card");
+    const a = el("a", issue.title);
+    a.href = issue.html_url;
+    a.target = "_blank"; a.rel = "noopener";
+    card.append(el("div", "#" + issue.number, "n"), a);
+    cols[s].append(card);
+  }
+  STATES.forEach((s) => {
+    const h = cols[s].parentNode.firstChild;
+    h.append(el("span", t("COL_" + s)), el("span", String(counts[s])));
+    if (!counts[s]) cols[s].append(el("div", t("emptyCards"), "sub"));
+  });
+}
+
+function renderRuns(runs) {
+  const root = document.getElementById("runs");
+  root.replaceChildren();
+  if (!runs.length) { root.append(el("div", t("emptyRuns"), "msg")); return; }
+  const wrap = el("div", null, "tablewrap");
+  const table = el("table");
+  const head = el("tr");
+  ["executor", "runTitle", "event", "status", "duration", "started", "link"]
+    .forEach((k) => head.append(el("th", t(k))));
+  table.append(head);
+  for (const r of runs) {
+    const tr = el("tr");
+    const [st, cls] = statusInfo(r);
+    const dur = r.status === "completed" ? formatDuration(runDuration(r)) : "—";
+    const started = r.run_started_at ? new Date(r.run_started_at).toLocaleString(lang === "pt" ? "pt-BR" : "en-GB") : "—";
+    tr.append(
+      el("td", EXECUTORS[r.workflowFile]),
+      el("td", r.display_title || r.name || "", "title"),
+      el("td", r.event),
+      el("td", st, cls),
+      el("td", dur),
+      el("td", started)
+    );
+    const td = el("td");
+    const a = el("a", t("open"));
+    a.href = r.html_url; a.target = "_blank"; a.rel = "noopener";
+    td.append(a); tr.append(td);
+    table.append(tr);
+  }
+  wrap.append(table);
+  root.append(wrap);
+}
+
+function render() {
+  document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
+  document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
+  document.getElementById("lang").value = lang;
+  document.getElementById("meta").textContent =
+    getRepo() + (updatedAt ? " · " + t("updated") + " " + updatedAt.toLocaleTimeString() : "");
+  const status = document.getElementById("status");
+  const content = document.getElementById("content");
+  document.getElementById("refresh").disabled = fetchState === "loading";
+  status.hidden = fetchState === "ok";
+  status.className = "msg" + (fetchState === "ratelimit" || fetchState === "error" ? " error" : "");
+  status.textContent = fetchState === "loading" ? t("loading")
+    : fetchState === "ratelimit" ? t("rateLimit") : fetchState === "error" ? t("error") : "";
+  content.hidden = fetchState !== "ok" || !data;
+  if (!content.hidden) {
+    renderKpis(computeKpis(data.runs, data.prs));
+    renderBoard(data.issues, data.prs, data.agentRuns);
+    renderRuns(visibleRuns(data.runs, showSkipped));
+  }
+}
+
+async function refresh() {
+  fetchState = "loading";
+  render();
+  try {
+    data = await loadData(getRepo());
+    updatedAt = new Date();
+    fetchState = "ok";
+  } catch (e) {
+    data = null;
+    fetchState = e instanceof RateLimitError ? "ratelimit" : "error";
+  }
+  render();
+}
+
+document.getElementById("refresh").addEventListener("click", refresh);
+document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
+document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
+refresh();
+</script>
+</body>
+</html>
