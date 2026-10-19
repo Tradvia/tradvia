@@ -136,7 +136,8 @@ def test_classify_reply(text, expected):
 
 
 @pytest.mark.parametrize("path", ["/etc/passwd", "../x", ".github/workflows/x.yml",
-                                  "core/LICENSE.md", "CLA.md", ""])
+                                  "core/LICENSE.md", "CLA.md", ".tradvia.yml",
+                                  "sub/.tradvia.yml", ""])
 def test_agents_cannot_touch_sensitive_paths(path):
     with pytest.raises(ValueError):
         safe_path(path)
