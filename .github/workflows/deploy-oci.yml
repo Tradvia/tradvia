@@ -7,7 +7,7 @@ name: deploy-oci
 on:
   push:
     branches: [main]
-    paths: ["infra/oci/**", "dashboard/**", ".github/workflows/deploy-oci.yml"]
+    paths: ["infra/oci/**", "dashboard/**", "core/**", ".github/workflows/deploy-oci.yml"]
   workflow_dispatch:
 
 concurrency:
@@ -48,20 +48,26 @@ jobs:
       - name: Write .env on the host (secrets never stored in the repo)
         env:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.TRADVIA_GITHUB_TOKEN }}
           TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL }}
         run: |
-          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\n' \
-            "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" \
+          # GITHUB_TOKEN is optional (fine-grained, read-only). Empty means anonymous GitHub API limits.
+          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\n' \
+            "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" "$GITHUB_TOKEN" \
             | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
 
       - name: Upload compose, Caddyfile and dashboard
         run: |
           rsync -az --delete infra/oci/compose.yaml infra/oci/Caddyfile oci:/opt/tradvia/
           rsync -az --delete dashboard/ oci:/opt/tradvia/dashboard/
+          # Build context for images built on the host (API service): the package and infra/oci only.
+          ssh oci 'mkdir -p /opt/tradvia/src/core /opt/tradvia/src/infra/oci'
+          rsync -az --delete --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'tests/' core/ oci:/opt/tradvia/src/core/
+          rsync -az --delete infra/oci/ oci:/opt/tradvia/src/infra/oci/
 
       - name: Start services
-        run: ssh oci 'cd /opt/tradvia && docker compose pull -q && docker compose up -d --remove-orphans && docker compose ps'
+        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose ps && docker image prune -f'
 
       - name: Health check
         env:
