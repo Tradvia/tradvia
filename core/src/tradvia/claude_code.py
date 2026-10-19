@@ -34,6 +34,8 @@ Issue #{number}: {title}
 EXEC_PROMPT = """You are @Agent-Coder. Implement the approved plan below in the working tree.
 Follow CLAUDE.md, run `make check` when done and fix failures. Do not touch .github/, .git/,
 LICENSE.md, CLA.md or CODEOWNERS.
+Do not create temporary or verification files in the repository. If you need scratch space,
+use a directory outside the repository (for example a `mktemp -d` path) or write nothing.
 Tradvia creates the branch, makes the commit and opens the pull request. Do not run git
 commands (checkout, commit, push) or open a pull request: only edit the working tree and run
 `make check`. Finish with a short summary of what you changed, with no git or pull request
@@ -98,8 +100,8 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
     return plan
 
 
-def changed_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
-    """Paths changed in the working tree (renames report both old and new path)."""
+def _status_entries(cwd: str, runner: Callable = subprocess.run) -> list[tuple[str, str]]:
+    """(status, path) pairs from `git status` (renames report both old and new path)."""
     out = runner(["git", "status", "--porcelain", "-z", "-uall"], cwd=cwd,
                  capture_output=True, text=True).stdout or ""
     entries, files, i = out.split("\0"), [], 0
@@ -108,11 +110,21 @@ def changed_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
         i += 1
         if len(e) < 4:
             continue
-        files.append(e[3:])
+        files.append((e[:2], e[3:]))
         if e[0] in "RC" and i < len(entries):  # next entry is the original path
-            files.append(entries[i])
+            files.append((e[:2], entries[i]))
             i += 1
     return files
+
+
+def changed_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
+    """Paths changed in the working tree (renames report both old and new path)."""
+    return [path for _, path in _status_entries(cwd, runner)]
+
+
+def untracked_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
+    """Paths git reports as new and untracked (`??`)."""
+    return [path for status, path in _status_entries(cwd, runner) if status == "??"]
 
 
 class ClaudeCodeExecutor:
@@ -125,5 +137,6 @@ class ClaudeCodeExecutor:
                                     body=card.get("description", ""), plan=steps)
         data = run_claude(prompt, cwd, EXEC_TOOLS, self.max_turns, self.runner)
         cost = _cost(data)
-        return {"changed_files": changed_files(cwd, self.runner), "cost_usd": cost["usd"],
+        return {"changed_files": changed_files(cwd, self.runner),
+                "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
                 "duration_s": cost["duration_s"], "summary": str(data.get("result", "")).strip()}
