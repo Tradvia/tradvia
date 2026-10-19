@@ -7,7 +7,7 @@ name: deploy-oci
 on:
   push:
     branches: [main]
-    paths: ["infra/oci/**", "dashboard/**", ".github/workflows/deploy-oci.yml"]
+    paths: ["infra/oci/**", "dashboard/**", "core/**", ".github/workflows/deploy-oci.yml"]
   workflow_dispatch:
 
 concurrency:
@@ -35,27 +35,39 @@ jobs:
           OCI_KNOWN_HOSTS: ${{ secrets.OCI_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$OCI_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          printf '%s\n' "$OCI_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          # Secrets pasted from Windows may carry CRLF line endings, which OpenSSH rejects.
+          printf '%s\n' "$OCI_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$OCI_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -y -f ~/.ssh/deploy > /dev/null; then
+            echo "::error::OCI_SSH_KEY is not a valid private key. Paste the whole file, including the BEGIN and END lines."
+            exit 1
+          fi
+          echo "Deploy key fingerprint: $(ssh-keygen -l -f ~/.ssh/deploy | cut -d' ' -f2)"
           printf 'Host oci\n  HostName %s\n  User ubuntu\n  IdentityFile ~/.ssh/deploy\n  StrictHostKeyChecking yes\n' "$OCI_HOST" > ~/.ssh/config
 
       - name: Write .env on the host (secrets never stored in the repo)
         env:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.TRADVIA_GITHUB_TOKEN }}
           TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL }}
         run: |
-          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\n' \
-            "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" \
+          # GITHUB_TOKEN is optional (fine-grained, read-only). Empty means anonymous GitHub API limits.
+          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\n' \
+            "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" "$GITHUB_TOKEN" \
             | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
 
       - name: Upload compose, Caddyfile and dashboard
         run: |
           rsync -az --delete infra/oci/compose.yaml infra/oci/Caddyfile oci:/opt/tradvia/
           rsync -az --delete dashboard/ oci:/opt/tradvia/dashboard/
+          # Build context for images built on the host (API service): the package and infra/oci only.
+          ssh oci 'mkdir -p /opt/tradvia/src/core /opt/tradvia/src/infra/oci'
+          rsync -az --delete --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'tests/' core/ oci:/opt/tradvia/src/core/
+          rsync -az --delete infra/oci/ oci:/opt/tradvia/src/infra/oci/
 
       - name: Start services
-        run: ssh oci 'cd /opt/tradvia && docker compose pull -q && docker compose up -d --remove-orphans && docker compose ps'
+        run: ssh oci 'cd /opt/tradvia && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans && docker compose ps && docker image prune -f'
 
       - name: Health check
         env:
