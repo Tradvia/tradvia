@@ -82,6 +82,11 @@ With `claude-code` the CLI must be installed and on `PATH`, authenticated with
 `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`); no `ANTHROPIC_API_KEY` is needed.
 `TRADVIA_CLAUDE_TIMEOUT` (seconds, default 900) limits each call.
 
+`TRADVIA_MAX_REPLANS` (positive integer, default 3) limits how many plan adjustments a
+card accepts. At the limit the agent comments on the issue, asks for the description to
+be updated and the card restarted (remove and re-add `agent:ready`), and the card stays
+in `WAITING_HUMAN`.
+
 After approval, Claude Code implements the plan in the current directory (start from a
 clean checkout: every changed file goes into the PR). Tradvia then commits all changed
 files to `tradvia/issue-<n>` and opens the PR with Claude's summary, cost and time. If
