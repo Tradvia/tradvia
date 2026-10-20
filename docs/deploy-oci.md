@@ -166,3 +166,39 @@ Oracle may reclaim an Always Free instance that stays under 20% CPU, network
 and memory for 7 days. The API and workers keep it in use. If needed, upgrade
 the tenancy to Pay As You Go and keep resources inside the free limits: see
 ADR 0005.
+
+## Agent runner on the OCI host (owner)
+
+The `agent` workflow (cards with the `agent:ready` label) can run on the OCI host
+instead of GitHub-hosted runners. `@claude` (`claude.yml`) and every other workflow
+stay on GitHub: they can be triggered by anyone's comment, and code from outside
+contributors must never run on our machine. The agent job only starts on
+`issues: labeled`, which needs triage access.
+
+Status: **In progress**. The host has 1 GB of RAM, so cards run one at a time and
+slower than on GitHub; the runner is capped by systemd (`MemoryHigh=600M`,
+`MemoryMax=900M`) so a heavy card cannot take down Caddy, the API or Postgres.
+It moves to a larger host when capacity allows (ADR 0005).
+
+1. On GitHub: **Settings → Actions → Runners → New self-hosted runner** and copy
+   only the **token** shown in the `./config.sh --token ...` line (valid for one hour).
+   Do not paste it anywhere else.
+2. On the host:
+   ```bash
+   sudo bash /opt/tradvia/src/infra/oci/runner-setup.sh
+   ```
+   Paste the token when asked (input is hidden). The script creates the
+   `gha-runner` user (no sudo, no Docker access), registers the runner with the
+   label `tradvia-oci` and starts it as a service with the memory limits.
+3. Check that the runner shows as **Idle** in **Settings → Actions → Runners**.
+4. Switch the workflow: **Settings → Secrets and variables → Actions → Variables →
+   New repository variable** `TRADVIA_AGENT_RUNS_ON` = `["self-hosted","tradvia-oci"]`.
+   To roll back to GitHub-hosted runners, delete the variable.
+
+Useful commands on the host:
+
+```bash
+systemctl status 'actions.runner.*'             # service state
+journalctl -u 'actions.runner.*' -n 100 --no-pager
+free -m; systemd-cgtop -1 --depth=2 | head -20  # memory use
+```

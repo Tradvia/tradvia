@@ -74,3 +74,8 @@ a separate decision.
 - Free limits change without notice, as Oracle did in June 2026 (A1 went from
   4 OCPU / 24 GB to 2 OCPU / 12 GB). The setup stays small enough to fit and
   is documented so it can move elsewhere.
+- The agent workflow can run on the host as a self-hosted runner (repository
+  variable `TRADVIA_AGENT_RUNS_ON`). Only `issues: labeled` triggers it, so only
+  people with triage access can run code there; `@claude` and all other workflows
+  stay on GitHub-hosted runners. On the 1 GB host it is capped by systemd memory
+  limits and runs one card at a time.
