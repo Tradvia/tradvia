@@ -173,6 +173,12 @@ order; dependencies come from "Depende do #N" lines in the issues):
 docker compose exec api tradvia backlog set --project owner/repo 44 45 46 ...
 ```
 
+**Without SSH access to the host**, run both from GitHub: Actions → `deploy-oci` →
+**Run workflow**, tick `backfill` and/or fill `backlog` with the issue numbers in
+order (for example `44 50 45 46`). After the deploy and health check, the workflow
+runs them on the host for `TRADVIA_REPO` and prints `tradvia backlog show`.
+`backlog` accepts only digits and spaces.
+
 It reads issues labelled `agent:ready`, their comments, pull requests and the
 runs of `agent.yml` and `claude.yml`. `GITHUB_TOKEN` is optional (it raises the
 GitHub rate limit). On the 1 GB host the database is capped at 256 MB
