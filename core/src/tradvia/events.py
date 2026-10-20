@@ -31,6 +31,8 @@ def issue_record(issue: dict[str, Any]) -> dict[str, Any]:
         "created_at": issue.get("created_at"),
         "updated_at": issue["updated_at"],
         "closed_at": issue.get("closed_at"),
+        "html_url": issue.get("html_url"),
+        "state_reason": issue.get("state_reason"),
     }
 
 
@@ -58,6 +60,7 @@ def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
         "created_at": pr.get("created_at"),
         "updated_at": pr["updated_at"],
         "merged_at": pr.get("merged_at"),
+        "html_url": pr.get("html_url"),
     }
 
 
@@ -80,6 +83,10 @@ def workflow_run_record(run: dict[str, Any]) -> dict[str, Any]:
         "started_at": run.get("run_started_at") or run.get("created_at"),
         "ended_at": run.get("updated_at") if status == "completed" else None,
         "updated_at": run["updated_at"],
+        "name": run.get("name"),
+        "display_title": run.get("display_title"),
+        "html_url": run.get("html_url"),
+        "run_attempt": run.get("run_attempt"),
     }
 
 

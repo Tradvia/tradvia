@@ -54,5 +54,13 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     updated_at   timestamptz NOT NULL
 );
 
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS html_url text;
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS state_reason text;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS html_url text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS name text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS display_title text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS html_url text;
+ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS run_attempt integer;
+
 CREATE INDEX IF NOT EXISTS comments_issue_idx ON comments (issue_number);
 CREATE INDEX IF NOT EXISTS workflow_runs_issue_idx ON workflow_runs (issue_number);

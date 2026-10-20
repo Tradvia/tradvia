@@ -359,6 +359,9 @@ function getRepo() {
 
 // Same-origin read-only proxy on app.tradvia.org; GitHub direct elsewhere.
 let GH_API = "https://api.github.com";
+// Postgres-backed read API; set only when /api/store/health reports data.
+let STORE_API = null;
+let dataSource = "GitHub";
 
 async function detectApi() {
   if (location.hostname !== "app.tradvia.org") return;
@@ -366,6 +369,26 @@ async function detectApi() {
     const r = await fetch("/api/healthz", { headers: { Accept: "application/json" } });
     if (r.status === 200 && (await r.json()).ok === true) GH_API = "/api/github";
   } catch (e) { /* keep calling GitHub directly */ }
+  if (GH_API !== "/api/github") return;
+  try {
+    const r = await fetch("/api/store/health", { headers: { Accept: "application/json" } });
+    if (r.status === 200) {
+      const h = await r.json();
+      if (h.ok === true && h.issues > 0) STORE_API = "/api/store";
+    }
+  } catch (e) { /* keep using the proxy */ }
+}
+
+// Dashboard reads: from the store when available; any failed call is retried through GH_API.
+async function getData(repo, path) {
+  if (STORE_API) {
+    try {
+      return await getJson(STORE_API + "/repos/" + repo + path);
+    } catch (e) {
+      dataSource = "GitHub";
+    }
+  }
+  return getJson(GH_API + "/repos/" + repo + path);
 }
 
 // In-memory cache of timelines (promises): one request per card.
@@ -383,12 +406,12 @@ function loadTimeline(repo, n) {
 }
 
 async function loadData(repo) {
-  const base = GH_API + "/repos/" + repo;
+  dataSource = STORE_API ? "Tradvia" : "GitHub";
   const [agent, claude, issues, prs] = await Promise.all([
-    getJson(base + "/actions/workflows/agent.yml/runs?per_page=30"),
-    getJson(base + "/actions/workflows/claude.yml/runs?per_page=30"),
-    getJson(base + "/issues?labels=agent:ready&state=all&per_page=50"),
-    getJson(base + "/pulls?state=all&per_page=50"),
+    getData(repo, "/actions/workflows/agent.yml/runs?per_page=30"),
+    getData(repo, "/actions/workflows/claude.yml/runs?per_page=30"),
+    getData(repo, "/issues?labels=agent:ready&state=all&per_page=50"),
+    getData(repo, "/pulls?state=all&per_page=50"),
   ]);
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
@@ -417,7 +440,7 @@ const I18N = {
     activityError: "Não foi possível carregar a atividade.",
     executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
     duration: "Duração", started: "Início", link: "Run", open: "abrir",
-    inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em",
+    inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em", dataFrom: "dados",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -439,7 +462,7 @@ const I18N = {
     activityError: "Could not load activity.",
     executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
     duration: "Duration", started: "Started", link: "Run", open: "open",
-    inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at",
+    inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at", dataFrom: "data",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -677,7 +700,8 @@ function render() {
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
   document.getElementById("lang").value = lang;
   document.getElementById("meta").textContent =
-    getRepo() + (updatedAt ? " · " + t("updated") + " " + updatedAt.toLocaleTimeString() : "");
+    getRepo() + (updatedAt ? " · " + t("updated") + " " + updatedAt.toLocaleTimeString() : "") +
+    (updatedAt ? " · " + t("dataFrom") + ": " + dataSource : "");
   const status = document.getElementById("status");
   const content = document.getElementById("content");
   document.getElementById("refresh").disabled = fetchState === "loading";

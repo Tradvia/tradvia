@@ -114,7 +114,8 @@ API works at the anonymous GitHub limit. The token is never returned or logged.
 |---|---|
 | Read-only GitHub proxy with cache | Shipped |
 | GitHub webhooks stored in Postgres | Shipped |
-| Dashboard reading from the database | Planned |
+| Dashboard reading issues, PRs and runs from the database | Shipped |
+| Card timeline from the database | Planned |
 | GitHub login | Planned |
 | Actions from the dashboard | Planned |
 
@@ -122,7 +123,8 @@ API works at the anonymous GitHub limit. The token is never returned or logged.
 
 GitHub notifies the API of every change and the API stores it in the Postgres
 that already runs on the host (tables are created on first connection from
-`core/src/tradvia/schema.sql`). The dashboard does not read from it yet.
+`core/src/tradvia/schema.sql`). The dashboard reads issues, PRs and runs from it
+(see "Dashboard reads" below); only a card's timeline still goes to GitHub.
 
 Owner step, in the repository: **Settings > Webhooks > Add webhook**.
 
@@ -159,6 +161,23 @@ runs of `agent.yml` and `claude.yml`. `GITHUB_TOKEN` is optional (it raises the
 GitHub rate limit). On the 1 GB host the database is capped at 256 MB
 (`shared_buffers=64MB`, `max_connections=20`) and the API uses at most 3
 connections.
+
+**After deploying the slice that adds the dashboard reads, run the backfill
+again.** The schema gains columns (`html_url`, `state_reason`, `name`,
+`display_title`, `run_attempt`) that rows stored earlier do not have; the backfill
+refills them.
+
+## Dashboard reads
+
+`GET /api/store/repos/{repo}/...` returns the same JSON as GitHub for the fields
+the dashboard uses, from Postgres. Only `TRADVIA_REPO` and these paths exist (404
+otherwise): `issues` (`labels`, `state`), `pulls` (`state`) and
+`actions/workflows/{agent|claude}.yml/runs`. `per_page` is capped at 100 and
+results are newest first. Comment bodies are never exposed. If the database is
+down or has no data for the resource yet, the answer is 503 and the dashboard
+retries that call through `/api/github/...`. On `app.tradvia.org` the dashboard
+uses the database only when `/api/store/health` reports `issues > 0`, and shows
+"dados: Tradvia" or "dados: GitHub" in the header.
 
 ## Idle reclamation
 

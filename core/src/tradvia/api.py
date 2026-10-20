@@ -13,7 +13,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from typing import Callable, NamedTuple
+from typing import Any, Callable, NamedTuple
 from urllib.parse import urlencode
 
 import requests
@@ -31,6 +31,8 @@ MAX_WEBHOOK_BYTES = 1024 * 1024
 ALLOWED_PARAMS = ("state", "per_page", "page", "labels", "sort", "direction")
 MAX_ENTRIES = 500
 UPSTREAM_TIMEOUT = 10
+DEFAULT_PER_PAGE = 30
+MAX_PER_PAGE = 100
 
 
 class Upstream(NamedTuple):
@@ -80,6 +82,63 @@ def _not_found() -> JSONResponse:
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
+def _store_unavailable() -> JSONResponse:
+    return JSONResponse({"error": "storage unavailable"}, status_code=503)
+
+
+def per_page(value: str | None) -> int:
+    try:
+        n = int(value) if value else DEFAULT_PER_PAGE
+    except ValueError:
+        n = DEFAULT_PER_PAGE
+    return max(1, min(n, MAX_PER_PAGE))
+
+
+def github_issue(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "number": r["number"],
+        "title": r["title"],
+        "state": r["state"],
+        "state_reason": r.get("state_reason"),
+        "labels": [{"name": n} for n in r["labels"]],
+        "user": {"login": r.get("author")},
+        "html_url": r.get("html_url"),
+        "created_at": r.get("created_at"),
+        "updated_at": r["updated_at"],
+        "closed_at": r.get("closed_at"),
+    }
+
+
+def github_pull(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "number": r["number"],
+        "title": r["title"],
+        "state": r["state"],
+        "merged_at": r.get("merged_at"),
+        "head": {"ref": r.get("branch")},
+        "user": {"login": r.get("author")},
+        "html_url": r.get("html_url"),
+        "created_at": r.get("created_at"),
+        "updated_at": r["updated_at"],
+    }
+
+
+def github_run(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "name": r.get("name"),
+        "display_title": r.get("display_title"),
+        "event": r.get("event"),
+        "status": r.get("status"),
+        "conclusion": r.get("conclusion"),
+        "html_url": r.get("html_url"),
+        "run_attempt": r.get("run_attempt"),
+        "run_started_at": r.get("started_at"),
+        "created_at": r.get("started_at"),
+        "updated_at": r["updated_at"],
+    }
+
+
 def create_app(
     fetch: Fetch | None = None,
     now: Callable[[], float] = time.monotonic,
@@ -94,6 +153,10 @@ def create_app(
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
     patterns = allowed_patterns(repo)
+    store_route = re.compile(
+        rf"repos/{re.escape(repo)}/(?:(?P<kind>issues|pulls)"
+        r"|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
+    )
     cache: OrderedDict[str, _Entry] = OrderedDict()
 
     def path_allowed(path: str) -> bool:
@@ -232,10 +295,46 @@ def create_app(
             return JSONResponse({"ok": False}, status_code=503)
         return JSONResponse({"ok": True, **stats})
 
+    async def store_read(request: Request) -> Response:
+        path = "repos/" + request.path_params["path"]
+        raw = request.scope.get("raw_path") or b""
+        m = store_route.fullmatch(path)
+        if b"%" in raw.split(b"?", 1)[0] or not path_allowed(path) or not m:
+            return _not_found()
+        resource = m.group("kind") or "runs"
+        workflow = m.group("wf")
+        params = request.query_params
+        limit = per_page(params.get("per_page"))
+        state = params.get("state", "open")
+        if state not in ("open", "closed", "all"):
+            return JSONResponse({"error": "invalid state"}, status_code=400)
+        if db is None:
+            return _store_unavailable()
+        try:
+            if resource == "issues":
+                labels = [s for s in params.get("labels", "").split(",") if s]
+                rows = await run_in_threadpool(db.list_issues, labels, state, limit)
+            elif resource == "pulls":
+                rows = await run_in_threadpool(db.list_pulls, state, limit)
+            else:
+                rows = await run_in_threadpool(db.list_runs, workflow + ".yml", limit)
+        except Exception:  # StoreUnavailable or anything else: the panel falls back
+            return _store_unavailable()
+        if rows is None:
+            return _store_unavailable()
+        if resource == "issues":
+            return JSONResponse([github_issue(r) for r in rows])
+        if resource == "pulls":
+            return JSONResponse([github_pull(r) for r in rows])
+        return JSONResponse(
+            {"total_count": len(rows), "workflow_runs": [github_run(r) for r in rows]}
+        )
+
     return Starlette(
         routes=[
             Route("/api/webhooks/github", webhook, methods=["POST"]),
             Route("/api/store/health", store_health, methods=["GET"]),
+            Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
             Route("/api/github/{path:path}", github, methods=["GET"]),
         ]
