@@ -47,6 +47,9 @@ def test_parse_depends():
     assert bl.parse_depends("Depende do #45 e #44\nx") == [44, 45]
     assert bl.parse_depends("Intro\n- Depends on #7, #3\nDEPENDS ON #3") == [3, 7]
     assert bl.parse_depends("Fala do #9 sem dependência") == []
+    # Mid-paragraph, as the issues are written; refs after the sentence end are not deps.
+    assert bl.parse_depends("Pré-requisito do painel. Depende do #44 (escopo). Ver #48.") == [44]
+    assert bl.parse_depends("Needs login; depends on #45 and #46\nSee #9") == [45, 46]
     assert bl.parse_depends(None) == []
 
 
@@ -126,3 +129,17 @@ def test_cli_set_and_show(capsys):
 def test_cli_rejects_bad_numbers(numbers):
     with pytest.raises(SystemExit):
         bl.main(store=MemoryStore(), get=lambda p, q: {}, argv=["set", "--project", REPO, *numbers])
+
+
+def test_cli_set_stores_issues_that_were_not_backfilled():
+    store = MemoryStore()
+    issue = {"id": 9045, "number": 45, "title": "login", "state": "open",
+             "labels": [{"name": "triage"}], "user": {"login": "a"},
+             "created_at": "2026-10-19T00:00:00Z", "updated_at": "2026-10-19T00:00:00Z",
+             "closed_at": None, "html_url": "https://github.com/x/45", "state_reason": None,
+             "body": "Login. Depende do #44."}
+    bl.main(store=store, get=lambda path, params: issue, argv=["set", "--project", REPO, "45"])
+    pid = store.ensure_project(REPO)
+    assert [(i["number"], i["title"]) for i in store.list_issues(pid, [], "all", 10)] == [
+        (45, "login")]
+    assert store.list_backlog(pid)[0]["depends_on"] == [44]

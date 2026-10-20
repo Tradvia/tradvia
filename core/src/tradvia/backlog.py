@@ -8,17 +8,19 @@ import os
 import re
 from typing import Any
 
+from .events import issue_record
 from .store import Store
 
 READY_LABEL = "agent:ready"
 BRANCH_PREFIX = "tradvia/issue-"
 
-_DEPENDS_LINE = re.compile(r"^\W*(?:depende\s+d[oae]s?|depends\s+on)\b(.*)$", re.I | re.M)
+# "Depende do #44 (…)" anywhere in the body, up to the end of that sentence or line.
+_DEPENDS_LINE = re.compile(r"\b(?:depende\s+d[oae]s?|depends\s+on)\b([^.\n]*)", re.I)
 _ISSUE_REF = re.compile(r"#(\d+)")
 
 
 def parse_depends(body: str | None) -> list[int]:
-    """Issue numbers from lines such as "Depende do #44, #45" or "Depends on #44"."""
+    """Issue numbers from phrases such as "Depende do #44, #45" or "Depends on #44"."""
     found: set[int] = set()
     for line in _DEPENDS_LINE.findall(body or ""):
         found.update(int(n) for n in _ISSUE_REF.findall(line))
@@ -96,6 +98,10 @@ def main(
         items = []
         for n in numbers:
             issue = get(f"repos/{repo}/issues/{n}", {})
+            if "id" in issue and "pull_request" not in issue:
+                # Cards not started yet are not backfilled (only `agent:ready` issues are),
+                # so store each one here: the backlog needs its title, state and labels.
+                store.upsert_issue(project_id, issue_record(issue))
             items.append({"issue_number": n, "depends_on": parse_depends(issue.get("body")),
                           "note": ""})
         store.set_backlog(project_id, items)
