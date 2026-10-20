@@ -184,7 +184,15 @@ def build_graph(github: GitHub, chat: Chat,
             chat.post(f"🟡 **{card['id']}** — {why}. Nenhum PR foi aberto.")
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
-            run = executor.execute(card, cwd)
+            try:
+                run = executor.execute(card, cwd)
+            except RuntimeError as e:
+                why = str(e)[:300]
+                chat.post(f"🔴 **{card['id']}** — a implementação falhou: {why}. Nenhum PR foi "
+                          "aberto. Ajuste a descrição da issue (ou divida o card) e reinicie-o "
+                          "removendo e adicionando o rótulo `agent:ready`.")
+                return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                                  f"Executor failed: {why}")
             scratch = [f for f in run.get("untracked_files", [])
                        if is_scratch(f) and not _is_protected(f)]
             changed = [f for f in run["changed_files"] if f not in scratch]
