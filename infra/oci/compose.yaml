@@ -30,6 +30,7 @@ services:
     mem_limit: 256m
     environment:
       TRADVIA_REPO: ${TRADVIA_REPO:-Tradvia/tradvia}
+      TRADVIA_PROJECTS: ${TRADVIA_PROJECTS:-${TRADVIA_REPO:-Tradvia/tradvia}}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       DATABASE_URL: postgresql://tradvia:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/tradvia
       TRADVIA_WEBHOOK_SECRET: ${TRADVIA_WEBHOOK_SECRET:-}
