@@ -80,13 +80,14 @@ def gh_run(n, workflow="agent.yml"):
 @pytest.fixture
 def store():
     s = MemoryStore()
+    pid = s.ensure_project(REPO)
     for i in (gh_issue(1), gh_issue(2, state="closed"), gh_issue(3, labels=("bug",))):
-        s.upsert_issue(issue_record(i))
-    s.upsert_pull_request(pull_request_record(gh_pr(1)))
-    s.upsert_pull_request(pull_request_record(gh_pr(2, "closed", "2026-01-03T00:00:00Z")))
-    s.upsert_workflow_run(workflow_run_record(gh_run(1)))
-    s.upsert_workflow_run(workflow_run_record(gh_run(2)))
-    s.upsert_workflow_run(workflow_run_record(gh_run(3, "claude.yml")))
+        s.upsert_issue(pid, issue_record(i))
+    s.upsert_pull_request(pid, pull_request_record(gh_pr(1)))
+    s.upsert_pull_request(pid, pull_request_record(gh_pr(2, "closed", "2026-01-03T00:00:00Z")))
+    s.upsert_workflow_run(pid, workflow_run_record(gh_run(1)))
+    s.upsert_workflow_run(pid, workflow_run_record(gh_run(2)))
+    s.upsert_workflow_run(pid, workflow_run_record(gh_run(3, "claude.yml")))
     for op in payload_ops(
         "issue_comment",
         {
@@ -95,7 +96,7 @@ def store():
                         "updated_at": "2026-01-05T00:00:00Z"},
         },
     ):
-        getattr(s, {"issue": "upsert_issue", "comment": "upsert_comment"}[op[0]])(op[1])
+        getattr(s, {"issue": "upsert_issue", "comment": "upsert_comment"}[op[0]])(pid, op[1])
     return s
 
 
@@ -182,7 +183,9 @@ def test_runs_format_and_order(client):
 
 def test_runs_valid_filter_without_match_has_zero_total(store):
     only_agent = MemoryStore()
-    only_agent.upsert_workflow_run(workflow_run_record(gh_run(1)))
+    only_agent.upsert_workflow_run(
+        only_agent.ensure_project(REPO), workflow_run_record(gh_run(1))
+    )
     c = TestClient(create_app(store=only_agent))
     r = c.get(f"{BASE}/actions/workflows/claude.yml/runs")
     assert r.status_code == 200
@@ -191,7 +194,9 @@ def test_runs_valid_filter_without_match_has_zero_total(store):
 
 def test_per_page_is_limited(client, store):
     for n in range(10, 130):
-        store.upsert_pull_request(pull_request_record({**gh_pr(1), "id": 5000 + n, "number": n}))
+        store.upsert_pull_request(
+            1, pull_request_record({**gh_pr(1), "id": 5000 + n, "number": n})
+        )
     assert len(client.get(f"{BASE}/pulls?state=all&per_page=1000").json()) == 100
     assert len(client.get(f"{BASE}/pulls?state=all&per_page=0").json()) == 1
     assert len(client.get(f"{BASE}/pulls?state=all&per_page=abc").json()) == 30
@@ -270,7 +275,8 @@ def test_backfill_fills_new_fields_and_refills_old_rows():
     old = workflow_run_record(gh_run(1))
     for k in ("name", "display_title", "html_url", "run_attempt"):
         old[k] = None
-    s.upsert_workflow_run(old)
+    pid = s.ensure_project(REPO)
+    s.upsert_workflow_run(pid, old)
 
     def get(path, params):
         page = params["page"]
@@ -283,8 +289,8 @@ def test_backfill_fills_new_fields_and_refills_old_rows():
         return {"workflow_runs": []}
 
     bf.backfill(s, get, REPO)
-    assert s.tables["issues"][1001]["html_url"].endswith("/issues/1")
-    assert s.tables["pull_requests"][2001]["html_url"].endswith("/pull/1")
-    run = s.tables["workflow_runs"][3001]
+    assert s.tables["issues"][(pid, 1001)]["html_url"].endswith("/issues/1")
+    assert s.tables["pull_requests"][(pid, 2001)]["html_url"].endswith("/pull/1")
+    run = s.tables["workflow_runs"][(pid, 3001)]
     assert run["name"] == "Agent" and run["run_attempt"] == 2
     assert run["display_title"] == "Run 1" and run["html_url"]
