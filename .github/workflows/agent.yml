@@ -27,7 +27,11 @@ jobs:
   agent:
     name: agent
     if: github.event.label.name == 'agent:ready'
-    runs-on: ubuntu-latest
+    # GitHub-hosted by default. Set the repository variable TRADVIA_AGENT_RUNS_ON to
+    # ["self-hosted","tradvia-oci"] to run on the OCI host (docs/deploy-oci.md);
+    # delete it to roll back. Only `issues: labeled` triggers this job, which needs
+    # triage access, so outside contributors cannot run code on the self-hosted runner.
+    runs-on: ${{ fromJSON(vars.TRADVIA_AGENT_RUNS_ON || '"ubuntu-latest"') }}
     timeout-minutes: 75
     defaults:
       run:
@@ -42,6 +46,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
+      # Node in the tool cache, so `npm install -g` works without root on a self-hosted runner.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code && claude --version
       - name: Run the card
