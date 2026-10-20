@@ -269,7 +269,7 @@ function classifyTimelineEvent(ev, ctx) {
   }
   if (login === "claude[bot]") return mk("claude", "claude[bot]", "claudeCode", { status: firstLine(body) });
   if (!isBotUser(ev.user) && c.planSeen) {
-    return mk("reply", login, "noEffect");
+    return mk("reply", login, "noEffect", c.prSeen ? { afterPr: true } : null);
   }
   return null;
 }
@@ -282,7 +282,7 @@ function buildTimeline(events) {
   const sorted = (Array.isArray(events) ? events : [])
     .filter((e) => e && (e.created_at || e.submitted_at))
     .sort((a, b) => Date.parse(a.created_at || a.submitted_at) - Date.parse(b.created_at || b.submitted_at));
-  const ctx = { planSeen: false };
+  const ctx = { planSeen: false, prSeen: false };
   const out = [];
   let pending = []; // human replies since the last plan, in order
   const settle = (textKey) => {
@@ -292,9 +292,9 @@ function buildTimeline(events) {
   for (const ev of sorted) {
     const item = classifyTimelineEvent(ev, ctx);
     if (!item) continue;
-    if (item.kind === "reply") pending.push(item);
-    else if (item.kind === "pr") settle("approved");
-    else if (item.kind === "plan") { settle("adjust"); ctx.planSeen = true; }
+    if (item.kind === "reply") { if (!(item.detail && item.detail.afterPr)) pending.push(item); }
+    else if (item.kind === "pr") { settle("approved"); ctx.prSeen = true; }
+    else if (item.kind === "plan") { settle("adjust"); ctx.planSeen = true; ctx.prSeen = false; }
     else if (item.kind === "rejection") { settle("rejected"); continue; }
     out.push(item);
   }

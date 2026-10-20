@@ -10,6 +10,7 @@ Card statuses follow core/contracts/card-state.v1.json.
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from fnmatch import fnmatch
@@ -24,10 +25,19 @@ from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .state import Card, transition
 
-MAX_REPLANS = 3
+MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
 _CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
 APPROVE = ("aprovado", "aprovo", "approved", "approve", "sim", "yes", "ok", "pode", "lgtm")
 REJECT = ("rejeitado", "rejeito", "reject", "rejected", "nao", "no", "cancela", "cancel")
+
+
+def max_replans() -> int:
+    """Plan adjustments allowed per card: TRADVIA_MAX_REPLANS (positive integer), default 3."""
+    try:
+        n = int(os.environ.get("TRADVIA_MAX_REPLANS", ""))
+    except ValueError:
+        return MAX_REPLANS
+    return n if n > 0 else MAX_REPLANS
 
 
 def classify_reply(text: str) -> str:
@@ -146,9 +156,22 @@ def build_graph(github: GitHub, chat: Chat,
         last = card["approvals"][-1]["decision"]
         if last == "approved":
             return "open_pr"
-        if last == "feedback" and sum(a["decision"] == "feedback" for a in card["approvals"]) < MAX_REPLANS:
-            return "plan"
+        if last == "feedback":
+            if sum(a["decision"] == "feedback" for a in card["approvals"]) < max_replans():
+                return "plan"
+            return "replan_limit"
         return END
+
+    def replan_limit(card: Card) -> dict:
+        number = card["source"]["issue_number"]
+        text = (f"Limite de {max_replans()} ajustes atingido. Atualize a descrição da issue com o "
+                "que foi combinado e reinicie o card (remova e adicione o rótulo `agent:ready`).")
+        # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
+        if _chat_is_issue_thread(chat, github, number):
+            chat.post(text)
+        else:
+            github.comment(number, text)
+        return transition(card["status"], "WAITING_HUMAN", "@Agent-Architect", "Replan limit reached")
 
     def open_pr(card: Card) -> dict:
         number = card["source"]["issue_number"]
@@ -228,10 +251,12 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_node("ask_human", ask_human)
     g.add_node("wait_human", wait_human)
     g.add_node("open_pr", open_pr)
+    g.add_node("replan_limit", replan_limit)
     g.add_edge(START, "start_work")
     g.add_edge("start_work", "plan")
     g.add_edge("plan", "ask_human")
     g.add_edge("ask_human", "wait_human")
-    g.add_conditional_edges("wait_human", route_after_reply, ["open_pr", "plan", END])
+    g.add_conditional_edges("wait_human", route_after_reply, ["open_pr", "plan", "replan_limit", END])
     g.add_edge("open_pr", END)
+    g.add_edge("replan_limit", END)
     return g.compile(checkpointer=checkpointer or MemorySaver())
