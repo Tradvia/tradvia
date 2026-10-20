@@ -6,6 +6,7 @@ Everything is an upsert by GitHub id, so running it again does not duplicate.
 
 from __future__ import annotations
 
+import argparse
 import os
 from typing import Any, Callable
 
@@ -49,10 +50,11 @@ def _pages(get: GetJson, path: str, params: dict[str, str], key: str | None = No
 
 
 def backfill(store: Store, get: GetJson, repo: str) -> dict[str, int]:
+    project_id = store.ensure_project(repo)
     counts = {"issues": 0, "comments": 0, "pull_requests": 0, "workflow_runs": 0}
 
     def write(kind: str, rec: dict[str, Any], counter: str) -> None:
-        getattr(store, UPSERT_METHODS[kind])(rec)
+        getattr(store, UPSERT_METHODS[kind])(project_id, rec)
         counts[counter] += 1
 
     issues = _pages(get, f"repos/{repo}/issues", {"labels": "agent:ready", "state": "all"})
@@ -74,8 +76,22 @@ def backfill(store: Store, get: GetJson, repo: str) -> dict[str, int]:
     return counts
 
 
-def main(store: Store | None = None, get: GetJson | None = None) -> dict[str, int]:
-    repo = os.getenv("TRADVIA_REPO", "Tradvia/tradvia")
+def main(
+    store: Store | None = None,
+    get: GetJson | None = None,
+    argv: list[str] | None = None,
+) -> dict[str, int]:
+    from .api import registered_projects
+
+    parser = argparse.ArgumentParser(prog="tradvia backfill")
+    parser.add_argument(
+        "--project",
+        default=os.getenv("TRADVIA_REPO", "Tradvia/tradvia"),
+        help="repository owner/repo (must be listed in TRADVIA_PROJECTS)",
+    )
+    repo = parser.parse_args(argv if argv is not None else []).project
+    if repo not in registered_projects():
+        raise SystemExit(f"Project {repo!r} is not listed in TRADVIA_PROJECTS")
     if store is None:
         from .store import PgStore
 

@@ -68,6 +68,7 @@
     <div class="sub" id="meta"></div>
   </div>
   <div class="controls">
+    <select id="project" aria-label="Project" hidden></select>
     <select id="lang" aria-label="Language">
       <option value="pt">PT-BR</option>
       <option value="en">EN</option>
@@ -362,6 +363,40 @@ let GH_API = "https://api.github.com";
 // Postgres-backed read API; set only when /api/store/health reports data.
 let STORE_API = null;
 let dataSource = "GitHub";
+let storeHealth = null;
+
+// The store is used for a project only when it already holds issues for it.
+function selectStore(repo) {
+  const h = storeHealth;
+  let hasData = false;
+  if (h && h.ok === true) {
+    hasData = h.projects ? ((h.projects[repo] || {}).issues > 0) : h.issues > 0;
+  }
+  STORE_API = hasData ? "/api/store" : null;
+}
+
+// Fills the header selector from /api/projects; without it the selector stays hidden.
+async function loadProjects() {
+  const sel = document.getElementById("project");
+  try {
+    const r = await fetch("/api/projects", { headers: { Accept: "application/json" } });
+    if (r.status !== 200) return;
+    const list = await r.json();
+    if (!Array.isArray(list) || !list.length) return;
+    const current = getRepo();
+    const repos = list.map((p) => p.external_id);
+    if (!repos.includes(current)) repos.push(current);
+    sel.textContent = "";
+    for (const repo of repos) {
+      const o = document.createElement("option");
+      o.value = repo;
+      o.textContent = repo;
+      sel.appendChild(o);
+    }
+    sel.value = current;
+    sel.hidden = false;
+  } catch (e) { /* no project API: keep the current behavior */ }
+}
 
 async function detectApi() {
   if (location.hostname !== "app.tradvia.org") return;
@@ -374,9 +409,10 @@ async function detectApi() {
     const r = await fetch("/api/store/health", { headers: { Accept: "application/json" } });
     if (r.status === 200) {
       const h = await r.json();
-      if (h.ok === true && h.issues > 0) STORE_API = "/api/store";
+      if (h.ok === true) storeHealth = h;
     }
   } catch (e) { /* keep using the proxy */ }
+  await loadProjects();
 }
 
 // Dashboard reads: from the store when available; any failed call is retried through GH_API.
@@ -725,6 +761,7 @@ async function refresh() {
   fetchState = "loading";
   render();
   try {
+    selectStore(getRepo());
     data = await loadData(getRepo());
     updatedAt = new Date();
     fetchState = "ok";
@@ -737,6 +774,12 @@ async function refresh() {
 }
 
 document.getElementById("refresh").addEventListener("click", refresh);
+document.getElementById("project").addEventListener("change", (e) => {
+  const url = new URL(location.href);
+  url.searchParams.set("repo", e.target.value);
+  history.replaceState(null, "", url);
+  refresh();
+});
 document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
 detectApi().then(refresh);

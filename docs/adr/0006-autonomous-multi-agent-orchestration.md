@@ -39,8 +39,13 @@ memory retrieval and skill routing never cross projects unless the project
 explicitly opts into a shared resource; viewing and interaction follow the
 project's access level (ADR 0004); and a project can be exported or deleted as a
 whole. Status: **Partial**. Configuration (`.tradvia.yml`) and access are already
-per repository; the store and API still assume a single repository
-(`TRADVIA_REPO`).
+per repository.
+
+Phase 0 status: project as unit of scope = **Shipped** (storage/API); memory,
+skills and per-project policies = **Planned** (next phases). The store, the
+webhook, the backfill, `/api/store/...` and `GET /api/projects` are scoped by
+`project_id` (see `docs/projects.md`). Visibility by role depends on login
+(ADR 0004): for now every registered project is public.
 
 Tradvia evolves into an event-driven orchestrator with shared state and dynamic
 discovery of capabilities, organised in four areas. Each item has a real status

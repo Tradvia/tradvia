@@ -113,7 +113,7 @@ def main() -> None:
         from .backfill import main as backfill_main
 
         load_dotenv()
-        backfill_main()
+        backfill_main(argv=sys.argv[2:])
         return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")

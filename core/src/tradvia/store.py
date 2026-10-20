@@ -4,6 +4,9 @@
 `Store` is the small interface; `MemoryStore` serves tests and `PgStore` serves
 production (psycopg 3, a pool of at most 3 connections). Every SQL statement is
 a constant with `%s`/`%(name)s` parameters: never build SQL from strings.
+
+The project is the unit of scope (ADR 0006, phase 0): every method takes the
+`project_id` first and every query on a stored table filters by it.
 """
 
 from __future__ import annotations
@@ -39,88 +42,147 @@ class StoreUnavailable(Exception):
 
 
 class Store(Protocol):
-    def apply(self, delivery_id: str, event: str, ops: list[Op]) -> bool:
+    """Every method takes the project id first: nothing is stored or read without one."""
+
+    def ensure_project(self, external_id: str) -> int:
+        """Id of the `github_repo` project `owner/repo`, created if missing."""
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        """`[{id, slug, kind, external_id}]` of every known project."""
+
+    def apply(self, project_id: int, delivery_id: str, event: str, ops: list[Op]) -> bool:
         """Record the delivery and all upserts in ONE transaction.
 
         Returns False (writing nothing) if the delivery was already recorded.
         If any upsert raises, nothing is written, not even the delivery id.
         """
 
-    def upsert_issue(self, rec: dict[str, Any]) -> None: ...
-    def upsert_comment(self, rec: dict[str, Any]) -> None: ...
-    def upsert_pull_request(self, rec: dict[str, Any]) -> None: ...
-    def upsert_workflow_run(self, rec: dict[str, Any]) -> None: ...
-    def stats(self) -> dict[str, Any]:
-        """`{"issues": n, "runs": n, "last_delivery": iso | None}`."""
+    def upsert_issue(self, project_id: int, rec: dict[str, Any]) -> None: ...
+    def upsert_comment(self, project_id: int, rec: dict[str, Any]) -> None: ...
+    def upsert_pull_request(self, project_id: int, rec: dict[str, Any]) -> None: ...
+    def upsert_workflow_run(self, project_id: int, rec: dict[str, Any]) -> None: ...
+    def stats(self, project_id: int) -> dict[str, Any]:
+        """`{"issues": n, "runs": n, "pull_requests": n, "last_delivery": iso | None}`."""
+
+    def project_stats(self) -> dict[str, dict[str, Any]]:
+        """`stats` of every project, keyed by `external_id`."""
 
     # Reads for the dashboard: newest first, timestamps as ISO strings. None means
-    # the table is empty (data not loaded yet); [] means the filter matched nothing.
-    # Comments are never read.
+    # the project has no rows in the table (data not loaded yet); [] means the filter
+    # matched nothing. Comments are never read.
     def list_issues(
-        self, labels: list[str], state: str, limit: int
+        self, project_id: int, labels: list[str], state: str, limit: int
     ) -> list[dict[str, Any]] | None: ...
-    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None: ...
-    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None: ...
+    def list_pulls(
+        self, project_id: int, state: str, limit: int
+    ) -> list[dict[str, Any]] | None: ...
+    def list_runs(
+        self, project_id: int, workflow: str, limit: int
+    ) -> list[dict[str, Any]] | None: ...
+
+
+def project_slug(external_id: str) -> str:
+    return external_id.replace("/", "-").lower()
 
 
 class MemoryStore:
+    """Tables and deliveries are keyed by `(project_id, id)`, like the Postgres primary keys."""
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.deliveries: dict[str, dict[str, Any]] = {}
-        self.tables: dict[str, dict[Any, dict[str, Any]]] = {t: {} for t in _TABLES.values()}
+        self.projects: dict[str, dict[str, Any]] = {}
+        self.deliveries: dict[tuple[int, str], dict[str, Any]] = {}
+        self.tables: dict[str, dict[tuple[int, Any], dict[str, Any]]] = {
+            t: {} for t in _TABLES.values()
+        }
         self._clock = 0
 
-    def _upsert(self, kind: str, rec: dict[str, Any]) -> None:
-        table = self.tables[_TABLES[kind]]
-        old = table.get(rec["id"])
-        if old is None or rec["updated_at"] >= old["updated_at"]:
-            table[rec["id"]] = copy.deepcopy(rec)
-
-    def apply(self, delivery_id: str, event: str, ops: list[Op]) -> bool:
+    def ensure_project(self, external_id: str) -> int:
         with self._lock:
-            if delivery_id in self.deliveries:
+            row = self.projects.get(external_id)
+            if row is None:
+                row = {
+                    "id": len(self.projects) + 1,
+                    "slug": project_slug(external_id),
+                    "kind": "github_repo",
+                    "external_id": external_id,
+                }
+                self.projects[external_id] = row
+            return row["id"]
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(p) for p in self.projects.values()]
+
+    def _upsert(self, project_id: int, kind: str, rec: dict[str, Any]) -> None:
+        table = self.tables[_TABLES[kind]]
+        key = (project_id, rec["id"])
+        old = table.get(key)
+        if old is None or rec["updated_at"] >= old["updated_at"]:
+            table[key] = copy.deepcopy(rec)
+
+    def apply(self, project_id: int, delivery_id: str, event: str, ops: list[Op]) -> bool:
+        with self._lock:
+            if (project_id, delivery_id) in self.deliveries:
                 return False
             backup = (copy.deepcopy(self.deliveries), copy.deepcopy(self.tables))
             try:
                 self._clock += 1
-                self.deliveries[delivery_id] = {"event": event, "seq": self._clock}
+                self.deliveries[(project_id, delivery_id)] = {"event": event, "seq": self._clock}
                 for kind, rec in ops:
-                    self._upsert(kind, rec)
+                    self._upsert(project_id, kind, rec)
             except BaseException:
                 self.deliveries, self.tables = backup
                 raise
             return True
 
-    def upsert_issue(self, rec: dict[str, Any]) -> None:
+    def upsert_issue(self, project_id: int, rec: dict[str, Any]) -> None:
         with self._lock:
-            self._upsert("issue", rec)
+            self._upsert(project_id, "issue", rec)
 
-    def upsert_comment(self, rec: dict[str, Any]) -> None:
+    def upsert_comment(self, project_id: int, rec: dict[str, Any]) -> None:
         with self._lock:
-            self._upsert("comment", rec)
+            self._upsert(project_id, "comment", rec)
 
-    def upsert_pull_request(self, rec: dict[str, Any]) -> None:
+    def upsert_pull_request(self, project_id: int, rec: dict[str, Any]) -> None:
         with self._lock:
-            self._upsert("pull_request", rec)
+            self._upsert(project_id, "pull_request", rec)
 
-    def upsert_workflow_run(self, rec: dict[str, Any]) -> None:
+    def upsert_workflow_run(self, project_id: int, rec: dict[str, Any]) -> None:
         with self._lock:
-            self._upsert("workflow_run", rec)
+            self._upsert(project_id, "workflow_run", rec)
 
-    def stats(self) -> dict[str, Any]:
+    def _count(self, project_id: int, table: str) -> int:
+        return sum(1 for pid, _ in self.tables[table] if pid == project_id)
+
+    def _stats(self, project_id: int) -> dict[str, Any]:
+        mine = [k for k in self.deliveries if k[0] == project_id]
+        last = max(mine, key=lambda k: self.deliveries[k]["seq"], default=None)
+        return {
+            "issues": self._count(project_id, "issues"),
+            "runs": self._count(project_id, "workflow_runs"),
+            "pull_requests": self._count(project_id, "pull_requests"),
+            "last_delivery": last[1] if last else None,
+        }
+
+    def stats(self, project_id: int) -> dict[str, Any]:
         with self._lock:
-            last = max(self.deliveries, key=lambda d: self.deliveries[d]["seq"], default=None)
-            return {
-                "issues": len(self.tables["issues"]),
-                "runs": len(self.tables["workflow_runs"]),
-                "last_delivery": last,
-            }
+            return self._stats(project_id)
+
+    def project_stats(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {ext: self._stats(p["id"]) for ext, p in self.projects.items()}
 
     def _list(
-        self, table: str, keep: Callable[[dict[str, Any]], bool], sort_key: str, limit: int
+        self,
+        project_id: int,
+        table: str,
+        keep: Callable[[dict[str, Any]], bool],
+        sort_key: str,
+        limit: int,
     ) -> list[dict[str, Any]] | None:
         with self._lock:
-            rows = list(self.tables[table].values())
+            rows = [r for (pid, _), r in self.tables[table].items() if pid == project_id]
             if not rows:
                 return None
             rows = [copy.deepcopy(r) for r in rows if keep(r)]
@@ -128,22 +190,32 @@ class MemoryStore:
         return rows[:limit]
 
     def list_issues(
-        self, labels: list[str], state: str, limit: int
+        self, project_id: int, labels: list[str], state: str, limit: int
     ) -> list[dict[str, Any]] | None:
         return self._list(
+            project_id,
             "issues",
             lambda r: set(labels) <= set(r["labels"]) and state in ("all", r["state"]),
             "created_at",
             limit,
         )
 
-    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None:
+    def list_pulls(
+        self, project_id: int, state: str, limit: int
+    ) -> list[dict[str, Any]] | None:
         return self._list(
-            "pull_requests", lambda r: state in ("all", r["state"]), "created_at", limit
+            project_id,
+            "pull_requests",
+            lambda r: state in ("all", r["state"]),
+            "created_at",
+            limit,
         )
 
-    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None:
+    def list_runs(
+        self, project_id: int, workflow: str, limit: int
+    ) -> list[dict[str, Any]] | None:
         return self._list(
+            project_id,
             "workflow_runs",
             lambda r: r["workflow"].rsplit("/", 1)[-1] == workflow,
             "started_at",
@@ -152,17 +224,18 @@ class MemoryStore:
 
 
 _INSERT_DELIVERY = (
-    "INSERT INTO deliveries (id, event) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING"
+    "INSERT INTO deliveries (project_id, id, event) VALUES (%s, %s, %s) "
+    "ON CONFLICT (project_id, id) DO NOTHING"
 )
 
 _UPSERT_SQL = {
     "issue": """
-        INSERT INTO issues (id, number, title, state, labels, author,
+        INSERT INTO issues (project_id, id, number, title, state, labels, author,
                             created_at, updated_at, closed_at, html_url, state_reason)
-        VALUES (%(id)s, %(number)s, %(title)s, %(state)s, %(labels)s, %(author)s,
-                %(created_at)s, %(updated_at)s, %(closed_at)s, %(html_url)s,
+        VALUES (%(project_id)s, %(id)s, %(number)s, %(title)s, %(state)s, %(labels)s,
+                %(author)s, %(created_at)s, %(updated_at)s, %(closed_at)s, %(html_url)s,
                 %(state_reason)s)
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT (project_id, id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             labels = excluded.labels, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
@@ -171,22 +244,23 @@ _UPSERT_SQL = {
         WHERE excluded.updated_at >= issues.updated_at
     """,
     "comment": """
-        INSERT INTO comments (id, issue_number, author, author_association, body,
-                              created_at, updated_at)
-        VALUES (%(id)s, %(issue_number)s, %(author)s, %(author_association)s, %(body)s,
-                %(created_at)s, %(updated_at)s)
-        ON CONFLICT (id) DO UPDATE SET
+        INSERT INTO comments (project_id, id, issue_number, author, author_association,
+                              body, created_at, updated_at)
+        VALUES (%(project_id)s, %(id)s, %(issue_number)s, %(author)s,
+                %(author_association)s, %(body)s, %(created_at)s, %(updated_at)s)
+        ON CONFLICT (project_id, id) DO UPDATE SET
             issue_number = excluded.issue_number, author = excluded.author,
             author_association = excluded.author_association, body = excluded.body,
             created_at = excluded.created_at, updated_at = excluded.updated_at
         WHERE excluded.updated_at >= comments.updated_at
     """,
     "pull_request": """
-        INSERT INTO pull_requests (id, number, title, state, merged, branch, author,
-                                   created_at, updated_at, merged_at, html_url)
-        VALUES (%(id)s, %(number)s, %(title)s, %(state)s, %(merged)s, %(branch)s,
-                %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s, %(html_url)s)
-        ON CONFLICT (id) DO UPDATE SET
+        INSERT INTO pull_requests (project_id, id, number, title, state, merged, branch,
+                                   author, created_at, updated_at, merged_at, html_url)
+        VALUES (%(project_id)s, %(id)s, %(number)s, %(title)s, %(state)s, %(merged)s,
+                %(branch)s, %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s,
+                %(html_url)s)
+        ON CONFLICT (project_id, id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             merged = excluded.merged, branch = excluded.branch, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
@@ -194,13 +268,13 @@ _UPSERT_SQL = {
         WHERE excluded.updated_at >= pull_requests.updated_at
     """,
     "workflow_run": """
-        INSERT INTO workflow_runs (id, workflow, event, status, conclusion,
+        INSERT INTO workflow_runs (project_id, id, workflow, event, status, conclusion,
                                    issue_number, started_at, ended_at, updated_at,
                                    name, display_title, html_url, run_attempt)
-        VALUES (%(id)s, %(workflow)s, %(event)s, %(status)s, %(conclusion)s,
-                %(issue_number)s, %(started_at)s, %(ended_at)s, %(updated_at)s,
-                %(name)s, %(display_title)s, %(html_url)s, %(run_attempt)s)
-        ON CONFLICT (id) DO UPDATE SET
+        VALUES (%(project_id)s, %(id)s, %(workflow)s, %(event)s, %(status)s,
+                %(conclusion)s, %(issue_number)s, %(started_at)s, %(ended_at)s,
+                %(updated_at)s, %(name)s, %(display_title)s, %(html_url)s, %(run_attempt)s)
+        ON CONFLICT (project_id, id) DO UPDATE SET
             workflow = excluded.workflow, event = excluded.event,
             status = excluded.status, conclusion = excluded.conclusion,
             issue_number = excluded.issue_number, started_at = excluded.started_at,
@@ -212,36 +286,59 @@ _UPSERT_SQL = {
 }
 
 _STATS_SQL = """
-    SELECT (SELECT count(*) FROM issues),
-           (SELECT count(*) FROM workflow_runs),
-           (SELECT max(received_at) FROM deliveries)
+    SELECT (SELECT count(*) FROM issues WHERE project_id = %(project_id)s),
+           (SELECT count(*) FROM workflow_runs WHERE project_id = %(project_id)s),
+           (SELECT count(*) FROM pull_requests WHERE project_id = %(project_id)s),
+           (SELECT max(received_at) FROM deliveries WHERE project_id = %(project_id)s)
 """
+_PROJECT_STATS_SQL = """
+    SELECT p.external_id,
+           (SELECT count(*) FROM issues t WHERE t.project_id = p.id),
+           (SELECT count(*) FROM workflow_runs t WHERE t.project_id = p.id),
+           (SELECT count(*) FROM pull_requests t WHERE t.project_id = p.id),
+           (SELECT max(received_at) FROM deliveries t WHERE t.project_id = p.id)
+    FROM projects p
+    ORDER BY p.external_id
+"""
+_ENSURE_PROJECT_SQL = """
+    INSERT INTO projects (slug, kind, external_id)
+    VALUES (%s, 'github_repo', %s)
+    ON CONFLICT (external_id) DO UPDATE SET external_id = excluded.external_id
+    RETURNING id
+"""
+_LIST_PROJECTS_SQL = "SELECT id, slug, kind, external_id FROM projects ORDER BY external_id"
 
 _LIST_ISSUES_SQL = """
     SELECT number, title, state, state_reason, labels, author, html_url,
            created_at, updated_at, closed_at
     FROM issues
-    WHERE labels @> %(labels)s::text[] AND (%(state)s = 'all' OR state = %(state)s)
+    WHERE project_id = %(project_id)s AND labels @> %(labels)s::text[]
+          AND (%(state)s = 'all' OR state = %(state)s)
     ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
 """
 _LIST_PULLS_SQL = """
     SELECT number, title, state, merged_at, branch, author, html_url,
            created_at, updated_at
     FROM pull_requests
-    WHERE %(state)s = 'all' OR state = %(state)s
+    WHERE project_id = %(project_id)s AND (%(state)s = 'all' OR state = %(state)s)
     ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
 """
 _LIST_RUNS_SQL = """
     SELECT id, name, display_title, event, status, conclusion, html_url, run_attempt,
            started_at, updated_at
     FROM workflow_runs
-    WHERE right(workflow, length(%(workflow)s) + 1) = '/' || %(workflow)s
+    WHERE project_id = %(project_id)s
+          AND right(workflow, length(%(workflow)s) + 1) = '/' || %(workflow)s
     ORDER BY started_at DESC NULLS LAST, id DESC LIMIT %(limit)s
 """
 _NOT_EMPTY_SQL = {
-    "issues": "SELECT EXISTS (SELECT 1 FROM issues)",
-    "pull_requests": "SELECT EXISTS (SELECT 1 FROM pull_requests)",
-    "workflow_runs": "SELECT EXISTS (SELECT 1 FROM workflow_runs)",
+    "issues": "SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = %(project_id)s)",
+    "pull_requests": (
+        "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE project_id = %(project_id)s)"
+    ),
+    "workflow_runs": (
+        "SELECT EXISTS (SELECT 1 FROM workflow_runs WHERE project_id = %(project_id)s)"
+    ),
 }
 
 
@@ -306,44 +403,67 @@ class PgStore:
                 self._pool.close()
                 self._pool = None
 
-    def apply(self, delivery_id: str, event: str, ops: list[Op]) -> bool:
+    def ensure_project(self, external_id: str) -> int:
         with self._conn() as conn:
             with conn.transaction():
-                cur = conn.execute(_INSERT_DELIVERY, (delivery_id, event))
+                row = conn.execute(
+                    _ENSURE_PROJECT_SQL, (project_slug(external_id), external_id)
+                ).fetchone()
+        return row[0]
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_PROJECTS_SQL).fetchall()
+        return [{"id": r[0], "slug": r[1], "kind": r[2], "external_id": r[3]} for r in rows]
+
+    def apply(self, project_id: int, delivery_id: str, event: str, ops: list[Op]) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_INSERT_DELIVERY, (project_id, delivery_id, event))
                 if cur.rowcount == 0:
                     return False
                 for kind, rec in ops:
-                    conn.execute(_UPSERT_SQL[kind], rec)
+                    conn.execute(_UPSERT_SQL[kind], {**rec, "project_id": project_id})
         return True
 
-    def _upsert(self, kind: str, rec: dict[str, Any]) -> None:
+    def _upsert(self, project_id: int, kind: str, rec: dict[str, Any]) -> None:
         with self._conn() as conn:
             with conn.transaction():
-                conn.execute(_UPSERT_SQL[kind], rec)
+                conn.execute(_UPSERT_SQL[kind], {**rec, "project_id": project_id})
 
-    def upsert_issue(self, rec: dict[str, Any]) -> None:
-        self._upsert("issue", rec)
+    def upsert_issue(self, project_id: int, rec: dict[str, Any]) -> None:
+        self._upsert(project_id, "issue", rec)
 
-    def upsert_comment(self, rec: dict[str, Any]) -> None:
-        self._upsert("comment", rec)
+    def upsert_comment(self, project_id: int, rec: dict[str, Any]) -> None:
+        self._upsert(project_id, "comment", rec)
 
-    def upsert_pull_request(self, rec: dict[str, Any]) -> None:
-        self._upsert("pull_request", rec)
+    def upsert_pull_request(self, project_id: int, rec: dict[str, Any]) -> None:
+        self._upsert(project_id, "pull_request", rec)
 
-    def upsert_workflow_run(self, rec: dict[str, Any]) -> None:
-        self._upsert("workflow_run", rec)
+    def upsert_workflow_run(self, project_id: int, rec: dict[str, Any]) -> None:
+        self._upsert(project_id, "workflow_run", rec)
 
-    def stats(self) -> dict[str, Any]:
+    @staticmethod
+    def _stats_row(row: Any) -> dict[str, Any]:
+        last = row[3].isoformat() if row[3] else None
+        return {"issues": row[0], "runs": row[1], "pull_requests": row[2], "last_delivery": last}
+
+    def stats(self, project_id: int) -> dict[str, Any]:
         with self._conn() as conn:
-            row = conn.execute(_STATS_SQL).fetchone()
-        last = row[2].isoformat() if row[2] else None
-        return {"issues": row[0], "runs": row[1], "last_delivery": last}
+            row = conn.execute(_STATS_SQL, {"project_id": project_id}).fetchone()
+        return self._stats_row(row)
+
+    def project_stats(self) -> dict[str, dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_PROJECT_STATS_SQL).fetchall()
+        return {r[0]: self._stats_row(r[1:]) for r in rows}
 
     def _query(
-        self, table: str, sql: str, params: dict[str, Any]
+        self, project_id: int, table: str, sql: str, params: dict[str, Any]
     ) -> list[dict[str, Any]] | None:
+        params = {**params, "project_id": project_id}
         with self._conn() as conn:
-            if not conn.execute(_NOT_EMPTY_SQL[table]).fetchone()[0]:
+            if not conn.execute(_NOT_EMPTY_SQL[table], params).fetchone()[0]:
                 return None
             cur = conn.execute(sql, params)
             names = [c.name for c in cur.description]
@@ -351,15 +471,19 @@ class PgStore:
         return [{n: _iso(v) for n, v in zip(names, row)} for row in rows]
 
     def list_issues(
-        self, labels: list[str], state: str, limit: int
+        self, project_id: int, labels: list[str], state: str, limit: int
     ) -> list[dict[str, Any]] | None:
         params = {"labels": labels, "state": state, "limit": limit}
-        return self._query("issues", _LIST_ISSUES_SQL, params)
+        return self._query(project_id, "issues", _LIST_ISSUES_SQL, params)
 
-    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None:
+    def list_pulls(
+        self, project_id: int, state: str, limit: int
+    ) -> list[dict[str, Any]] | None:
         params = {"state": state, "limit": limit}
-        return self._query("pull_requests", _LIST_PULLS_SQL, params)
+        return self._query(project_id, "pull_requests", _LIST_PULLS_SQL, params)
 
-    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None:
+    def list_runs(
+        self, project_id: int, workflow: str, limit: int
+    ) -> list[dict[str, Any]] | None:
         params = {"workflow": workflow, "limit": limit}
-        return self._query("workflow_runs", _LIST_RUNS_SQL, params)
+        return self._query(project_id, "workflow_runs", _LIST_RUNS_SQL, params)
