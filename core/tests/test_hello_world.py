@@ -5,7 +5,7 @@
 import pytest
 from langgraph.types import Command
 
-from tradvia.graph import build_graph, classify_reply, safe_path
+from tradvia.graph import build_graph, classify_reply, max_replans, safe_path
 from tradvia.llm import _offline_plan
 from tradvia.state import InvalidTransition, transition
 
@@ -103,6 +103,57 @@ def test_feedback_replans_and_asks_again():
     result = app.invoke(Command(resume={"text": "ok", "by": "anderson"}), config)
     assert result["status"] == "IN_REVIEW_PR"
     assert result["cost"]["usd"] == pytest.approx(0.02)  # two planner calls
+
+
+def run_feedback_rounds(gh, chat, rounds):
+    calls = []
+
+    def counting_planner(title, body, number):
+        calls.append(number)
+        return planner(title, body, number)
+
+    app = build_graph(gh, chat, planner=counting_planner)
+    _, config = start(app)
+    result = None
+    for i in range(rounds):
+        result = app.invoke(Command(resume={"text": f"ajuste {i}", "by": "anderson"}), config)
+    return result, calls
+
+
+def test_replan_limit_announces_and_stops():
+    gh, chat = FakeGitHub(), FakeChat()
+    result, calls = run_feedback_rounds(gh, chat, 3)
+    assert len(calls) == 3  # no fourth plan
+    assert "__interrupt__" not in result
+    assert result["status"] == "WAITING_HUMAN"
+    assert result["pending_question"] is None
+    assert gh.prs == [] and gh.branches == []
+    assert len(gh.comments) == 1
+    assert "Limite de 3 ajustes atingido" in gh.comments[0][1]
+    assert "agent:ready" in gh.comments[0][1]
+
+
+def test_replan_limit_in_issue_thread_posts_once():
+    gh, chat = FakeGitHub(), FakeChat()
+    gh.repo = chat.repo = "Tradvia/tradvia"
+    chat.issue = 1
+    run_feedback_rounds(gh, chat, 3)
+    assert gh.comments == []
+    assert sum("Limite de 3 ajustes" in m for m in chat.messages) == 1
+
+
+def test_replan_limit_is_configurable(monkeypatch):
+    monkeypatch.setenv("TRADVIA_MAX_REPLANS", "1")
+    gh, chat = FakeGitHub(), FakeChat()
+    result, calls = run_feedback_rounds(gh, chat, 1)
+    assert len(calls) == 1 and result["status"] == "WAITING_HUMAN"
+    assert "Limite de 1 ajustes atingido" in gh.comments[0][1]
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-2", ""])
+def test_invalid_replan_limit_falls_back_to_default(monkeypatch, value):
+    monkeypatch.setenv("TRADVIA_MAX_REPLANS", value)
+    assert max_replans() == 3
 
 
 def approve_and_open_pr(gh, chat):
