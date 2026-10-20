@@ -68,6 +68,10 @@ cd core && TRADVIA_OFFLINE=1 tradvia --issue <n> --chat github
 Use your **fork** as `TRADVIA_REPO` while experimenting, so test branches and
 pull requests stay out of the main repository.
 
+`TRADVIA_PROJECTS` (comma separated, default `TRADVIA_REPO`) lists the repositories
+the API stores and serves. Load one with `tradvia backfill --project owner/repo`
+(it must be in `TRADVIA_PROJECTS`). See `docs/projects.md`.
+
 ## 4. Claude Code CLI as planner and executor (subscription, no API key)
 
 Two optional environment variables choose who plans and who implements. Both
