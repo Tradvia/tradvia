@@ -23,6 +23,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from .backlog import backlog_status
 from .events import HANDLED_EVENTS, PayloadError, payload_ops
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
@@ -173,7 +174,7 @@ def create_app(
     patterns = allowed_patterns(repos)
     store_route = re.compile(
         r"repos/(?P<repo>" + "|".join(re.escape(r) for r in repos) + r")/"
-        r"(?:(?P<kind>issues|pulls)|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
+        r"(?:(?P<kind>issues|pulls|backlog)|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
     )
     cache: OrderedDict[str, _Entry] = OrderedDict()
     project_ids: dict[str, int] = {}
@@ -185,13 +186,35 @@ def create_app(
             project_ids[repo] = db.ensure_project(repo)
         return project_ids[repo]
 
-    def path_allowed(path: str) -> bool:
+    def safe_path(path: str) -> bool:
         if not path or "%" in path or "\\" in path:
             return False
-        segments = path.split("/")
-        if any(s in ("", ".", "..") for s in segments):
-            return False
-        return any(p.fullmatch(path) for p in patterns)
+        return not any(s in ("", ".", "..") for s in path.split("/"))
+
+    def path_allowed(path: str) -> bool:
+        return safe_path(path) and any(p.fullmatch(path) for p in patterns)
+
+    def backlog_view(pid: int) -> list[dict[str, Any]]:
+        assert db is not None
+        items = db.list_backlog(pid)
+        by_number = {i["number"]: i for i in db.list_issues(pid, [], "all", 100_000) or []}
+        pulls = db.list_pulls(pid, "open", 100_000) or []
+        out = []
+        for it in items:
+            issue = by_number.get(it["issue_number"])
+            out.append(
+                {
+                    "issue_number": it["issue_number"],
+                    "position": it["position"],
+                    "title": issue["title"] if issue else None,
+                    "state": issue["state"] if issue else None,
+                    "labels": issue["labels"] if issue else [],
+                    "depends_on": it["depends_on"],
+                    "note": it["note"],
+                    "status": backlog_status(it, issue, pulls, by_number),
+                }
+            )
+        return out
 
     def reply(entry: _Entry, stale: bool = False) -> Response:
         headers = {"X-Tradvia-Stale": "1"} if stale else {}
@@ -350,7 +373,19 @@ def create_app(
         path = "repos/" + request.path_params["path"]
         raw = request.scope.get("raw_path") or b""
         m = store_route.fullmatch(path)
-        if b"%" in raw.split(b"?", 1)[0] or not path_allowed(path) or not m:
+        if b"%" in raw.split(b"?", 1)[0] or not m:
+            return _not_found()
+        if m.group("kind") == "backlog":
+            if not safe_path(path):
+                return _not_found()
+            if db is None:
+                return _store_unavailable()
+            try:
+                pid = await run_in_threadpool(project_id_of, m.group("repo"))
+                return JSONResponse(await run_in_threadpool(backlog_view, pid))
+            except Exception:
+                return _store_unavailable()
+        if not path_allowed(path):
             return _not_found()
         resource = m.group("kind") or "runs"
         workflow = m.group("wf")

@@ -123,3 +123,14 @@ DROP INDEX IF EXISTS workflow_runs_issue_idx;
 CREATE INDEX IF NOT EXISTS comments_project_issue_idx ON comments (project_id, issue_number);
 CREATE INDEX IF NOT EXISTS workflow_runs_project_issue_idx
     ON workflow_runs (project_id, issue_number);
+
+CREATE TABLE IF NOT EXISTS backlog_items (
+    project_id   bigint NOT NULL REFERENCES projects (id),
+    issue_number integer NOT NULL,
+    position     integer NOT NULL,
+    depends_on   integer[] NOT NULL DEFAULT '{}',
+    note         text NOT NULL DEFAULT '',
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, issue_number)
+);
+CREATE INDEX IF NOT EXISTS backlog_items_position_idx ON backlog_items (project_id, position);

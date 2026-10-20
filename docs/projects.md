@@ -66,6 +66,30 @@ For now every registered project is public. Visibility by role arrives with logi
 - `GET /api/store/repos/{repo}/issues|pulls|actions/workflows/{agent|claude}.yml/runs`
   as before, scoped to the project `{repo}`.
 
+## Backlog
+
+Status: **Shipped** (read-only). Reordering and starting cards in the panel is
+**Planned** under #46 (actions with login).
+
+The backlog is stored per project in the table `backlog_items` (`project_id`,
+`issue_number`, `position`, `depends_on int[]`, `note`, `updated_at`; primary key
+`(project_id, issue_number)`). `set_backlog` replaces the whole order in one
+transaction; every query filters by `project_id`.
+
+- CLI: `tradvia backlog set --project owner/repo 44 45 46 ...` stores the order
+  (position = argument order; duplicates and non-integers are rejected) and reads
+  the dependencies from each issue description, from lines like `Depende do #N` or
+  `Depends on #N`. `tradvia backlog show --project owner/repo` prints it.
+  `--project` defaults to `TRADVIA_REPO`.
+- API: `GET /api/store/repos/{repo}/backlog` returns the items in order with
+  `issue_number`, `position`, `title`, `state`, `labels` (from the `issues` table),
+  `depends_on`, `note` and `status`. 404 for an unregistered project, 503 without a database.
+- Status, checked in this order: `concluído` (issue closed), `em andamento` (label
+  `agent:ready` or an open PR from branch `tradvia/issue-N`), `bloqueado` (some
+  dependency is open or unknown), `pronto`.
+- Dashboard: a Backlog column before the card columns, shown only when the store
+  API answers.
+
 ## Dashboard
 
 The header has a project selector fed by `/api/projects`. It keeps `?repo=` in the URL

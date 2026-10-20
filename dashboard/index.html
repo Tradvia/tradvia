@@ -36,6 +36,11 @@
   .kpi .v { font-size: 22px; font-weight: 600; }
   .kpi .l { color: var(--muted); font-size: 12px; }
   .board { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+  .board.with-backlog { grid-template-columns: repeat(6, minmax(180px, 1fr)); }
+  .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
+  .badge.pronto, .badge.concluido { color: var(--ok); }
+  .badge.bloqueado { color: var(--bad); }
+  .badge.andamento { color: var(--info); }
   .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-height: 80px; }
   .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
   .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
@@ -441,6 +446,19 @@ function loadTimeline(repo, n) {
   return timelineCache.get(key);
 }
 
+// The Backlog column exists only when the store API answers; any failure hides it.
+async function loadBacklog(repo) {
+  if (!STORE_API) return null;
+  try {
+    const items = await getJson(STORE_API + "/repos/" + repo + "/backlog");
+    return Array.isArray(items) ? items : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em andamento": "andamento", "concluído": "concluido" };
+
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
   const [agent, claude, issues, prs] = await Promise.all([
@@ -452,7 +470,7 @@ async function loadData(repo) {
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
-  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs };
+  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
 }
 
 /* ---------- i18n ---------- */
@@ -477,6 +495,8 @@ const I18N = {
     executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
     duration: "Duração", started: "Início", link: "Run", open: "abrir",
     inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em", dataFrom: "dados",
+    backlog: "Backlog do projeto", position: "Posição", dependsOn: "Depende de",
+    st_pronto: "pronto", st_bloqueado: "bloqueado", st_andamento: "em andamento", st_concluido: "concluído",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -499,6 +519,8 @@ const I18N = {
     executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
     duration: "Duration", started: "Started", link: "Run", open: "open",
     inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at", dataFrom: "data",
+    backlog: "Project backlog", position: "Position", dependsOn: "Depends on",
+    st_pronto: "ready", st_bloqueado: "blocked", st_andamento: "in progress", st_concluido: "done",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -646,9 +668,42 @@ async function loadRecent() {
   renderRecent();
 }
 
-function renderBoard(issues, prs, agentRuns) {
+function renderBacklogColumn(root, backlog) {
+  const c = el("div", null, "col BACKLOG_ITEMS");
+  const h = el("h3");
+  h.append(el("span", t("backlog")), el("span", String(backlog.length)));
+  c.append(h);
+  const inBacklog = new Set(backlog.map((b) => b.issue_number));
+  for (const b of backlog) {
+    const card = el("div", null, "card");
+    card.id = "bl-" + b.issue_number;
+    const key = BACKLOG_STATUS_KEY[b.status] || "bloqueado";
+    const head = el("div", null, "n");
+    head.append(el("span", t("position") + " " + (b.position + 1) + " · #" + b.issue_number),
+      el("span", t("st_" + key), "badge " + key));
+    card.append(head, el("div", b.title || "#" + b.issue_number));
+    if (b.depends_on.length) {
+      const deps = el("div", t("dependsOn") + " ", "cost");
+      b.depends_on.forEach((d, i) => {
+        if (i) deps.append(document.createTextNode(", "));
+        if (inBacklog.has(d)) {
+          const a = el("a", "#" + d);
+          a.href = "#bl-" + d;
+          deps.append(a);
+        } else deps.append(document.createTextNode("#" + d));
+      });
+      card.append(deps);
+    }
+    c.append(card);
+  }
+  root.append(c);
+}
+
+function renderBoard(issues, prs, agentRuns, backlog) {
   const root = document.getElementById("board");
   root.replaceChildren();
+  root.classList.toggle("with-backlog", !!backlog);
+  if (backlog) renderBacklogColumn(root, backlog);
   const cols = {};
   for (const s of STATES) {
     const c = el("div", null, "col " + s);
@@ -749,7 +804,7 @@ function render() {
   if (!content.hidden) {
     renderRecent();
     renderKpis(computeKpis(data.runs, data.prs));
-    renderBoard(data.issues, data.prs, data.agentRuns);
+    renderBoard(data.issues, data.prs, data.agentRuns, data.backlog);
     renderRuns(visibleRuns(data.runs, showSkipped));
   }
 }

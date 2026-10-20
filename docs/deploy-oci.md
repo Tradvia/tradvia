@@ -166,6 +166,13 @@ docker compose exec api tradvia backfill --project owner/repo     # another proj
 
 `--project` must be listed in `TRADVIA_PROJECTS`.
 
+After the deploy and the backfill, store the project backlog (order = argument
+order; dependencies come from "Depende do #N" lines in the issues):
+
+```bash
+docker compose exec api tradvia backlog set --project owner/repo 44 45 46 ...
+```
+
 It reads issues labelled `agent:ready`, their comments, pull requests and the
 runs of `agent.yml` and `claude.yml`. `GITHUB_TOKEN` is optional (it raises the
 GitHub rate limit). On the 1 GB host the database is capped at 256 MB
