@@ -11,8 +11,9 @@ from __future__ import annotations
 import copy
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from importlib import resources
-from typing import Any, Iterator, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 Op = tuple[str, dict[str, Any]]
 
@@ -51,6 +52,15 @@ class Store(Protocol):
     def upsert_workflow_run(self, rec: dict[str, Any]) -> None: ...
     def stats(self) -> dict[str, Any]:
         """`{"issues": n, "runs": n, "last_delivery": iso | None}`."""
+
+    # Reads for the dashboard: newest first, timestamps as ISO strings. None means
+    # the table is empty (data not loaded yet); [] means the filter matched nothing.
+    # Comments are never read.
+    def list_issues(
+        self, labels: list[str], state: str, limit: int
+    ) -> list[dict[str, Any]] | None: ...
+    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None: ...
+    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None: ...
 
 
 class MemoryStore:
@@ -106,6 +116,40 @@ class MemoryStore:
                 "last_delivery": last,
             }
 
+    def _list(
+        self, table: str, keep: Callable[[dict[str, Any]], bool], sort_key: str, limit: int
+    ) -> list[dict[str, Any]] | None:
+        with self._lock:
+            rows = list(self.tables[table].values())
+            if not rows:
+                return None
+            rows = [copy.deepcopy(r) for r in rows if keep(r)]
+        rows.sort(key=lambda r: r.get(sort_key) or "", reverse=True)
+        return rows[:limit]
+
+    def list_issues(
+        self, labels: list[str], state: str, limit: int
+    ) -> list[dict[str, Any]] | None:
+        return self._list(
+            "issues",
+            lambda r: set(labels) <= set(r["labels"]) and state in ("all", r["state"]),
+            "created_at",
+            limit,
+        )
+
+    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None:
+        return self._list(
+            "pull_requests", lambda r: state in ("all", r["state"]), "created_at", limit
+        )
+
+    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None:
+        return self._list(
+            "workflow_runs",
+            lambda r: r["workflow"].rsplit("/", 1)[-1] == workflow,
+            "started_at",
+            limit,
+        )
+
 
 _INSERT_DELIVERY = (
     "INSERT INTO deliveries (id, event) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING"
@@ -114,15 +158,17 @@ _INSERT_DELIVERY = (
 _UPSERT_SQL = {
     "issue": """
         INSERT INTO issues (id, number, title, state, labels, author,
-                            created_at, updated_at, closed_at)
+                            created_at, updated_at, closed_at, html_url, state_reason)
         VALUES (%(id)s, %(number)s, %(title)s, %(state)s, %(labels)s, %(author)s,
-                %(created_at)s, %(updated_at)s, %(closed_at)s)
+                %(created_at)s, %(updated_at)s, %(closed_at)s, %(html_url)s,
+                %(state_reason)s)
         ON CONFLICT (id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             labels = excluded.labels, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
-            closed_at = excluded.closed_at
-        WHERE excluded.updated_at > issues.updated_at
+            closed_at = excluded.closed_at, html_url = excluded.html_url,
+            state_reason = excluded.state_reason
+        WHERE excluded.updated_at >= issues.updated_at
     """,
     "comment": """
         INSERT INTO comments (id, issue_number, author, author_association, body,
@@ -133,31 +179,35 @@ _UPSERT_SQL = {
             issue_number = excluded.issue_number, author = excluded.author,
             author_association = excluded.author_association, body = excluded.body,
             created_at = excluded.created_at, updated_at = excluded.updated_at
-        WHERE excluded.updated_at > comments.updated_at
+        WHERE excluded.updated_at >= comments.updated_at
     """,
     "pull_request": """
         INSERT INTO pull_requests (id, number, title, state, merged, branch, author,
-                                   created_at, updated_at, merged_at)
+                                   created_at, updated_at, merged_at, html_url)
         VALUES (%(id)s, %(number)s, %(title)s, %(state)s, %(merged)s, %(branch)s,
-                %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s)
+                %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s, %(html_url)s)
         ON CONFLICT (id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             merged = excluded.merged, branch = excluded.branch, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
-            merged_at = excluded.merged_at
-        WHERE excluded.updated_at > pull_requests.updated_at
+            merged_at = excluded.merged_at, html_url = excluded.html_url
+        WHERE excluded.updated_at >= pull_requests.updated_at
     """,
     "workflow_run": """
         INSERT INTO workflow_runs (id, workflow, event, status, conclusion,
-                                   issue_number, started_at, ended_at, updated_at)
+                                   issue_number, started_at, ended_at, updated_at,
+                                   name, display_title, html_url, run_attempt)
         VALUES (%(id)s, %(workflow)s, %(event)s, %(status)s, %(conclusion)s,
-                %(issue_number)s, %(started_at)s, %(ended_at)s, %(updated_at)s)
+                %(issue_number)s, %(started_at)s, %(ended_at)s, %(updated_at)s,
+                %(name)s, %(display_title)s, %(html_url)s, %(run_attempt)s)
         ON CONFLICT (id) DO UPDATE SET
             workflow = excluded.workflow, event = excluded.event,
             status = excluded.status, conclusion = excluded.conclusion,
             issue_number = excluded.issue_number, started_at = excluded.started_at,
-            ended_at = excluded.ended_at, updated_at = excluded.updated_at
-        WHERE excluded.updated_at > workflow_runs.updated_at
+            ended_at = excluded.ended_at, updated_at = excluded.updated_at,
+            name = excluded.name, display_title = excluded.display_title,
+            html_url = excluded.html_url, run_attempt = excluded.run_attempt
+        WHERE excluded.updated_at >= workflow_runs.updated_at
     """,
 }
 
@@ -166,6 +216,39 @@ _STATS_SQL = """
            (SELECT count(*) FROM workflow_runs),
            (SELECT max(received_at) FROM deliveries)
 """
+
+_LIST_ISSUES_SQL = """
+    SELECT number, title, state, state_reason, labels, author, html_url,
+           created_at, updated_at, closed_at
+    FROM issues
+    WHERE labels @> %(labels)s::text[] AND (%(state)s = 'all' OR state = %(state)s)
+    ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
+"""
+_LIST_PULLS_SQL = """
+    SELECT number, title, state, merged_at, branch, author, html_url,
+           created_at, updated_at
+    FROM pull_requests
+    WHERE %(state)s = 'all' OR state = %(state)s
+    ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
+"""
+_LIST_RUNS_SQL = """
+    SELECT id, name, display_title, event, status, conclusion, html_url, run_attempt,
+           started_at, updated_at
+    FROM workflow_runs
+    WHERE right(workflow, length(%(workflow)s) + 1) = '/' || %(workflow)s
+    ORDER BY started_at DESC NULLS LAST, id DESC LIMIT %(limit)s
+"""
+_NOT_EMPTY_SQL = {
+    "issues": "SELECT EXISTS (SELECT 1 FROM issues)",
+    "pull_requests": "SELECT EXISTS (SELECT 1 FROM pull_requests)",
+    "workflow_runs": "SELECT EXISTS (SELECT 1 FROM workflow_runs)",
+}
+
+
+def _iso(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value
 
 
 def load_schema() -> str:
@@ -255,3 +338,28 @@ class PgStore:
             row = conn.execute(_STATS_SQL).fetchone()
         last = row[2].isoformat() if row[2] else None
         return {"issues": row[0], "runs": row[1], "last_delivery": last}
+
+    def _query(
+        self, table: str, sql: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        with self._conn() as conn:
+            if not conn.execute(_NOT_EMPTY_SQL[table]).fetchone()[0]:
+                return None
+            cur = conn.execute(sql, params)
+            names = [c.name for c in cur.description]
+            rows = cur.fetchall()
+        return [{n: _iso(v) for n, v in zip(names, row)} for row in rows]
+
+    def list_issues(
+        self, labels: list[str], state: str, limit: int
+    ) -> list[dict[str, Any]] | None:
+        params = {"labels": labels, "state": state, "limit": limit}
+        return self._query("issues", _LIST_ISSUES_SQL, params)
+
+    def list_pulls(self, state: str, limit: int) -> list[dict[str, Any]] | None:
+        params = {"state": state, "limit": limit}
+        return self._query("pull_requests", _LIST_PULLS_SQL, params)
+
+    def list_runs(self, workflow: str, limit: int) -> list[dict[str, Any]] | None:
+        params = {"workflow": workflow, "limit": limit}
+        return self._query("workflow_runs", _LIST_RUNS_SQL, params)
