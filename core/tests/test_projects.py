@@ -276,11 +276,15 @@ def test_schema_has_idempotent_project_migration():
     assert re.search(r"INDEX IF NOT EXISTS comments_project_issue_idx ON comments \(project_id", sql)
 
 
-@pytest.mark.skipif(not os.environ.get("DATABASE_URL"), reason="needs a Postgres")
+# Read at import time: the autouse fixture removes DATABASE_URL before each test runs.
+PG_URL = os.environ.get("DATABASE_URL")
+
+
+@pytest.mark.skipif(not PG_URL, reason="needs a Postgres")
 def test_schema_runs_twice_on_postgres():
     import psycopg
 
-    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as conn:
+    with psycopg.connect(PG_URL, autocommit=True) as conn:
         conn.execute(store_module.load_schema())
         conn.execute(store_module.load_schema())
         n = conn.execute(
