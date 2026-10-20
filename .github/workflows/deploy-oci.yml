@@ -9,6 +9,15 @@ on:
     branches: [main]
     paths: ["infra/oci/**", "dashboard/**", "core/**", ".github/workflows/deploy-oci.yml"]
   workflow_dispatch:
+    inputs:
+      backfill:
+        description: "After deploying, refill the store from GitHub (tradvia backfill)"
+        type: boolean
+        default: false
+      backlog:
+        description: "After deploying, set the backlog order: issue numbers separated by spaces (e.g. 44 50 45)"
+        type: string
+        default: ""
 
 concurrency:
   group: deploy-oci
@@ -83,3 +92,21 @@ jobs:
             sleep 6
           done
           echo "Health check failed" && exit 1
+
+      - name: Backfill the store from GitHub
+        if: ${{ inputs.backfill }}
+        run: ssh oci 'cd /opt/tradvia && docker compose exec -T api tradvia backfill'
+
+      - name: Set the backlog order
+        if: ${{ inputs.backlog != '' }}
+        env:
+          BACKLOG: ${{ inputs.backlog }}
+        run: |
+          # Only digits and spaces reach the remote shell.
+          if ! printf '%s' "$BACKLOG" | grep -Eq '^[0-9 ]+$'; then
+            echo "::error::backlog must contain only issue numbers separated by spaces"
+            exit 1
+          fi
+          numbers=$(printf '%s' "$BACKLOG" | tr -s ' ' | sed 's/^ //; s/ $//')
+          ssh oci "cd /opt/tradvia && docker compose exec -T api tradvia backlog set $numbers"
+          ssh oci 'cd /opt/tradvia && docker compose exec -T api tradvia backlog show'
