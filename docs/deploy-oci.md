@@ -97,7 +97,8 @@ GitHub directly.
 
 - `GET /api/healthz` returns `{"ok": true}`.
 - `GET /api/github/{path}` forwards to `https://api.github.com/{path}` only for
-  `TRADVIA_REPO` (default `Tradvia/tradvia`): `issues`, `issues/{n}/timeline`,
+  the repositories in `TRADVIA_PROJECTS` (comma separated; default `TRADVIA_REPO`,
+  which defaults to `Tradvia/tradvia`): `issues`, `issues/{n}/timeline`,
   `issues/{n}/comments`, `pulls`, `actions/runs` and the `agent.yml` and
   `claude.yml` workflow runs. Everything else is 404. Only `state`, `per_page`,
   `page`, `labels`, `sort` and `direction` are forwarded.
@@ -146,15 +147,24 @@ Behavior of `POST /api/webhooks/github`:
 - Database down: 503. Unexpected error: 500 (the delivery is rolled back as a
   whole). In both cases redeliver from **Settings > Webhooks > Recent
   Deliveries > Redeliver**; it is processed normally.
+- A webhook for a repository that is not in `TRADVIA_PROJECTS` is answered 202
+  and nothing is written. Each delivery is stored under the project found in
+  `repository.full_name`.
 - `GET /api/store/health` returns `{"ok": true, "issues": n, "runs": n,
-  "last_delivery": "..."}` (503 if the database is down). It never returns
-  comment bodies.
+  "last_delivery": "...", "projects": {"owner/repo": {"issues": n, "runs": n,
+  "pull_requests": n, "last_delivery": "..."}}}` (503 if the database is down).
+  The top-level `issues`, `runs` and `last_delivery` are obsolete (they describe the
+  first project); use `projects`. It never returns comment bodies.
+- `GET /api/projects` lists the registered projects. See `docs/projects.md`.
 
 Initial load (safe to repeat; everything is an upsert), on the host:
 
 ```bash
-docker compose exec api tradvia backfill
+docker compose exec api tradvia backfill                          # TRADVIA_REPO
+docker compose exec api tradvia backfill --project owner/repo     # another project
 ```
+
+`--project` must be listed in `TRADVIA_PROJECTS`.
 
 It reads issues labelled `agent:ready`, their comments, pull requests and the
 runs of `agent.yml` and `claude.yml`. `GITHUB_TOKEN` is optional (it raises the
@@ -170,8 +180,8 @@ refills them.
 ## Dashboard reads
 
 `GET /api/store/repos/{repo}/...` returns the same JSON as GitHub for the fields
-the dashboard uses, from Postgres. Only `TRADVIA_REPO` and these paths exist (404
-otherwise): `issues` (`labels`, `state`), `pulls` (`state`) and
+the dashboard uses, from Postgres, scoped to the project `{repo}`. Only repositories
+in `TRADVIA_PROJECTS` and these paths exist (404 otherwise): `issues` (`labels`, `state`), `pulls` (`state`) and
 `actions/workflows/{agent|claude}.yml/runs`. `per_page` is capped at 100 and
 results are newest first. Comment bodies are never exposed. If the database is
 down or has no data for the resource yet, the answer is 503 and the dashboard
