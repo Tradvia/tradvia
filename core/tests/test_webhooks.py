@@ -22,6 +22,7 @@ from tradvia.events import payload_ops  # noqa: E402
 from tradvia.store import MemoryStore, StoreUnavailable  # noqa: E402
 
 REPO = "Tradvia/tradvia"
+PID = 1  # first project created in a fresh MemoryStore
 SECRET = "whsec_topsecret"
 
 
@@ -70,8 +71,8 @@ def client(store):
 def test_valid_signature_stores(client, store):
     r = post(client, issue_payload())
     assert r.status_code == 202
-    assert store.stats()["issues"] == 1
-    assert store.tables["issues"][1001]["labels"] == ["agent:ready"]
+    assert store.stats(PID)["issues"] == 1
+    assert store.tables["issues"][(PID, 1001)]["labels"] == ["agent:ready"]
 
 
 @pytest.mark.parametrize("sig", ["sha256=" + "0" * 64, "garbage", None])
@@ -82,7 +83,7 @@ def test_bad_or_missing_signature_is_401(client, store, sig):
         headers["X-Hub-Signature-256"] = sig
     r = client.post("/api/webhooks/github", content=body, headers=headers)
     assert r.status_code == 401
-    assert store.stats()["issues"] == 0 and not store.deliveries
+    assert not store.tables["issues"] and not store.deliveries
 
 
 def test_wrong_secret_is_401(client, store):
@@ -114,13 +115,13 @@ def test_duplicate_delivery_does_not_duplicate(client, store):
     assert post(client, issue_payload(), delivery="same").status_code == 202
     assert post(client, issue_payload(title="changed"), delivery="same").status_code == 202
     assert len(store.deliveries) == 1
-    assert store.stats()["issues"] == 1
-    assert store.tables["issues"][1001]["title"] == "t"
+    assert store.stats(PID)["issues"] == 1
+    assert store.tables["issues"][(PID, 1001)]["title"] == "t"
 
 
 def test_other_repository_ignored(client, store):
     assert post(client, issue_payload(repo="evil/repo")).status_code == 202
-    assert not store.deliveries and store.stats()["issues"] == 0
+    assert not store.deliveries and not store.tables["issues"]
 
 
 def test_unhandled_event_and_ping_ignored(client, store):
@@ -151,9 +152,9 @@ def test_invalid_json_and_payload_are_400(client):
 def test_upsert_respects_updated_at(client, store):
     post(client, issue_payload(updated="2026-02-01T00:00:00Z", title="new"), delivery="a")
     post(client, issue_payload(updated="2026-01-01T00:00:00Z", title="old"), delivery="b")
-    assert store.tables["issues"][1001]["title"] == "new"
+    assert store.tables["issues"][(PID, 1001)]["title"] == "new"
     post(client, issue_payload(updated="2026-03-01T00:00:00Z", title="newer"), delivery="c")
-    assert store.tables["issues"][1001]["title"] == "newer"
+    assert store.tables["issues"][(PID, 1001)]["title"] == "newer"
 
 
 def test_comment_and_run_and_pr_events(client, store):
@@ -165,16 +166,16 @@ def test_comment_and_run_and_pr_events(client, store):
                     "updated_at": "2026-01-01T00:00:00Z"},
     }
     assert post(client, comment, "issue_comment", "c1").status_code == 202
-    assert store.tables["comments"][77]["author_association"] == "MEMBER"
-    assert store.tables["comments"][77]["issue_number"] == 5
+    assert store.tables["comments"][(PID, 77)]["author_association"] == "MEMBER"
+    assert store.tables["comments"][(PID, 77)]["issue_number"] == 5
 
     run = {"repository": {"full_name": REPO}, "workflow_run": {
         "id": 9, "path": ".github/workflows/agent.yml", "event": "issues",
         "status": "completed", "conclusion": "success", "head_branch": "agent/issue-5",
         "run_started_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:05:00Z"}}
     assert post(client, run, "workflow_run", "r1").status_code == 202
-    assert store.tables["workflow_runs"][9]["issue_number"] == 5
-    assert store.stats()["runs"] == 1
+    assert store.tables["workflow_runs"][(PID, 9)]["issue_number"] == 5
+    assert store.stats(PID)["runs"] == 1
 
     pr = {"repository": {"full_name": REPO}, "pull_request": {
         "id": 3, "number": 8, "title": "p", "state": "closed", "merged": True,
@@ -182,7 +183,7 @@ def test_comment_and_run_and_pr_events(client, store):
         "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
         "merged_at": "2026-01-02T00:00:00Z"}}
     assert post(client, pr, "pull_request", "p1").status_code == 202
-    assert store.tables["pull_requests"][3]["merged"] is True
+    assert store.tables["pull_requests"][(PID, 3)]["merged"] is True
 
 
 def test_health_has_no_comment_bodies(client, store):
@@ -191,7 +192,11 @@ def test_health_has_no_comment_bodies(client, store):
     post(client, comment, "issue_comment", "c1")
     r = client.get("/api/store/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "issues": 1, "runs": 0, "last_delivery": "c1"}
+    assert r.json() == {
+        "ok": True, "issues": 1, "runs": 0, "last_delivery": "c1",
+        "projects": {REPO: {"issues": 1, "runs": 0, "pull_requests": 0,
+                            "last_delivery": "c1"}},
+    }
     assert "private words" not in r.text
 
 
@@ -212,10 +217,10 @@ class FailingStore(MemoryStore):
 
     fail = True
 
-    def _upsert(self, kind, rec):
+    def _upsert(self, project_id, kind, rec):
         if self.fail and kind == "comment":
             raise RuntimeError(f"boom {SECRET}")
-        super()._upsert(kind, rec)
+        super()._upsert(project_id, kind, rec)
 
 
 def test_failure_mid_apply_rolls_back_and_retry_is_processed(caplog):
@@ -227,19 +232,19 @@ def test_failure_mid_apply_rolls_back_and_retry_is_processed(caplog):
     assert r.status_code == 500
     assert SECRET not in r.text and SECRET not in caplog.text
     assert not store.deliveries
-    assert store.stats()["issues"] == 0
+    assert store.stats(PID)["issues"] == 0
 
     store.fail = False
     assert post(c, payload, "issue_comment", "same").status_code == 202
-    assert "same" in store.deliveries
-    assert store.stats()["issues"] == 1 and 77 in store.tables["comments"]
+    assert (PID, "same") in store.deliveries
+    assert store.stats(PID)["issues"] == 1 and (PID, 77) in store.tables["comments"]
 
 
 class DownStore(MemoryStore):
     def apply(self, *a, **k):
         raise StoreUnavailable("down")
 
-    def stats(self):
+    def ensure_project(self, external_id):
         raise StoreUnavailable("down")
 
 
@@ -332,7 +337,7 @@ def test_backfill_is_idempotent():
     snapshot = {t: dict(rows) for t, rows in store.tables.items()}
     second = backfill(store, fake_github(), REPO)
     assert first == second == {"issues": 1, "comments": 1, "pull_requests": 1, "workflow_runs": 2}
-    assert store.stats()["issues"] == 1 and store.stats()["runs"] == 2
+    assert store.stats(PID)["issues"] == 1 and store.stats(PID)["runs"] == 2
     assert {t: dict(rows) for t, rows in store.tables.items()} == snapshot
 
 
@@ -354,7 +359,9 @@ def test_schema_tables_and_idempotence():
     creates = re.findall(r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\b[^;]*", sql, re.I)
     assert creates and all(re.match(r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF NOT EXISTS", c, re.I)
                            for c in creates)
-    assert not re.search(r"\bDROP\b", sql, re.I)
+    # no destructive DDL; only the old single-column keys and indexes are replaced
+    assert not re.search(r"\bDROP\s+(TABLE|COLUMN|SCHEMA|DATABASE)\b", sql, re.I)
+    assert all("IF EXISTS" in d.upper() for d in re.findall(r"\bDROP\s+(?:INDEX|CONSTRAINT)[^;']*", sql, re.I))
 
 
 def test_store_builds_no_sql_from_strings():
