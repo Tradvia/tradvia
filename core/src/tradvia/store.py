@@ -80,6 +80,12 @@ class Store(Protocol):
         self, project_id: int, workflow: str, limit: int
     ) -> list[dict[str, Any]] | None: ...
 
+    def list_backlog(self, project_id: int) -> list[dict[str, Any]]:
+        """`[{issue_number, position, depends_on, note}]` ordered by position."""
+
+    def set_backlog(self, project_id: int, items: list[dict[str, Any]]) -> None:
+        """Replace the project's whole backlog in one transaction; position is the list index."""
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
@@ -95,6 +101,7 @@ class MemoryStore:
         self.tables: dict[str, dict[tuple[int, Any], dict[str, Any]]] = {
             t: {} for t in _TABLES.values()
         }
+        self.backlogs: dict[int, list[dict[str, Any]]] = {}
         self._clock = 0
 
     def ensure_project(self, external_id: str) -> int:
@@ -222,6 +229,23 @@ class MemoryStore:
             limit,
         )
 
+    def list_backlog(self, project_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self.backlogs.get(project_id, []))
+
+    def set_backlog(self, project_id: int, items: list[dict[str, Any]]) -> None:
+        rows = [
+            {
+                "issue_number": it["issue_number"],
+                "position": i,
+                "depends_on": list(it.get("depends_on", [])),
+                "note": it.get("note", ""),
+            }
+            for i, it in enumerate(items)
+        ]
+        with self._lock:
+            self.backlogs[project_id] = rows
+
 
 _INSERT_DELIVERY = (
     "INSERT INTO deliveries (project_id, id, event) VALUES (%s, %s, %s) "
@@ -330,6 +354,15 @@ _LIST_RUNS_SQL = """
     WHERE project_id = %(project_id)s
           AND right(workflow, length(%(workflow)s) + 1) = '/' || %(workflow)s
     ORDER BY started_at DESC NULLS LAST, id DESC LIMIT %(limit)s
+"""
+_LIST_BACKLOG_SQL = """
+    SELECT issue_number, position, depends_on, note
+    FROM backlog_items WHERE project_id = %s ORDER BY position
+"""
+_DELETE_BACKLOG_SQL = "DELETE FROM backlog_items WHERE project_id = %s"
+_INSERT_BACKLOG_SQL = """
+    INSERT INTO backlog_items (project_id, issue_number, position, depends_on, note)
+    VALUES (%s, %s, %s, %s, %s)
 """
 _NOT_EMPTY_SQL = {
     "issues": "SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = %(project_id)s)",
@@ -487,3 +520,22 @@ class PgStore:
     ) -> list[dict[str, Any]] | None:
         params = {"workflow": workflow, "limit": limit}
         return self._query(project_id, "workflow_runs", _LIST_RUNS_SQL, params)
+
+    def list_backlog(self, project_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_BACKLOG_SQL, (project_id,)).fetchall()
+        return [
+            {"issue_number": r[0], "position": r[1], "depends_on": list(r[2]), "note": r[3]}
+            for r in rows
+        ]
+
+    def set_backlog(self, project_id: int, items: list[dict[str, Any]]) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_DELETE_BACKLOG_SQL, (project_id,))
+                for i, it in enumerate(items):
+                    conn.execute(
+                        _INSERT_BACKLOG_SQL,
+                        (project_id, it["issue_number"], i,
+                         list(it.get("depends_on", [])), it.get("note", "")),
+                    )
