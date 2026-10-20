@@ -20,6 +20,28 @@ and destructive actions.
 
 ## Decision
 
+### Pillar: everything belongs to a project
+
+The **project** is the unit of scope for everything Tradvia stores or decides,
+the same way Tradvia itself is the project `Tradvia/tradvia` today. Whatever is
+added while the orchestrator is in use is linked to one project:
+
+- cards, plans, approvals, runs, pull requests and their costs;
+- skills, agents and their manifests (a project may enable skills from a shared
+  catalog and add its own; enabling or overriding is recorded per project);
+- context and memory: specs, decisions, compiled context payloads, episodic and
+  procedural memory, embeddings;
+- budgets, risk policy and access rules (`.tradvia.yml`, ADR 0004);
+- events on the bus, blackboard entries, checkpoints and sandboxes.
+
+Consequences for every capability below: data carries a `project_id`; queries,
+memory retrieval and skill routing never cross projects unless the project
+explicitly opts into a shared resource; viewing and interaction follow the
+project's access level (ADR 0004); and a project can be exported or deleted as a
+whole. Status: **Partial**. Configuration (`.tradvia.yml`) and access are already
+per repository; the store and API still assume a single repository
+(`TRADVIA_REPO`).
+
 Tradvia evolves into an event-driven orchestrator with shared state and dynamic
 discovery of capabilities, organised in four areas. Each item has a real status
 (CLAUDE.md rule 5) and is delivered as small cards through the normal flow.
@@ -64,6 +86,9 @@ Tradvia supports several topologies and picks one per task type:
 
 ## Delivery order
 
+0. **Project as a first-class entity**: `projects` table, `project_id` on every
+   stored record, API and dashboard scoped by project, migration of today's
+   single-repository data. Everything else builds on it.
 1. **Governance foundation** (makes autonomy safe, builds on what exists):
    durable checkpointing on Postgres → execution budgets with the 80% notice →
    stagnation detection → risk levels on skills and the permission gateway.
