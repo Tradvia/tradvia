@@ -81,6 +81,10 @@ default to today's behavior, so nothing changes unless you set them.
 With `claude-code` the CLI must be installed and on `PATH`, authenticated with
 `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`); no `ANTHROPIC_API_KEY` is needed.
 `TRADVIA_CLAUDE_TIMEOUT` (seconds, default 900) limits each call.
+`TRADVIA_EXEC_MAX_TURNS` (positive integer, default 80) limits the executor's turns; an
+invalid value falls back to the default. If the executor fails (turn limit, timeout or
+CLI error), the agent comments on the issue, opens no PR and the card stays in
+`WAITING_HUMAN`; restart it after adjusting or splitting the issue.
 
 `TRADVIA_MAX_REPLANS` (positive integer, default 3) limits how many plan adjustments a
 card accepts. At the limit the agent comments on the issue, asks for the description to

@@ -276,3 +276,34 @@ def test_defaults_stay_offline_note(monkeypatch):
     assert make_executor() is None
     assert make_planner("claude-code") is claude_code_plan
     assert isinstance(make_executor("claude-code"), ClaudeCodeExecutor)
+
+
+def test_run_claude_reports_turn_limit(tmp_path):
+    out = json.dumps({"subtype": "error_max_turns", "is_error": True, "num_turns": 31})
+    runner = lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=out, stderr="")
+    with pytest.raises(RuntimeError, match=r"turn limit \(30 turns\)"):
+        run_claude("p", str(tmp_path), "Read", 30, runner=runner)
+
+
+@pytest.mark.parametrize("value, expected", [(None, 80), ("120", 120), ("0", 80), ("x", 80)])
+def test_executor_max_turns_from_env(tmp_path, monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("TRADVIA_EXEC_MAX_TURNS", raising=False)
+    else:
+        monkeypatch.setenv("TRADVIA_EXEC_MAX_TURNS", value)
+    runner = fake_runner(tmp_path, "done", ["docs/a.md"])
+    ClaudeCodeExecutor(runner=runner).execute(
+        {"title": "t", "source": {"issue_number": 1}, "plan": []}, str(tmp_path))
+    cmd = runner.calls[0]
+    assert cmd[cmd.index("--max-turns") + 1] == str(expected)
+
+
+def test_executor_failure_is_announced_and_opens_no_pr(tmp_path):
+    out = json.dumps({"subtype": "error_max_turns", "is_error": True})
+    runner = lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=out, stderr="")
+    gh, chat = FakeGitHub(), FakeChat()
+    result = approved_card_app(gh, chat, ClaudeCodeExecutor(runner=runner, max_turns=5), tmp_path)
+
+    assert result["status"] == "WAITING_HUMAN"
+    assert gh.prs == [] and gh.branches == [] and gh.files == {}
+    assert "turn limit (5 turns)" in chat.messages[-1] and "agent:ready" in chat.messages[-1]

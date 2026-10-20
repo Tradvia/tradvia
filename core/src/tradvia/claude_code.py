@@ -53,6 +53,18 @@ def _timeout() -> int:
     return int(os.getenv("TRADVIA_CLAUDE_TIMEOUT", "900"))
 
 
+DEFAULT_EXEC_MAX_TURNS = 80
+
+
+def exec_max_turns() -> int:
+    """Executor turn limit from `TRADVIA_EXEC_MAX_TURNS` (positive integer, default 80)."""
+    try:
+        value = int(os.getenv("TRADVIA_EXEC_MAX_TURNS", ""))
+    except ValueError:
+        return DEFAULT_EXEC_MAX_TURNS
+    return value if value > 0 else DEFAULT_EXEC_MAX_TURNS
+
+
 def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
                runner: Callable = subprocess.run, timeout: int | None = None) -> dict:
     """Run `claude -p` headless and return its JSON result."""
@@ -72,7 +84,10 @@ def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
         raise RuntimeError(f"Claude Code returned invalid JSON (exit {proc.returncode}): "
                            f"{(proc.stderr or proc.stdout or '')[:300]}") from None
     if proc.returncode != 0 or data.get("is_error"):
-        raise RuntimeError(f"Claude Code failed: {str(data.get('result', ''))[:300]}")
+        if data.get("subtype") == "error_max_turns":
+            raise RuntimeError(f"Claude Code stopped at the turn limit ({max_turns} turns)")
+        detail = str(data.get("result") or data.get("subtype") or "")[:300]
+        raise RuntimeError(f"Claude Code failed: {detail}")
     return data
 
 
@@ -128,14 +143,14 @@ def untracked_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
 
 
 class ClaudeCodeExecutor:
-    def __init__(self, runner: Callable = subprocess.run, max_turns: int = 30):
+    def __init__(self, runner: Callable = subprocess.run, max_turns: int | None = None):
         self.runner, self.max_turns = runner, max_turns
 
     def execute(self, card: dict, cwd: str = ".") -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
         prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
-        data = run_claude(prompt, cwd, EXEC_TOOLS, self.max_turns, self.runner)
+        data = run_claude(prompt, cwd, EXEC_TOOLS, self.max_turns or exec_max_turns(), self.runner)
         cost = _cost(data)
         return {"changed_files": changed_files(cwd, self.runner),
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
