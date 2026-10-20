@@ -24,7 +24,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .events import HANDLED_EVENTS, PayloadError, payload_ops
-from .store import PgStore, Store, StoreUnavailable
+from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
 MAX_WEBHOOK_BYTES = 1024 * 1024
@@ -63,7 +63,25 @@ def default_fetch(url: str, headers: dict[str, str]) -> Upstream:
     )
 
 
-def allowed_patterns(repo: str) -> list[re.Pattern[str]]:
+def registered_projects() -> list[str]:
+    """Repositories accepted by the API: `TRADVIA_PROJECTS`, default `TRADVIA_REPO`."""
+    default = os.environ.get("TRADVIA_REPO", "Tradvia/tradvia")
+    raw = os.environ.get("TRADVIA_PROJECTS") or default
+    repos: list[str] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if item and item not in repos:
+            repos.append(item)
+    return repos or [default]
+
+
+def allowed_patterns(repos: list[str] | str) -> list[re.Pattern[str]]:
+    if isinstance(repos, str):
+        repos = [repos]
+    return [p for repo in repos for p in _repo_patterns(repo)]
+
+
+def _repo_patterns(repo: str) -> list[re.Pattern[str]]:
     r = re.escape(repo)
     return [
         re.compile(p)
@@ -149,15 +167,23 @@ def create_app(
     db: Store | None = store
     if db is None and os.environ.get("DATABASE_URL"):
         db = PgStore(os.environ["DATABASE_URL"])  # lazy: does not connect here
-    repo = os.environ.get("TRADVIA_REPO", "Tradvia/tradvia")
+    repos = registered_projects()
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
-    patterns = allowed_patterns(repo)
+    patterns = allowed_patterns(repos)
     store_route = re.compile(
-        rf"repos/{re.escape(repo)}/(?:(?P<kind>issues|pulls)"
-        r"|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
+        r"repos/(?P<repo>" + "|".join(re.escape(r) for r in repos) + r")/"
+        r"(?:(?P<kind>issues|pulls)|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
     )
     cache: OrderedDict[str, _Entry] = OrderedDict()
+    project_ids: dict[str, int] = {}
+
+    def project_id_of(repo: str) -> int:
+        """Id of a registered project; created on first use (never at construction)."""
+        if repo not in project_ids:
+            assert db is not None
+            project_ids[repo] = db.ensure_project(repo)
+        return project_ids[repo]
 
     def path_allowed(path: str) -> bool:
         if not path or "%" in path or "\\" in path:
@@ -267,7 +293,10 @@ def create_app(
         if event not in HANDLED_EVENTS:  # includes ping
             return accepted
         repository = payload.get("repository")
-        if not isinstance(repository, dict) or repository.get("full_name") != repo:
+        if not isinstance(repository, dict):
+            return accepted
+        repo = repository.get("full_name")
+        if not isinstance(repo, str) or repo not in repos:
             return accepted
         delivery = request.headers.get("x-github-delivery", "")
         if not delivery:
@@ -279,7 +308,8 @@ def create_app(
         if db is None:
             return JSONResponse({"error": "storage not configured"}, status_code=503)
         try:
-            await run_in_threadpool(db.apply, delivery, event, ops)
+            project_id = await run_in_threadpool(project_id_of, repo)
+            await run_in_threadpool(db.apply, project_id, delivery, event, ops)
         except StoreUnavailable:
             return JSONResponse({"error": "storage unavailable"}, status_code=503)
         except Exception:  # never log or echo: payloads and DSNs may be sensitive
@@ -290,10 +320,31 @@ def create_app(
         if db is None:
             return JSONResponse({"ok": False}, status_code=503)
         try:
-            stats = await run_in_threadpool(db.stats)
+            default_id = await run_in_threadpool(project_id_of, repos[0])
+            stats = await run_in_threadpool(db.stats, default_id)
+            per_project = await run_in_threadpool(db.project_stats)
         except Exception:
             return JSONResponse({"ok": False}, status_code=503)
-        return JSONResponse({"ok": True, **stats})
+        # Top-level issues/runs/last_delivery are obsolete (default project): use `projects`.
+        return JSONResponse(
+            {
+                "ok": True,
+                "issues": stats["issues"],
+                "runs": stats["runs"],
+                "last_delivery": stats["last_delivery"],
+                "projects": {r: per_project[r] for r in repos if r in per_project},
+            }
+        )
+
+    async def projects(request: Request) -> Response:
+        # Every registered project is public for now; per-role visibility comes with
+        # login (ADR 0004).
+        return JSONResponse(
+            [
+                {"slug": project_slug(r), "kind": "github_repo", "external_id": r, "public": True}
+                for r in repos
+            ]
+        )
 
     async def store_read(request: Request) -> Response:
         path = "repos/" + request.path_params["path"]
@@ -311,13 +362,14 @@ def create_app(
         if db is None:
             return _store_unavailable()
         try:
+            pid = await run_in_threadpool(project_id_of, m.group("repo"))
             if resource == "issues":
                 labels = [s for s in params.get("labels", "").split(",") if s]
-                rows = await run_in_threadpool(db.list_issues, labels, state, limit)
+                rows = await run_in_threadpool(db.list_issues, pid, labels, state, limit)
             elif resource == "pulls":
-                rows = await run_in_threadpool(db.list_pulls, state, limit)
+                rows = await run_in_threadpool(db.list_pulls, pid, state, limit)
             else:
-                rows = await run_in_threadpool(db.list_runs, workflow + ".yml", limit)
+                rows = await run_in_threadpool(db.list_runs, pid, workflow + ".yml", limit)
         except Exception:  # StoreUnavailable or anything else: the panel falls back
             return _store_unavailable()
         if rows is None:
@@ -333,6 +385,7 @@ def create_app(
     return Starlette(
         routes=[
             Route("/api/webhooks/github", webhook, methods=["POST"]),
+            Route("/api/projects", projects, methods=["GET"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
