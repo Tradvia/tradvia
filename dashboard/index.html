@@ -42,6 +42,14 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
   .kpi .v { font-size: 22px; font-weight: 600; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
+  .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+  .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 10px; }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .chart svg { width: 100%; height: 90px; display: block; }
+  .chart rect { fill: var(--info); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
   .board { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
   .board.with-backlog { grid-template-columns: repeat(6, minmax(180px, 1fr)); }
   .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
@@ -117,7 +125,10 @@
     <h2 data-i18n="recent"></h2>
     <div class="recent" id="recent"></div>
     <h2 data-i18n="kpis"></h2>
+    <div class="filters" id="filters"></div>
     <div class="kpis" id="kpis"></div>
+    <div class="charts" id="charts"></div>
+    <div class="note" data-i18n="costNote"></div>
     <h2 data-i18n="board"></h2>
     <div class="board" id="board"></div>
     <div id="deploys-section" hidden>
@@ -275,7 +286,8 @@ function parsePlan(body) {
   const lines = String(body).split("\n").map((l) => l.trim()).filter(Boolean);
   const steps = lines.filter((l) => /^\d+\.\s/.test(l));
   const summary = lines.slice(1).filter((l) =>
-    !/^\d+\.\s/.test(l) && !l.includes("❓") && !/^Responda/i.test(l) && !/^Arquivo:/i.test(l)).join(" ");
+    !/^\d+\.\s/.test(l) && !l.includes("❓") && !/^Responda/i.test(l) && !/^Arquivo:/i.test(l) &&
+    !/^Estimated cost/i.test(l) && !/^Tokens:/i.test(l)).join(" ");
   return { summary, steps };
 }
 
@@ -382,6 +394,250 @@ function totalAndMedianCost(prs) {
     .filter(Boolean)
     .map((c) => c.usd);
   return { total: costs.reduce((a, b) => a + b, 0), median: median(costs), count: costs.length };
+}
+
+/* ----- KPI filters, card cost and tokens (pure) ----- */
+
+const DAY_MS = 86400000;
+const PRESET_DAYS = { "7d": 7, "30d": 30, "90d": 90 };
+const FILTER_KEYS = ["from", "to", "executor", "card", "status"];
+const EXECUTOR_BRANCH = { agent: "tradvia/", claude: "claude/" };
+const EXECUTOR_WORKFLOW = { agent: "agent.yml", claude: "claude.yml" };
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Mirror of parse_tokens() in core/src/tradvia/events.py: "Tokens: 12 345 in · 3 210 out · 80 000 cache".
+// Thousands may be grouped by space, NBSP, dot or comma, or not grouped at all.
+function parseTokens(body) {
+  if (typeof body !== "string") return null;
+  const int = "(\\d{1,3}(?:[ \\u00a0\\u202f.,]\\d{3})+|\\d+)";
+  const sep = "\\s*[·•|-]\\s*";
+  const m = new RegExp("\\btokens:\\s*" + int + "\\s*in" + sep + int + "\\s*out(?:" + sep + int + "\\s*cache)?", "i").exec(body);
+  if (!m) return null;
+  const n = (s) => (s ? parseInt(s.replace(/\D/g, ""), 10) : 0);
+  return { in: n(m[1]), out: n(m[2]), cache: n(m[3]) };
+}
+
+// Same line the agent writes: space as thousands separator.
+function formatTokens(n) {
+  return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+// Filters from the query string. `from` is 7d | 30d | 90d | YYYY-MM-DD (null = everything).
+function parseFilters(search) {
+  const q = new URLSearchParams(search || "");
+  const from = q.get("from"), to = q.get("to"), executor = q.get("executor"), status = q.get("status");
+  const card = parseInt(q.get("card"), 10);
+  return {
+    from: from && (PRESET_DAYS[from] || DATE_RE.test(from)) ? from : null,
+    to: to && DATE_RE.test(to) ? to : null,
+    executor: executor === "agent" || executor === "claude" ? executor : "all",
+    card: card > 0 ? card : null,
+    status: STATES.includes(status) ? status : "all",
+  };
+}
+
+// Query string for the filters, keeping every other parameter of `base` (such as ?repo=).
+function filtersToSearch(filters, base) {
+  const q = new URLSearchParams(base || "");
+  FILTER_KEYS.forEach((k) => q.delete(k));
+  const f = filters || {};
+  if (f.from) q.set("from", f.from);
+  if (f.to) q.set("to", f.to);
+  if (f.executor && f.executor !== "all") q.set("executor", f.executor);
+  if (f.card) q.set("card", String(f.card));
+  if (f.status && f.status !== "all") q.set("status", f.status);
+  const s = q.toString();
+  return s ? "?" + s : "";
+}
+
+// Period as [start, end) in ms (UTC); null side = unbounded. `to` includes its whole day.
+function periodBounds(filters, now) {
+  const f = filters || {};
+  let start = null, end = null;
+  if (f.from && PRESET_DAYS[f.from]) start = now - PRESET_DAYS[f.from] * DAY_MS;
+  else if (f.from) start = Date.parse(f.from + "T00:00:00Z");
+  if (f.to) end = Date.parse(f.to + "T00:00:00Z") + DAY_MS;
+  return { start: isNaN(start) ? null : start, end: isNaN(end) ? null : end };
+}
+
+function inPeriod(iso, bounds) {
+  if (bounds.start == null && bounds.end == null) return true;
+  const t = Date.parse(iso);
+  if (isNaN(t)) return false;
+  return (bounds.start == null || t >= bounds.start) && (bounds.end == null || t < bounds.end);
+}
+
+function branchExecutor(ref) {
+  if (typeof ref !== "string") return null;
+  return ref.startsWith("tradvia/") ? "agent" : ref.startsWith("claude/") ? "claude" : null;
+}
+
+function issueOfBranch(ref) {
+  const m = /^(?:tradvia\/issue-|claude\/issue-)(\d+)/.exec(typeof ref === "string" ? ref : "");
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// The card a run belongs to: agent runs carry the issue title, Claude Code runs "#N" in the title.
+function runIssue(run, issues) {
+  const title = run.display_title || run.name || "";
+  return issues.find((i) => i.title === title) ||
+    issues.find((i) => new RegExp("#" + i.number + "(?!\\d)").test(title)) || null;
+}
+
+// Narrows cards, PRs and runs to the filters. `now` is the reference for 7d/30d/90d.
+// Cards count by creation date, PRs by creation date, runs by start time.
+function applyFilters(data, filters, now) {
+  const f = filters || {};
+  const bounds = periodBounds(f, now);
+  const allIssues = data.issues || [], allPrs = data.prs || [], allRuns = data.runs || [];
+  const agentRuns = data.agentRuns || [];
+  const executorOf = (issue) => {
+    const ex = new Set();
+    allPrs.forEach((p) => { if (branchMatchesIssue(p.head && p.head.ref, issue.number)) ex.add(branchExecutor(p.head.ref)); });
+    allRuns.forEach((r) => { if (runIssue(r, [issue])) ex.add(r.workflowFile === "claude.yml" ? "claude" : "agent"); });
+    return ex;
+  };
+  const cardOk = (i) =>
+    (!f.card || i.number === f.card) &&
+    (!f.status || f.status === "all" || deriveCardState(i, allPrs, agentRuns) === f.status) &&
+    (!f.executor || f.executor === "all" || executorOf(i).has(f.executor));
+  const okCards = allIssues.filter(cardOk);
+  const okNumbers = new Set(okCards.map((i) => i.number));
+  const cardFiltered = (f.card || (f.status && f.status !== "all"));
+  const issues = okCards.filter((i) => inPeriod(i.created_at, bounds));
+  const prs = allPrs.filter((p) => {
+    const ref = p.head && p.head.ref;
+    if (f.executor && f.executor !== "all" && branchExecutor(ref) !== f.executor) return false;
+    if (cardFiltered && !okNumbers.has(issueOfBranch(ref))) return false;
+    return inPeriod(p.created_at, bounds);
+  });
+  const runs = allRuns.filter((r) => {
+    if (f.executor && f.executor !== "all" && r.workflowFile !== EXECUTOR_WORKFLOW[f.executor]) return false;
+    if (cardFiltered) {
+      const i = runIssue(r, allIssues);
+      if (!i || !okNumbers.has(i.number)) return false;
+    }
+    return inPeriod(r.run_started_at || r.created_at, bounds);
+  });
+  return { issues, prs, runs, agentRuns: agentRuns.filter((r) => runs.includes(r)) };
+}
+
+// Plan costs of a card from its comments: stored records ({usd, tokens_in, ...} from the store)
+// or GitHub comments (plan comments of the agent, parsed from the body).
+function planCostsOf(comments) {
+  const out = [];
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (c && typeof c.usd === "number") {
+      out.push({ usd: c.usd, in: c.tokens_in || 0, out: c.tokens_out || 0, cache: c.tokens_cache || 0, at: c.created_at || null });
+      continue;
+    }
+    const body = c && c.body;
+    if (!isPlanComment(body) || !(c.user && c.user.login === "github-actions[bot]")) continue;
+    const cost = parseCost(body);
+    if (!cost) continue;
+    const tk = parseTokens(body) || { in: 0, out: 0, cache: 0 };
+    out.push({ usd: cost.usd, in: tk.in, out: tk.out, cache: tk.cache, at: c.created_at || null });
+  }
+  return out;
+}
+
+// Cost parts of a card: every plan plus the executor of its newest costed PR. The PR's
+// "estimated cost so far" already includes the plans, so it only stands in (`fallback`) when
+// no plan comment was stored. The executor line is the one with seconds ("$1.0051 · 285s").
+// Returns {plans, exec, fallback} (each entry {usd, in, out, cache, at}) or null without any cost.
+function cardCostParts(issue, comments, prs) {
+  const plans = planCostsOf(comments);
+  const mine = prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  let exec = null, fallback = null;
+  for (const p of mine) {
+    const c = prCost(p);
+    if (!c) continue;
+    const tc = p.tradvia_cost || {};
+    const tk = typeof tc.tokens_in === "number" && (tc.tokens_in || tc.tokens_out || tc.tokens_cache)
+      ? { in: tc.tokens_in, out: tc.tokens_out || 0, cache: tc.tokens_cache || 0 }
+      : parseTokens(p.body) || { in: 0, out: 0, cache: 0 };
+    const part = { usd: c.usd, in: tk.in, out: tk.out, cache: tk.cache, at: p.created_at || null };
+    if (c.seconds != null) exec = part; else fallback = part;
+    break;
+  }
+  if (!plans.length && !exec && !fallback) return null;
+  return { plans, exec, fallback: plans.length ? null : fallback };
+}
+
+// Total cost and tokens of a card, or null when nothing was recorded.
+function cardCosts(issue, comments, prs) {
+  const parts = cardCostParts(issue, comments, prs);
+  if (!parts) return null;
+  const all = parts.plans.concat(parts.exec || [], parts.fallback || []);
+  const sum = (k) => all.reduce((a, p) => a + p[k], 0);
+  return { usd: sum("usd"), in: sum("in"), out: sum("out"), cache: sum("cache"), plans: parts.plans.length };
+}
+
+// Indicators over an already filtered view: {cards, withCost, totalUsd, medianUsd, tokens, medianTokens,
+// perMergedPrUsd, mergedPrs}. Cost and token fields are null when the period has no data.
+function filteredCostKpis(view) {
+  const prs = view.prs;
+  const rows = view.issues.map((i) => cardCosts(i, i.tradvia_plan_cost, prs)).filter(Boolean);
+  const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
+  const merged = view.prs.filter((p) => p.merged_at && isAgentBranch(p.head && p.head.ref));
+  const mergedCosts = merged.map((p) => {
+    const issue = view.issues.find((i) => i.number === issueOfBranch(p.head.ref));
+    return issue ? cardCosts(issue, issue.tradvia_plan_cost, prs) : null;
+  }).filter(Boolean);
+  return {
+    cards: view.issues.length,
+    withCost: rows.length,
+    totalUsd: rows.length ? sum("usd") : null,
+    medianUsd: median(rows.map((r) => r.usd)),
+    tokens: rows.length ? { in: sum("in"), out: sum("out"), cache: sum("cache") } : null,
+    medianTokens: median(rows.map((r) => r.in + r.out + r.cache)),
+    mergedPrs: merged.length,
+    perMergedPrUsd: mergedCosts.length ? mergedCosts.reduce((a, c) => a + c.usd, 0) / mergedCosts.length : null,
+  };
+}
+
+// Cost and tokens per day (UTC): plans by comment time, executor by PR creation time.
+// Returns [{day: "YYYY-MM-DD", usd, tokens}] for each day of the period (up to `maxDays`).
+function dailySeries(view, filters, now, maxDays) {
+  const days = new Map();
+  const add = (at, part) => {
+    const t = Date.parse(at);
+    if (isNaN(t) || !part) return;
+    const day = new Date(t).toISOString().slice(0, 10);
+    const d = days.get(day) || { day, usd: 0, tokens: 0 };
+    d.usd += part.usd; d.tokens += part.in + part.out + part.cache;
+    days.set(day, d);
+  };
+  for (const issue of view.issues) {
+    const parts = cardCostParts(issue, issue.tradvia_plan_cost, view.prs);
+    if (!parts) continue;
+    parts.plans.forEach((p) => add(p.at, p));
+    [parts.exec, parts.fallback].forEach((p) => p && add(p.at, p));
+  }
+  const bounds = periodBounds(filters, now);
+  const keys = [...days.keys()].sort();
+  const startMs = bounds.start != null ? bounds.start : keys.length ? Date.parse(keys[0] + "T00:00:00Z") : now;
+  const endMs = bounds.end != null ? Math.min(bounds.end - 1, now) : now;
+  const limit = maxDays || 90;
+  const out = [];
+  for (let t = Math.max(startMs, endMs - (limit - 1) * DAY_MS); t <= endMs; t += DAY_MS) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    out.push(days.get(day) || { day, usd: 0, tokens: 0 });
+  }
+  return out;
+}
+
+// Geometry of a bar chart: [{x, y, w, h, day, value}] inside width x height (no DOM).
+function barChartModel(series, key, width, height) {
+  const max = Math.max(0, ...series.map((s) => s[key]));
+  const slot = series.length ? width / series.length : width;
+  const w = Math.max(1, slot * 0.8);
+  return series.map((s, i) => {
+    const h = max > 0 ? (s[key] / max) * height : 0;
+    return { x: i * slot + (slot - w) / 2, y: height - h, w, h, day: s.day, value: s[key] };
+  });
 }
 
 // Up to `max` cards for recent activity: open first, then most recently closed.
@@ -841,6 +1097,17 @@ const I18N = {
     ignoreCla: "ignorar o CLA", merge: "Merge (squash)", updateBranch: "Atualizar branch",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+    fPeriod: "Período", fAll: "tudo", f7d: "7 dias", f30d: "30 dias", f90d: "90 dias", fCustom: "personalizado",
+    fFrom: "de", fTo: "até", fExecutor: "Executor", fAgent: "Agente Tradvia (agent.yml)",
+    fClaude: "Claude Code (claude.yml)", fCard: "Card", fStatus: "Situação", fAllM: "todos",
+    fAllF: "todas", ST_BACKLOG: "backlog", ST_AGENT_WORKING: "em andamento",
+    ST_WAITING_HUMAN: "aguardando humano", ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
+    noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
+    costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
+    tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
+    costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
+    planPlusExec: "planejamento + execução", chartCost: "Custo por dia (US$)", chartTokens: "Tokens por dia",
+    costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
@@ -883,6 +1150,17 @@ const I18N = {
     ignoreCla: "ignore the CLA", merge: "Merge (squash)", updateBranch: "Update branch",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+    fPeriod: "Period", fAll: "all", f7d: "7 days", f30d: "30 days", f90d: "90 days", fCustom: "custom",
+    fFrom: "from", fTo: "to", fExecutor: "Executor", fAgent: "Tradvia agent (agent.yml)",
+    fClaude: "Claude Code (claude.yml)", fCard: "Card", fStatus: "Status", fAllM: "all",
+    fAllF: "all", ST_BACKLOG: "backlog", ST_AGENT_WORKING: "in progress",
+    ST_WAITING_HUMAN: "waiting for human", ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
+    noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
+    costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
+    tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
+    costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
+    planPlusExec: "planning + execution", chartCost: "Cost per day (US$)", chartTokens: "Tokens per day",
+    costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
   },
 };
 
@@ -908,28 +1186,134 @@ function statusInfo(run) {
   return [c, c === "success" ? "ok" : c === "failure" || c === "timed_out" ? "bad" : "neutral"];
 }
 
-function renderKpis(k) {
+function renderKpis(view) {
   const root = document.getElementById("kpis");
   root.replaceChildren();
+  const k = computeKpis(view.runs, view.prs);
+  const c = filteredCostKpis(view);
+  const usd = (v) => (v == null ? null : "$" + v.toFixed(4));
+  const tok = (n) => (n == null ? null : formatTokens(n));
+  // [label, value, hint]: a null value shows "—" with the hint as tooltip.
   const items = [
-    [t("success"), k.successRate == null ? "—" : Math.round(k.successRate * 100) + "%"],
-    [t("medDur"), formatDuration(k.medianDurationMs)],
+    [t("success"), k.successRate == null ? null : Math.round(k.successRate * 100) + "%"],
+    [t("medDur"), k.medianDurationMs == null ? null : formatDuration(k.medianDurationMs)],
     [t("mergedPrs"), String(k.mergedPrs)],
-    [t("medPr"), formatDuration(k.medianPrMs)],
+    [t("medPr"), k.medianPrMs == null ? null : formatDuration(k.medianPrMs)],
+    [t("cardsInPeriod"), String(c.cards)],
+    [t("costTotal") + " (" + t("planPlusExec") + ")", usd(c.totalUsd), t("noData")],
+    [t("costMedian"), usd(c.medianUsd), t("noData")],
+    [t("costPerPr"), usd(c.perMergedPrUsd), t("noData")],
+    [t("tokensTotal") + " · " + t("tokensIn"), c.tokens && tok(c.tokens.in), t("noData")],
+    [t("tokensTotal") + " · " + t("tokensOut"), c.tokens && tok(c.tokens.out), t("noData")],
+    [t("tokensTotal") + " · " + t("tokensCache"), c.tokens && tok(c.tokens.cache), t("noData")],
+    [t("tokensPerCard"), tok(c.medianTokens), t("noData")],
   ];
-  for (const [l, v] of items) {
+  for (const [l, v, hint] of items) {
     const d = el("div", null, "kpi");
-    d.append(el("div", v, "v"), el("div", l, "l"));
+    const val = el("div", v == null ? "—" : v, "v");
+    if (v == null) val.title = hint || t("noData");
+    d.append(val, el("div", l, "l"));
     root.append(d);
   }
-  const cost = totalAndMedianCost(data ? data.prs : []);
-  const usd = (v) => (v == null ? "—" : "$" + v.toFixed(4));
-  for (const [k, v] of [["total", cost.total], ["median", cost.median]]) {
-    const d = el("div", null, "kpi");
-    d.append(el("div", cost.count ? usd(v) : "—", "v"),
-      el("div", t("costTitle") + " · " + t(k) + " (" + t("costLabel") + ")", "l"));
-    root.append(d);
+}
+
+function svgEl(tag, attrs) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  return n;
+}
+
+// Plain SVG bars, one per day; the <title> of each bar is its tooltip.
+function renderBarChart(title, series, key, fmt) {
+  const box = el("div", null, "chart");
+  box.append(el("div", title, "l"));
+  const W = 300, H = 80;
+  if (!series.some((s) => s[key] > 0)) {
+    const none = el("div", "—", "v");
+    none.title = t("noData");
+    box.append(none);
+    return box;
   }
+  const svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none", role: "img", "aria-label": title });
+  for (const b of barChartModel(series, key, W, H)) {
+    const r = svgEl("rect", { x: b.x.toFixed(2), y: b.y.toFixed(2), width: b.w.toFixed(2), height: b.h.toFixed(2) });
+    const tip = svgEl("title");
+    tip.textContent = b.day + ": " + fmt(b.value);
+    r.append(tip);
+    svg.append(r);
+  }
+  box.append(svg, el("div", series[0].day + " → " + series[series.length - 1].day, "sub"));
+  return box;
+}
+
+function renderCharts(view) {
+  const root = document.getElementById("charts");
+  const series = dailySeries(view, filters, Date.now());
+  root.replaceChildren(
+    renderBarChart(t("chartCost"), series, "usd", (v) => "$" + v.toFixed(4)),
+    renderBarChart(t("chartTokens"), series, "tokens", formatTokens));
+}
+
+let filters = parseFilters(location.search);
+
+function setFilters(next) {
+  filters = next;
+  history.replaceState(null, "", location.pathname + filtersToSearch(filters, location.search) + location.hash);
+  render();
+}
+
+function periodChoice(f) {
+  if (!f.from && !f.to) return "all";
+  return PRESET_DAYS[f.from] ? f.from : "custom";
+}
+
+function renderFilters() {
+  const root = document.getElementById("filters");
+  root.replaceChildren();
+  const field = (label, control) => {
+    const l = el("label", label + " ");
+    l.append(control);
+    root.append(l);
+  };
+  const select = (options, value, onChange) => {
+    const s = document.createElement("select");
+    for (const [v, text] of options) {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = text;
+      s.append(o);
+    }
+    s.value = value;
+    s.addEventListener("change", () => onChange(s.value));
+    return s;
+  };
+  const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const choice = periodChoice(filters);
+  field(t("fPeriod"), select(
+    [["all", t("fAll")], ["7d", t("f7d")], ["30d", t("f30d")], ["90d", t("f90d")], ["custom", t("fCustom")]],
+    choice, (v) => {
+      if (v === "custom") setFilters({ ...filters, from: isoDay(Date.now() - 30 * DAY_MS), to: isoDay(Date.now()) });
+      else setFilters({ ...filters, from: v === "all" ? null : v, to: null });
+    }));
+  if (choice === "custom") {
+    const date = (key) => {
+      const i = document.createElement("input");
+      i.type = "date";
+      i.value = filters[key] || "";
+      i.addEventListener("change", () => setFilters({ ...filters, [key]: i.value || null }));
+      return i;
+    };
+    field(t("fFrom"), date("from"));
+    field(t("fTo"), date("to"));
+  }
+  field(t("fExecutor"), select(
+    [["all", t("fAllM")], ["agent", t("fAgent")], ["claude", t("fClaude")]],
+    filters.executor, (v) => setFilters({ ...filters, executor: v })));
+  const cards = [["", t("fAllM")]].concat((data ? data.issues : []).map((i) => [String(i.number), "#" + i.number + " " + i.title]));
+  field(t("fCard"), select(cards, filters.card ? String(filters.card) : "",
+    (v) => setFilters({ ...filters, card: v ? parseInt(v, 10) : null })));
+  field(t("fStatus"), select(
+    [["all", t("fAllF")]].concat(STATES.map((s) => [s, t("ST_" + s)])),
+    filters.status, (v) => setFilters({ ...filters, status: v })));
 }
 
 function fmtTime(iso) {
@@ -1122,8 +1506,11 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     a.target = "_blank"; a.rel = "noopener";
     a.addEventListener("click", (e) => e.stopPropagation());
     card.append(el("div", "#" + issue.number, "n"), a);
-    const cost = costForIssue(issue, prs);
-    if (cost) card.append(el("div", cost.label + " · " + t("costLabel"), "cost"));
+    const cost = cardCosts(issue, issue.tradvia_plan_cost, prs);
+    if (cost) {
+      card.append(el("div", "$" + cost.usd.toFixed(4) + " · " + formatTokens(cost.in + cost.out + cost.cache) +
+        " tokens · " + t("costLabel"), "cost"));
+    }
     const panel = el("div", null, "activity");
     panel.hidden = true;
     panel.addEventListener("click", (e) => e.stopPropagation());
@@ -1219,10 +1606,14 @@ function render() {
   content.hidden = fetchState !== "ok" || !data;
   if (!content.hidden) {
     renderRecent();
-    renderKpis(computeKpis(data.runs, data.prs));
-    renderBoard(data.issues, data.prs, data.agentRuns, data.backlog);
+    const view = applyFilters(data, filters, Date.now());
+    renderFilters();
+    renderKpis(view);
+    renderCharts(view);
+    // Card states are derived from every PR and run, not only the filtered ones.
+    renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
     renderDeploys();
-    renderRuns(visibleRuns(data.runs, showSkipped));
+    renderRuns(visibleRuns(view.runs, showSkipped));
   }
 }
 
