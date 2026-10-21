@@ -86,6 +86,18 @@ class Store(Protocol):
     def set_backlog(self, project_id: int, items: list[dict[str, Any]]) -> None:
         """Replace the project's whole backlog in one transaction; position is the list index."""
 
+    # Audit log of panel actions (api.py). `rec`: actor_login, action, issue_number | None,
+    # result ("ok", "denied" or "failed"), detail, idempotency_key | None, created_at (epoch).
+    def append_audit(self, project_id: int, rec: dict[str, Any]) -> None: ...
+
+    def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
+        """Entries of one card, oldest first, `created_at` as an ISO string."""
+
+    def recent_audit_key(
+        self, project_id: int, actor_login: str, idempotency_key: str, since: float
+    ) -> dict[str, Any] | None:
+        """Newest successful entry of this actor with this key at or after `since` (epoch)."""
+
     # Sign in (auth.py). Not project scoped. Times are epoch seconds.
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -125,6 +137,7 @@ class MemoryStore:
             t: {} for t in _TABLES.values()
         }
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
+        self.audit: list[dict[str, Any]] = []
         self.sessions: dict[str, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self._clock = 0
@@ -270,6 +283,39 @@ class MemoryStore:
         ]
         with self._lock:
             self.backlogs[project_id] = rows
+
+    def append_audit(self, project_id: int, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self.audit.append({**copy.deepcopy(rec), "project_id": project_id})
+
+    def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [
+                r for r in self.audit
+                if r["project_id"] == project_id and r["issue_number"] == issue_number
+            ]
+        rows.sort(key=lambda r: r["created_at"])
+        return [
+            {
+                "actor_login": r["actor_login"], "action": r["action"],
+                "issue_number": r["issue_number"], "result": r["result"],
+                "detail": r["detail"],
+                "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
+            }
+            for r in rows
+        ]
+
+    def recent_audit_key(
+        self, project_id: int, actor_login: str, idempotency_key: str, since: float
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            hits = [
+                r for r in self.audit
+                if r["project_id"] == project_id and r["actor_login"] == actor_login
+                and r.get("idempotency_key") == idempotency_key and r["result"] == "ok"
+                and r["created_at"] >= since
+            ]
+        return copy.deepcopy(max(hits, key=lambda r: r["created_at"])) if hits else None
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -429,6 +475,23 @@ _DELETE_BACKLOG_SQL = "DELETE FROM backlog_items WHERE project_id = %s"
 _INSERT_BACKLOG_SQL = """
     INSERT INTO backlog_items (project_id, issue_number, position, depends_on, note)
     VALUES (%s, %s, %s, %s, %s)
+"""
+_INSERT_AUDIT_SQL = """
+    INSERT INTO audit_log (project_id, actor_login, action, issue_number, result, detail,
+                           idempotency_key, created_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s))
+"""
+_LIST_AUDIT_SQL = """
+    SELECT actor_login, action, issue_number, result, detail, created_at
+    FROM audit_log WHERE project_id = %s AND issue_number = %s
+    ORDER BY created_at, id
+"""
+_RECENT_AUDIT_KEY_SQL = """
+    SELECT actor_login, action, issue_number, result, detail
+    FROM audit_log
+    WHERE project_id = %s AND actor_login = %s AND idempotency_key = %s
+          AND result = 'ok' AND created_at >= to_timestamp(%s)
+    ORDER BY created_at DESC, id DESC LIMIT 1
 """
 _PURGE_LOGIN_STATES_SQL = "DELETE FROM login_states WHERE expires_at <= to_timestamp(%s)"
 _PURGE_SESSIONS_SQL = "DELETE FROM sessions WHERE expires_at <= to_timestamp(%s)"
@@ -642,6 +705,36 @@ class PgStore:
                         (project_id, it["issue_number"], i,
                          list(it.get("depends_on", [])), it.get("note", "")),
                     )
+
+    def append_audit(self, project_id: int, rec: dict[str, Any]) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(
+                    _INSERT_AUDIT_SQL,
+                    (project_id, rec["actor_login"], rec["action"], rec["issue_number"],
+                     rec["result"], rec["detail"], rec.get("idempotency_key"), rec["created_at"]),
+                )
+
+    def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_AUDIT_SQL, (project_id, issue_number)).fetchall()
+        return [
+            {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
+             "detail": r[4], "created_at": _iso(r[5])}
+            for r in rows
+        ]
+
+    def recent_audit_key(
+        self, project_id: int, actor_login: str, idempotency_key: str, since: float
+    ) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                _RECENT_AUDIT_KEY_SQL, (project_id, actor_login, idempotency_key, since)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"actor_login": row[0], "action": row[1], "issue_number": row[2],
+                "result": row[3], "detail": row[4]}
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
