@@ -170,6 +170,21 @@ class GitHubIdentity(Protocol):
         """`(permission, role_name)` of the collaborator, or `(None, None)`."""
 
 
+_REASON_RE = re.compile(r"[a-z_]{1,64}")
+
+
+def _reason(data: Any, status: int) -> str:
+    """GitHub's OAuth error code (e.g. `incorrect_client_credentials`), safe to show.
+
+    Only a short lowercase code passes; anything else becomes the HTTP status, so no
+    token, secret or free text from GitHub reaches the response.
+    """
+    code = data.get("error") if isinstance(data, dict) else None
+    if isinstance(code, str) and _REASON_RE.fullmatch(code):
+        return code
+    return f"HTTP {status}"
+
+
 class HttpGitHub:
     def __init__(self, client_id: str, client_secret: str) -> None:
         self._id, self._secret = client_id, client_secret
@@ -185,11 +200,12 @@ class HttpGitHub:
                 headers={"Accept": "application/json"},
                 timeout=UPSTREAM_TIMEOUT,
             )
-            token = r.json().get("access_token") if r.status_code == 200 else None
+            data = r.json() if r.status_code == 200 else {}
         except Exception:  # never echo: the error may carry the request body
             raise AuthError("github unavailable", 502) from None
+        token = data.get("access_token") if isinstance(data, dict) else None
         if not isinstance(token, str) or not token:
-            raise AuthError("github refused the login", 502)
+            raise AuthError(f"github refused the login ({_reason(data, r.status_code)})", 502)
         return token
 
     def _get(self, token: str, path: str) -> requests.Response:
@@ -206,7 +222,7 @@ class HttpGitHub:
         except Exception:
             raise AuthError("github unavailable", 502) from None
         if not isinstance(data, dict) or not data.get("login") or not isinstance(data.get("id"), int):
-            raise AuthError("github refused the login", 502)
+            raise AuthError(f"github refused the login (user lookup: HTTP {r.status_code})", 502)
         return {"id": data["id"], "login": data["login"], "avatar_url": data.get("avatar_url")}
 
     def get_permission(self, token: str, repo: str, login: str) -> tuple[str | None, str | None]:
