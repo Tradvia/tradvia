@@ -307,3 +307,32 @@ def test_executor_failure_is_announced_and_opens_no_pr(tmp_path):
     assert result["status"] == "WAITING_HUMAN"
     assert gh.prs == [] and gh.branches == [] and gh.files == {}
     assert "turn limit (5 turns)" in chat.messages[-1] and "agent:ready" in chat.messages[-1]
+
+
+@pytest.mark.parametrize("value, expected", [(None, 30), ("45", 45), ("-3", 30), ("x", 30)])
+def test_planner_max_turns_from_env(tmp_path, monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("TRADVIA_PLAN_MAX_TURNS", raising=False)
+    else:
+        monkeypatch.setenv("TRADVIA_PLAN_MAX_TURNS", value)
+    runner = fake_runner(tmp_path, json.dumps(PLAN))
+    claude_code_plan("t", "b", 1, runner=runner, cwd=str(tmp_path))
+    cmd = runner.calls[0]
+    assert cmd[cmd.index("--max-turns") + 1] == str(expected)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("Claude Code stopped at the turn limit (30 turns)"),
+                                   ValueError("Claude Code plan is not valid JSON: x")])
+def test_planner_failure_is_announced_and_posts_no_plan(error):
+    def failing(title, body, number):
+        raise error
+
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=failing)
+    result, _ = start(app)
+
+    assert result["status"] == "WAITING_HUMAN"
+    assert not result.get("__interrupt__")
+    assert len(chat.messages) == 1 and str(error) in chat.messages[0]
+    assert "agent:ready" in chat.messages[0]
+    assert gh.prs == [] and gh.branches == []

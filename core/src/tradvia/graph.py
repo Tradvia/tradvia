@@ -113,8 +113,18 @@ def build_graph(github: GitHub, chat: Chat,
         feedback = [a["comment"] for a in card.get("approvals", []) if a["decision"] == "feedback"]
         if feedback:
             body += "\n\nHuman feedback to address:\n" + "\n".join(f"- {f}" for f in feedback)
-        p = planner(card["title"], body, card["source"]["issue_number"])
+        try:
+            p = planner(card["title"], body, card["source"]["issue_number"])
+        except (RuntimeError, ValueError) as e:
+            why = str(e)[:300]
+            chat.post(f"🔴 **{card['id']}** — o planejamento falhou: {why}. Nenhum plano foi "
+                      "publicado. Ajuste a descrição da issue (ou divida o card) e reinicie-o "
+                      "removendo e adicionando o rótulo `agent:ready`.")
+            return {"plan_error": why,
+                    **transition(card["status"], "WAITING_HUMAN", "@Agent-Architect",
+                                 f"Planner failed: {why}")}
         return {
+            "plan_error": None,
             "assignee": "@Agent-Architect",
             "plan": [{"id": i + 1, "title": s, "done": False} for i, s in enumerate(p.get("plan", []))],
             "file_path": safe_path(p["file_path"]) if p.get("file_path") else "",
@@ -262,7 +272,8 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_node("replan_limit", replan_limit)
     g.add_edge(START, "start_work")
     g.add_edge("start_work", "plan")
-    g.add_edge("plan", "ask_human")
+    g.add_conditional_edges("plan", lambda c: END if c.get("plan_error") else "ask_human",
+                            ["ask_human", END])
     g.add_edge("ask_human", "wait_human")
     g.add_conditional_edges("wait_human", route_after_reply, ["open_pr", "plan", "replan_limit", END])
     g.add_edge("open_pr", END)
