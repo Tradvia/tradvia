@@ -59,6 +59,7 @@ class Card(TypedDict, total=False):
     branch: str | None
     pull_request_url: str | None
     pending_question: dict | None
+    plan_error: str | None
     approvals: Annotated[list[dict], operator.add]
     cost: Annotated[dict, add_cost]
     history: Annotated[list[dict], operator.add]

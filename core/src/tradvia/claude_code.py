@@ -56,13 +56,25 @@ def _timeout() -> int:
 DEFAULT_EXEC_MAX_TURNS = 80
 
 
+DEFAULT_PLAN_MAX_TURNS = 30
+
+
+def _positive_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def plan_max_turns() -> int:
+    """Planner turn limit from `TRADVIA_PLAN_MAX_TURNS` (positive integer, default 30)."""
+    return _positive_env("TRADVIA_PLAN_MAX_TURNS", DEFAULT_PLAN_MAX_TURNS)
+
+
 def exec_max_turns() -> int:
     """Executor turn limit from `TRADVIA_EXEC_MAX_TURNS` (positive integer, default 80)."""
-    try:
-        value = int(os.getenv("TRADVIA_EXEC_MAX_TURNS", ""))
-    except ValueError:
-        return DEFAULT_EXEC_MAX_TURNS
-    return value if value > 0 else DEFAULT_EXEC_MAX_TURNS
+    return _positive_env("TRADVIA_EXEC_MAX_TURNS", DEFAULT_EXEC_MAX_TURNS)
 
 
 def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
@@ -100,7 +112,7 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
                      cwd: str = ".") -> dict:
     """Same signature and return shape as `architect_plan`, minus the single-file fields."""
     data = run_claude(PLAN_PROMPT.format(number=number, title=title, body=body), cwd,
-                      PLAN_TOOLS, max_turns=10, runner=runner)
+                      PLAN_TOOLS, max_turns=plan_max_turns(), runner=runner)
     try:
         plan = _parse_json(data.get("result", ""))
     except ValueError as e:
