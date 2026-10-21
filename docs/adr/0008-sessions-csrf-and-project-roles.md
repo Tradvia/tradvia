@@ -37,6 +37,25 @@ it, and ADR 0006 makes the project the unit of scope. The panel at
   `TRADVIA_GITHUB_APP_CLIENT_SECRET` and `TRADVIA_SECRET_KEY` the routes answer 404
   and `/api/auth/me` answers `{"enabled": false}`.
 
+## Addendum: panel actions (ADR 0004 phase 2)
+
+- **Policy read with the user's token**: `.tradvia.yml` is read from the default
+  branch with the signed-in user's token (needs the App permission **Contents:
+  Read-only**). A 404 means the ADR 0004 defaults, like the agent. A 401/403 or an
+  invalid file refuses the action (**fail closed**); the message names the missing
+  permission. Successful reads are reused for 60 s only to decide which buttons to
+  show; every action reads the file again.
+- **Identity**: creating a card, adding `agent:ready` and commenting use the user's
+  token, never the server's `GITHUB_TOKEN`.
+- **Audit log**: table `audit_log` (project, actor, action, card, result, detail,
+  idempotency key, time). Every attempt is recorded, whether it succeeded
+  (`ok`), was refused (`denied`) or failed (`failed`). It is read only through
+  `GET .../cards/{n}/audit`, which needs a session and at least the `read` role in
+  the project and is sent with `Cache-Control: no-store`; it is never public.
+- **Idempotency**: the panel sends `X-Tradvia-Idempotency-Key` on every action. A
+  repeat of the same key by the same user within 5 s after a successful action (or
+  while it is still running) is ignored and answers `{"ok": true, "duplicate": true}`.
+
 ## Consequences
 
 - Rotating `TRADVIA_SECRET_KEY` signs everyone out.
