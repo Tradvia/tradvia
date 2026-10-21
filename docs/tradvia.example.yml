@@ -10,3 +10,6 @@ interactions:
   mention_assistant: write # parsed, not yet enforced by core
   live_takeover: maintain  # parsed, not yet enforced by core
   budget_control: admin    # parsed, not yet enforced by core
+  merge_pr: maintain       # enforced: squash-merge a pull request from the panel
+  update_branch: maintain  # enforced: bring a pull request branch up to date with main
+  approve_deploy: maintain # enforced: approve/reject/cancel deploys, run the post-deploy operation
