@@ -47,7 +47,7 @@ project.
 |---|---|---|---|
 | 1 | #45 | Sign in with GitHub, sessions, per-project roles | Planned |
 | 2 | #46 | Create, start, order and answer cards in Tradvia | Planned |
-| 3 | #56 | Review and merge PRs, approve deploys in Tradvia | Planned |
+| 3 | #56 | Review and merge PRs, approve deploys in Tradvia | Partial |
 | 4 | #40 | Durable waiting and resume | Planned |
 | 5 | #47 | Inbox and web push notifications | Planned |
 | 6 | #57 | Orchestrator conversation inside Tradvia | Planned |
@@ -57,6 +57,26 @@ project.
 
 Already shipped and reused: project scope (#44), backlog in Tradvia (#50),
 dashboard reads from the store (#36), deploy-time operations (#54).
+
+## Pull requests and deploys (#56)
+
+Status: **Partial** (implemented and tested offline; production needs the
+GitHub App permissions in `docs/github-app.md`).
+
+- The card shows the PR and its checks, read with the user's token. The merge
+  is a squash with the PR's Conventional Commit title, followed by deleting the
+  branch. A failed required check (`core-tests`, `license-boundary`, `cla`)
+  refuses the merge; only `cla` can be ignored, explicitly, and the audit log
+  records it.
+- Merging, updating a branch, approving or rejecting a deploy, cancelling a
+  replaced deploy and running the post-deploy operation are new
+  `.tradvia.yml` interactions (`merge_pr`, `update_branch`, `approve_deploy`),
+  all defaulting to `maintain`. Being a reviewer of the `production`
+  environment is still decided by GitHub, with the user's token.
+- A waiting deploy superseded by a newer one in the same queue is shown as
+  "replaced" and is the only kind the panel can cancel.
+- The post-deploy operation dispatches `deploy-oci` with `backfill` and
+  `backlog` (#54); the backlog is pre-filled from the order stored in Tradvia.
 
 ## Consequences
 
