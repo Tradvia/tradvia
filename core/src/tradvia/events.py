@@ -48,7 +48,35 @@ def comment_record(comment: dict[str, Any], issue_number: int) -> dict[str, Any]
     }
 
 
+_NUM = r"(\d+(?:\.\d+)?)"
+_SECS = r"(?:\s*[·•|-]\s*" + _NUM + r"\s*s\b)?"
+# Same patterns, in the same order, as parseCost() in dashboard/index.html.
+_COST_PATTERNS = (
+    re.compile(r"estimated cost \(api-equivalent\):\s*\$" + _NUM + _SECS, re.I),
+    re.compile(r"\bcost:\s*\$" + _NUM + _SECS, re.I),
+    re.compile(r"cost so far[^$\n]*\$" + _NUM, re.I),
+)
+
+
+def parse_cost(body: str | None) -> tuple[float | None, float | None]:
+    """`(usd, seconds)` from the cost line Tradvia writes in a PR description.
+
+    The PR body itself is not stored (it can be long and is not needed for reads);
+    only these two numbers are, so the cost KPIs work when the panel reads the store.
+    """
+    if not isinstance(body, str):
+        return None, None
+    for pattern in _COST_PATTERNS:
+        m = pattern.search(body)
+        if m:
+            groups = m.groups()
+            seconds = float(groups[1]) if len(groups) > 1 and groups[1] is not None else None
+            return float(groups[0]), seconds
+    return None, None
+
+
 def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
+    cost_usd, cost_seconds = parse_cost(pr.get("body"))
     return {
         "id": pr["id"],
         "number": pr["number"],
@@ -61,6 +89,8 @@ def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
         "updated_at": pr["updated_at"],
         "merged_at": pr.get("merged_at"),
         "html_url": pr.get("html_url"),
+        "cost_usd": cost_usd,
+        "cost_seconds": cost_seconds,
     }
 
 

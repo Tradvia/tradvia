@@ -153,6 +153,7 @@ def test_pulls_format_state_and_order(client):
         "html_url": f"https://github.com/{REPO}/pull/2",
         "created_at": "2026-01-02T00:00:00Z",
         "updated_at": "2026-01-02T00:00:00Z",
+        "tradvia_cost": None,
     }
     assert [p["number"] for p in client.get(f"{BASE}/pulls?state=open").json()] == [1]
     assert client.get(f"{BASE}/pulls?state=closed&per_page=1").json()[0]["number"] == 2

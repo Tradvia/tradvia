@@ -207,7 +207,15 @@ def github_pull(r: dict[str, Any]) -> dict[str, Any]:
         "html_url": r.get("html_url"),
         "created_at": r.get("created_at"),
         "updated_at": r["updated_at"],
+        # Not a GitHub field: the cost parsed from the PR body, which the store does not keep.
+        "tradvia_cost": _cost(r.get("cost_usd"), r.get("cost_seconds")),
     }
+
+
+def _cost(usd: Any, seconds: Any) -> dict[str, float | None] | None:
+    if usd is None:
+        return None
+    return {"usd": float(usd), "seconds": float(seconds) if seconds is not None else None}
 
 
 def github_run(r: dict[str, Any]) -> dict[str, Any]:

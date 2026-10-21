@@ -243,6 +243,17 @@ function parseCost(body) {
   return null;
 }
 
+// Cost of a PR: the store sends it parsed (`tradvia_cost`, it keeps no PR body);
+// GitHub and the proxy send the body, parsed here.
+function prCost(p) {
+  const c = p && p.tradvia_cost;
+  if (c && typeof c.usd === "number") {
+    const seconds = typeof c.seconds === "number" ? c.seconds : null;
+    return { usd: c.usd, seconds, label: "$" + c.usd.toFixed(4) + (seconds != null ? " · " + Math.round(seconds) + "s" : "") };
+  }
+  return parseCost(p && p.body);
+}
+
 // Only https links to github.com are rendered as links.
 function safeGithubUrl(u) {
   try {
@@ -357,7 +368,7 @@ function costForIssue(issue, prs) {
     .filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number))
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   for (const p of mine) {
-    const c = parseCost(p.body);
+    const c = prCost(p);
     if (c) return c;
   }
   return null;
@@ -367,7 +378,7 @@ function costForIssue(issue, prs) {
 function totalAndMedianCost(prs) {
   const costs = prs
     .filter((p) => isAgentBranch(p.head && p.head.ref))
-    .map((p) => parseCost(p.body))
+    .map((p) => prCost(p))
     .filter(Boolean)
     .map((c) => c.usd);
   return { total: costs.reduce((a, b) => a + b, 0), median: median(costs), count: costs.length };

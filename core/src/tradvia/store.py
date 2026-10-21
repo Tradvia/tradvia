@@ -392,15 +392,17 @@ _UPSERT_SQL = {
     """,
     "pull_request": """
         INSERT INTO pull_requests (project_id, id, number, title, state, merged, branch,
-                                   author, created_at, updated_at, merged_at, html_url)
+                                   author, created_at, updated_at, merged_at, html_url,
+                                   cost_usd, cost_seconds)
         VALUES (%(project_id)s, %(id)s, %(number)s, %(title)s, %(state)s, %(merged)s,
                 %(branch)s, %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s,
-                %(html_url)s)
+                %(html_url)s, %(cost_usd)s, %(cost_seconds)s)
         ON CONFLICT (project_id, id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             merged = excluded.merged, branch = excluded.branch, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
-            merged_at = excluded.merged_at, html_url = excluded.html_url
+            merged_at = excluded.merged_at, html_url = excluded.html_url,
+            cost_usd = excluded.cost_usd, cost_seconds = excluded.cost_seconds
         WHERE excluded.updated_at >= pull_requests.updated_at
     """,
     "workflow_run": """
@@ -454,7 +456,7 @@ _LIST_ISSUES_SQL = """
 """
 _LIST_PULLS_SQL = """
     SELECT number, title, state, merged_at, branch, author, html_url,
-           created_at, updated_at
+           created_at, updated_at, cost_usd, cost_seconds
     FROM pull_requests
     WHERE project_id = %(project_id)s AND (%(state)s = 'all' OR state = %(state)s)
     ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
