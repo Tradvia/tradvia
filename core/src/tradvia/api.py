@@ -19,15 +19,29 @@ from urllib.parse import urlencode
 import requests
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from .auth import (
+    CSRF_HEADER,
+    SESSION_COOKIE,
+    STATE_COOKIE,
+    STATE_TTL,
+    Auth,
+    AuthError,
+    GitHubIdentity,
+    load_config,
+)
 from .backlog import backlog_status
 from .events import HANDLED_EVENTS, PayloadError, payload_ops
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
+WEBHOOK_PATH = "/api/webhooks/github"
+UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 MAX_WEBHOOK_BYTES = 1024 * 1024
 ALLOWED_PARAMS = ("state", "per_page", "page", "labels", "sort", "direction")
 MAX_ENTRIES = 500
@@ -162,12 +176,17 @@ def create_app(
     fetch: Fetch | None = None,
     now: Callable[[], float] = time.monotonic,
     store: Store | None = None,
+    identity: GitHubIdentity | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> Starlette:
     fetch = fetch or default_fetch
     webhook_secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
     db: Store | None = store
     if db is None and os.environ.get("DATABASE_URL"):
         db = PgStore(os.environ["DATABASE_URL"])  # lazy: does not connect here
+    # Sign-in is off unless client id, client secret and secret key are all set.
+    auth_config = load_config()
+    auth = Auth(auth_config, db, identity, clock) if auth_config and db is not None else None
     repos = registered_projects()
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -417,9 +436,126 @@ def create_app(
             {"total_count": len(rows), "workflow_runs": [github_run(r) for r in rows]}
         )
 
+    # --- sign in with GitHub (auth.py, ADR 0007) -----------------------------------
+
+    def private(response: Response) -> Response:
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def set_cookie(response: Response, name: str, value: str, max_age: int) -> None:
+        # __Host- prefix: Secure, Path=/ and no Domain are mandatory.
+        response.set_cookie(
+            name, value, max_age=max_age, path="/", secure=True, httponly=True, samesite="lax"
+        )
+
+    def clear_cookie(response: Response, name: str) -> None:
+        set_cookie(response, name, "", 0)
+
+    async def csrf_guard(request: Request, call_next: Callable[[Request], Any]) -> Response:
+        """State-changing requests with a session cookie need a matching Origin and CSRF header.
+
+        A cookie that maps to no live session counts as anonymous. Webhooks carry their own
+        signature and are not affected.
+        """
+        cookie = request.cookies.get(SESSION_COOKIE)
+        if (
+            auth is None
+            or request.method not in UNSAFE_METHODS
+            or request.url.path == WEBHOOK_PATH
+            or cookie is None
+        ):
+            return await call_next(request)
+        if not auth.origin_ok(request.headers.get("origin"), request.headers.get("referer")):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        try:
+            session = await run_in_threadpool(auth.session_from, cookie, False)
+        except Exception:
+            return _store_unavailable()
+        if session is not None and not auth.csrf_ok(session, request.headers.get(CSRF_HEADER)):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return await call_next(request)
+
+    async def auth_login(request: Request) -> Response:
+        if auth is None:
+            return _not_found()
+        try:
+            start = await run_in_threadpool(auth.start_login, request.query_params.get("next"))
+        except Exception:
+            return _store_unavailable()
+        response = RedirectResponse(start.url, status_code=302)
+        set_cookie(response, STATE_COOKIE, start.state, STATE_TTL)
+        return private(response)
+
+    async def auth_callback(request: Request) -> Response:
+        if auth is None:
+            return _not_found()
+        params = request.query_params
+        try:
+            session, target = await run_in_threadpool(
+                auth.finish_login,
+                params.get("code"),
+                params.get("state"),
+                request.cookies.get(STATE_COOKIE),
+            )
+        except AuthError as e:
+            response = JSONResponse({"error": str(e)}, status_code=e.status)
+            clear_cookie(response, STATE_COOKIE)
+            return private(response)
+        except Exception:  # never echo: it may carry tokens or the DSN
+            return private(_store_unavailable())
+        response = RedirectResponse(target, status_code=302)
+        set_cookie(response, SESSION_COOKIE, session.token, session.max_age)
+        clear_cookie(response, STATE_COOKIE)
+        return private(response)
+
+    async def auth_logout(request: Request) -> Response:
+        if auth is None:
+            return _not_found()
+        try:
+            await run_in_threadpool(auth.logout, request.cookies.get(SESSION_COOKIE))
+        except Exception:
+            return private(_store_unavailable())
+        response = JSONResponse({"ok": True})
+        clear_cookie(response, SESSION_COOKIE)
+        return private(response)
+
+    async def auth_me(request: Request) -> Response:
+        if auth is None:
+            return private(JSONResponse({"enabled": False}))
+        try:
+            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+        except Exception:
+            return private(_store_unavailable())
+        if session is None:
+            response = JSONResponse({"enabled": True, "authenticated": False})
+            if SESSION_COOKIE in request.cookies:  # stale or forged: drop it
+                clear_cookie(response, SESSION_COOKIE)
+            return private(response)
+        roles = await run_in_threadpool(lambda: [auth.role_of(session, r) for r in repos])
+        response = JSONResponse(
+            {
+                "enabled": True,
+                "authenticated": True,
+                "login": session.login,
+                "avatar_url": session.rec["avatar_url"],
+                "csrf": auth.csrf_token(session),
+                "projects": [
+                    {"slug": project_slug(r), "external_id": r, "role": role}
+                    for r, role in zip(repos, roles)
+                ],
+            }
+        )
+        set_cookie(response, SESSION_COOKIE, session.token, session.max_age)  # sliding renewal
+        return private(response)
+
     return Starlette(
+        middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
         routes=[
-            Route("/api/webhooks/github", webhook, methods=["POST"]),
+            Route("/api/auth/login", auth_login, methods=["GET"]),
+            Route("/api/auth/callback", auth_callback, methods=["GET"]),
+            Route("/api/auth/logout", auth_logout, methods=["POST"]),
+            Route("/api/auth/me", auth_me, methods=["GET"]),
+            Route(WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/api/projects", projects, methods=["GET"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
