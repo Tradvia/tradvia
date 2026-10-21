@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, NamedTuple
@@ -25,6 +26,19 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from .actions import (
+    ActionError,
+    CardNotFound,
+    GitHubError,
+    agent_login,
+    apply_order,
+    awaiting_plan,
+    new_backlog,
+    parse_new_card,
+    parse_reply,
+    plan_comment,
+    reorder,
+)
 from .auth import (
     CSRF_HEADER,
     SESSION_COOKIE,
@@ -33,15 +47,20 @@ from .auth import (
     Auth,
     AuthError,
     GitHubIdentity,
+    PolicyUnreadable,
     load_config,
 )
-from .backlog import backlog_status
-from .events import HANDLED_EVENTS, PayloadError, payload_ops
+from .backlog import READY_LABEL, backlog_status
+from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
+from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
 WEBHOOK_PATH = "/api/webhooks/github"
 UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+IDEMPOTENCY_HEADER = "x-tradvia-idempotency-key"
+IDEMPOTENCY_WINDOW = 5.0  # seconds
+_KEY_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
 MAX_WEBHOOK_BYTES = 1024 * 1024
 ALLOWED_PARAMS = ("state", "per_page", "page", "labels", "sort", "direction")
 MAX_ENTRIES = 500
@@ -532,6 +551,7 @@ def create_app(
                 clear_cookie(response, SESSION_COOKIE)
             return private(response)
         roles = await run_in_threadpool(lambda: [auth.role_of(session, r) for r in repos])
+        can = await run_in_threadpool(lambda: [panel_rights(session, r, x) for r, x in zip(repos, roles)])
         response = JSONResponse(
             {
                 "enabled": True,
@@ -540,13 +560,272 @@ def create_app(
                 "avatar_url": session.rec["avatar_url"],
                 "csrf": auth.csrf_token(session),
                 "projects": [
-                    {"slug": project_slug(r), "external_id": r, "role": role}
-                    for r, role in zip(repos, roles)
+                    {"slug": project_slug(r), "external_id": r, "role": role, **rights}
+                    for r, role, rights in zip(repos, roles, can)
                 ],
             }
         )
         set_cookie(response, SESSION_COOKIE, session.token, session.max_age)  # sliding renewal
         return private(response)
+
+    # --- panel actions with the user's own identity (actions.py, ADR 0004 phase 2) --------
+
+    def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
+        """What the panel may show as buttons; the routes check again on every request."""
+        rights = {"can_start": False, "can_approve": False}
+        if role is None:
+            return rights
+        try:
+            policy = auth.policy_for(session, repo, fresh=False)
+        except Exception:  # unreadable or invalid policy: fail closed
+            return rights
+        return {
+            "can_start": policy.allows("start_card", role),
+            "can_approve": policy.allows("approve_plan", role),
+        }
+
+    class Done(NamedTuple):
+        number: int | None
+        detail: str
+        extra: dict[str, Any]
+
+    class Conflict(Exception):
+        """The card is in the wrong state for the action."""
+
+    class Outcome(NamedTuple):
+        status: int
+        body: dict[str, Any]
+
+    inflight: dict[tuple[str, str], float] = {}
+    inflight_lock = threading.Lock()
+
+    def record_audit(
+        pid: int, login: str, action: str, number: int | None, result: str, detail: str,
+        key: str | None,
+    ) -> None:
+        assert db is not None
+        try:
+            db.append_audit(pid, {
+                "actor_login": login, "action": action, "issue_number": number,
+                "result": result, "detail": detail[:200], "idempotency_key": key,
+                "created_at": clock(),
+            })
+        except Exception:  # the action already ran (or was refused): never turn that into a 500
+            pass
+
+    def execute(
+        session: Any, repo: str, action: str, interaction: str, number: int | None,
+        key: str | None, work: Callable[[str], Done],
+    ) -> Outcome:
+        assert auth is not None and db is not None
+        pid = project_id_of(repo)
+        login = session.login
+
+        def log(result: str, detail: str = "", n: int | None = number) -> None:
+            record_audit(pid, login, action, n, result, detail, key)
+
+        try:
+            access = auth.can(session, repo, interaction)
+        except PolicyUnreadable as e:
+            log("denied", "policy unreadable")
+            return Outcome(403, {"error": str(e)})
+        except PolicyError as e:
+            log("denied", "invalid policy")
+            return Outcome(403, {"error": f"Invalid .tradvia.yml, so the action is refused: {e}"})
+        except Exception:
+            log("failed", "role check failed")
+            return Outcome(502, {"error": "Could not check your permission on GitHub."})
+        if not access.allowed:
+            required = getattr(
+                access.policy.interactions if access.policy else Interactions(), interaction
+            )
+            log("denied", f"role {access.role or 'none'} below {required}")
+            if access.role is None:
+                message = f"You have no access to {repo}."
+            else:
+                message = (f"Your role in {repo} is '{access.role}'; "
+                           f"'{interaction}' needs at least '{required}'.")
+            return Outcome(403, {"error": message})
+        token = auth.user_token(session)
+        if token is None:
+            log("denied", "session token unreadable")
+            return Outcome(401, {"error": "Sign in again."})
+        try:
+            done = work(token)
+        except CardNotFound as e:
+            log("failed", str(e))
+            return Outcome(404, {"error": str(e)})
+        except ActionError as e:
+            log("failed", str(e))
+            return Outcome(400, {"error": str(e)})
+        except Conflict as e:
+            log("failed", str(e))
+            return Outcome(409, {"error": str(e)})
+        except GitHubError as e:
+            log("failed", f"github {e.status}")
+            if e.status == 404:
+                return Outcome(404, {"error": "Card not found in this project."})
+            if e.status in (401, 403):
+                return Outcome(403, {"error": "GitHub refused the action for your account."})
+            return Outcome(502, {"error": "GitHub is unavailable or refused the request."})
+        except Exception:  # never echo: the message may carry tokens or the DSN
+            log("failed", "internal error")
+            return Outcome(500, {"error": "internal error"})
+        log("ok", done.detail, done.number)
+        return Outcome(200, {"ok": True, **done.extra})
+
+    def perform(
+        session: Any, repo: str, action: str, interaction: str, number: int | None,
+        key: str | None, work: Callable[[str], Done],
+    ) -> Outcome:
+        """`execute` once per idempotency key: a repeat within 5 s is ignored."""
+        if not key:
+            return execute(session, repo, action, interaction, number, key, work)
+        assert db is not None
+        pid, login = project_id_of(repo), session.login
+        now = clock()
+        previous = db.recent_audit_key(pid, login, key, now - IDEMPOTENCY_WINDOW)
+        with inflight_lock:
+            for k, at in list(inflight.items()):
+                if now - at >= IDEMPOTENCY_WINDOW:
+                    del inflight[k]
+            busy = (login, key) in inflight
+            if previous is None and not busy:
+                inflight[(login, key)] = now
+        if previous is not None or busy:
+            body: dict[str, Any] = {"ok": True, "duplicate": True}
+            if previous is not None:
+                body.update(result=previous["result"], issue_number=previous["issue_number"])
+            return Outcome(200, body)
+        try:
+            return execute(session, repo, action, interaction, number, key, work)
+        finally:
+            with inflight_lock:
+                inflight.pop((login, key), None)
+
+    def work_create(repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            title, description = parse_new_card(data)
+            issue = auth.github.create_issue(token, repo, title, description)
+            detail = title[:80]
+            try:  # the webhook also brings it; do not fail an issue that already exists
+                pid = project_id_of(repo)
+                db.upsert_issue(pid, issue_record(issue))
+                db.set_backlog(pid, new_backlog(db.list_backlog(pid), issue["number"], description))
+            except Exception:
+                detail += " (not added to the backlog)"
+            return Done(issue["number"], detail, {
+                "issue_number": issue["number"], "html_url": issue.get("html_url"),
+            })
+        return work
+
+    def work_start(repo: str, number: int) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            issue = auth.github.get_issue(token, repo, number)
+            if "pull_request" in issue:
+                raise CardNotFound("Card not found in this project.")
+            if issue.get("state") == "closed":
+                raise Conflict("This card is closed.")
+            if READY_LABEL in [lb.get("name") for lb in issue.get("labels") or []]:
+                raise Conflict("This card was already started.")
+            auth.github.add_label(token, repo, number, READY_LABEL)
+            return Done(number, READY_LABEL, {"issue_number": number})
+        return work
+
+    def work_reply(repo: str, number: int, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            text = parse_reply(data.get("decision"), data.get("text"))
+            comments = auth.github.list_comments(token, repo, number)
+            if not awaiting_plan(comments, agent_login()):
+                raise Conflict("This card is not waiting for a reply to the plan.")
+            auth.github.comment(token, repo, number, text)
+            return Done(number, f"decision={data.get('decision')}", {"issue_number": number})
+        return work
+
+    def work_backlog(repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            pid = project_id_of(repo)
+            items = db.list_backlog(pid)
+            if "order" in data:
+                db.set_backlog(pid, apply_order(items, data["order"]))
+                return Done(None, "order", {})
+            number = data.get("issue")
+            if not isinstance(number, int) or isinstance(number, bool):
+                raise ActionError("issue must be a card number")
+            db.set_backlog(pid, reorder(items, number, data.get("direction")))
+            return Done(number, f"move {data.get('direction')}", {"issue_number": number})
+        return work
+
+    def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+            except Exception:
+                return private(_store_unavailable())
+            if session is None:
+                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+            key = request.headers.get(IDEMPOTENCY_HEADER)
+            if key is not None and not _KEY_RE.fullmatch(key):
+                return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+            try:
+                data = await request.json()
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            number = request.path_params.get("n")
+            if action == "create_card":
+                work = work_create(repo, data)
+            elif action == "start_card":
+                work = work_start(repo, number)
+            elif action == "reply_plan":
+                work = work_reply(repo, number, data)
+            else:
+                number = data.get("issue") if isinstance(data.get("issue"), int) else None
+                work = work_backlog(repo, data)
+            try:
+                out = await run_in_threadpool(
+                    perform, session, repo, action, interaction, number, key, work
+                )
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
+    def read_card(session: Any, repo: str, number: int) -> Outcome:
+        assert auth is not None and db is not None
+        role = auth.role_of(session, repo)
+        if role is None:
+            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+        rows = db.list_audit(project_id_of(repo), number)
+        plan = None
+        try:  # the plan is read with the user's token, and only for who may answer it
+            if auth.can(session, repo, "approve_plan", fresh=False).allowed:
+                token = auth.user_token(session)
+                if token:
+                    plan = plan_comment(auth.github.list_comments(token, repo, number), agent_login())
+        except GitHubError as e:
+            if e.status == 404:
+                return Outcome(404, {"error": "Card not found in this project."})
+        except Exception:
+            plan = None
+        return Outcome(200, {"audit": rows, "plan": plan, "awaiting_plan": plan is not None})
+
+    async def card_audit(request: Request) -> Response:
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        try:
+            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+            if session is None:
+                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+            out = await run_in_threadpool(read_card, session, repo, request.path_params["n"])
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
 
     return Starlette(
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
@@ -557,6 +836,15 @@ def create_app(
             Route("/api/auth/me", auth_me, methods=["GET"]),
             Route(WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/api/projects", projects, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/cards", action_route("create_card", "start_card"),
+                  methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/cards/{n:int}/start",
+                  action_route("start_card", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/cards/{n:int}/reply",
+                  action_route("reply_plan", "approve_plan"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/backlog",
+                  action_route("reorder_backlog", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
