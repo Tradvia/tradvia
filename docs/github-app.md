@@ -3,11 +3,15 @@
 Status: **Partial.** The API routes, sessions, CSRF checks and the panel button
 are implemented and tested offline. Login only works in production after the
 owner completes the steps below and a maintainer wires the secrets into the
-deploy workflow. Actions from the panel are **Planned** (next card).
+deploy workflow. Actions from the panel (create, start and reorder cards, approve
+the plan) are **Partial**: implemented and tested offline, and they only work in
+production with sign-in wired and the **Contents: Read-only** permission below.
 
-The Tradvia GitHub App is only an **identity provider**: it proves who the
+The Tradvia GitHub App is mainly an **identity provider**: it proves who the
 person is and, with their own token, what role they have in each project. It
-has no webhook and does not act on repositories. Design: ADR 0008.
+has no webhook. Panel actions run on GitHub with the **user's own token**, so
+the GitHub history shows who acted; the server's `GITHUB_TOKEN` is never used
+for them. Design: ADR 0008.
 
 ## Owner steps
 
@@ -24,6 +28,10 @@ has no webhook and does not act on repositories. Design: ADR 0008.
 3. Permissions (repository), the minimum:
    - **Issues**: Read and write
    - **Pull requests**: Read-only
+   - **Contents**: Read-only. Needed to read `.tradvia.yml` from the default
+     branch with the user's token, which sets the minimum role of each panel
+     action (ADR 0004). Without it every panel action is refused (fail closed)
+     with a message naming this permission.
    - **Metadata**: Read-only (mandatory)
 
    Nothing else, and no account permissions.
@@ -58,7 +66,18 @@ has no webhook and does not act on repositories. Design: ADR 0008.
 | `GET /api/auth/login?next=/runs/?repo=owner/repo` | Stores a random `state`, a PKCE verifier and the validated return path, then redirects to GitHub. Only `/runs/...` is accepted as `next`. |
 | `GET /api/auth/callback` | Checks the one-use `state` (and the browser cookie that started the login), exchanges the code with the PKCE verifier, creates the session and redirects to the stored path. |
 | `POST /api/auth/logout` | Deletes the session and clears the cookie. |
-| `GET /api/auth/me` | `login`, `avatar_url`, the CSRF value and the role in each project. Never the GitHub token. |
+| `GET /api/auth/me` | `login`, `avatar_url`, the CSRF value, the role in each project and `can_start` / `can_approve` (what the panel may show as buttons). Never the GitHub token. |
+| `POST /api/projects/{owner}/{repo}/cards` | Creates the issue (`title`, `description`), stores it and appends it to the end of the backlog. Needs `start_card`. |
+| `POST /api/projects/{owner}/{repo}/cards/{n}/start` | Adds `agent:ready`. Needs `start_card`. |
+| `POST /api/projects/{owner}/{repo}/cards/{n}/reply` | `decision` = `approve` \| `reject` \| `adjust` (+ `text`) comments "Aprovado", "Rejeitado" or "Ajuste: …". Needs `approve_plan`; 409 unless the agent's last comment is the plan. |
+| `POST /api/projects/{owner}/{repo}/backlog` | `{"issue": n, "direction": "up"\|"down"}` or `{"order": [...]}`. Needs `start_card`. |
+| `GET /api/projects/{owner}/{repo}/cards/{n}/audit` | Audit entries of the card and, for who may approve, the full plan. Needs at least the `read` role; `Cache-Control: no-store`. |
+
+Action routes answer 401 without a session, 403 for a missing CSRF or an
+insufficient role (the message names the required role), 404 for a project not in
+`TRADVIA_PROJECTS` or a card that is not in the project, and 409 for a card in the
+wrong state. The panel sends a random `X-Tradvia-Idempotency-Key`; the same key
+again within 5 seconds is ignored.
 
 - Cookie `__Host-tradvia_session`: `Secure`, `HttpOnly`, `SameSite=Lax`,
   `Path=/`, no `Domain`. Valid 8 h from the last use, at most 7 days from login.

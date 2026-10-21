@@ -55,6 +55,18 @@
   .card .cost { color: var(--muted); font-size: 12px; }
   .activity { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; font-size: 12px; }
   .activity h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .acts button, .approval button, .newcard button { padding: 2px 8px; font-size: 12px; }
+  .newcard { display: grid; gap: 4px; margin-bottom: 8px; }
+  .newcard[hidden] { display: none; }
+  .newcard input, .newcard textarea, .approval textarea {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; width: 100%; box-sizing: border-box;
+  }
+  .approval { margin-top: 8px; cursor: default; font-size: 12px; display: grid; gap: 4px; }
+  .approval h4 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .approval pre.plan { white-space: pre-wrap; margin: 0; max-height: 220px; overflow: auto; }
+  .action-error { padding: 4px 8px; font-size: 12px; }
   .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
   .activity li, .recent li { padding: 3px 0; }
   .when { color: var(--muted); }
@@ -481,6 +493,92 @@ async function signOut() {
   renderAuth();
 }
 
+// Panel actions run on GitHub as the signed-in user (ADR 0004 phase 2). The buttons exist only
+// for who has the role; the server checks the role again on every request.
+function myRights() {
+  if (!authState || authState.authenticated !== true) return null;
+  const p = (authState.projects || []).find((x) => x.external_id === getRepo());
+  return p && p.role ? p : null;
+}
+
+async function panelRequest(method, path, body) {
+  const headers = { Accept: "application/json" };
+  if (method === "POST") {
+    const key = (crypto.randomUUID ? crypto.randomUUID() : "k" + Date.now() + Math.random().toString(36).slice(2))
+      .replace(/[^A-Za-z0-9_-]/g, "-");
+    Object.assign(headers, {
+      "Content-Type": "application/json", "X-Tradvia-CSRF": authState.csrf, "X-Tradvia-Idempotency-Key": key,
+    });
+  }
+  try {
+    const r = await fetch("/api/projects/" + getRepo() + path, {
+      method, headers, credentials: "same-origin", body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+    });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? { ok: true, data: j } : { ok: false, error: j.error || t("actionFailed") };
+  } catch (e) {
+    return { ok: false, error: t("actionFailed") };
+  }
+}
+
+// Runs a POST from the controls inside `host`; shows the server's message when it fails.
+async function runAction(host, path, body) {
+  host.querySelectorAll(".action-error").forEach((n) => n.remove());
+  host.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  const res = await panelRequest("POST", path, body);
+  if (res.ok) { await refresh(); return; }
+  host.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+  host.append(el("div", res.error, "msg error action-error"));
+}
+
+function actionButton(host, label, path, body) {
+  const b = el("button", label);
+  b.type = "button";
+  b.addEventListener("click", (e) => { e.stopPropagation(); runAction(host, path, typeof body === "function" ? body() : body); });
+  return b;
+}
+
+// Audit entries (and, for who may answer it, the full plan) of one card; null when unavailable.
+async function loadCardInfo(number) {
+  if (!myRights()) return null;
+  const res = await panelRequest("GET", "/cards/" + number + "/audit");
+  return res.ok ? res.data : null;
+}
+
+function auditText(e) {
+  return "@" + e.actor_login + " " + (t("act_" + e.action) || e.action) + " · " + (t("res_" + e.result) || e.result);
+}
+
+async function fillAudit(root, number) {
+  const info = await loadCardInfo(number);
+  if (!info || !info.audit.length) return;
+  const ul = el("ul");
+  info.audit.forEach((e) => {
+    const li = el("li");
+    li.append(el("span", auditText(e)), el("span", " · " + fmtTime(e.created_at), "when"));
+    ul.append(li);
+  });
+  root.append(el("h4", t("auditLog")), ul);
+}
+
+function renderApproval(card, number) {
+  const box = el("div", null, "approval");
+  box.addEventListener("click", (e) => e.stopPropagation());
+  card.append(box);
+  loadCardInfo(number).then((info) => {
+    if (!info || !info.awaiting_plan || !info.plan) return;
+    const text = el("textarea");
+    text.rows = 2; text.maxLength = 2000; text.placeholder = t("adjustHint");
+    const path = "/cards/" + number + "/reply";
+    box.append(
+      el("h4", t("plan")), el("pre", info.plan, "plan"), text,
+      actionButton(box, t("approve"), path, { decision: "approve" }),
+      actionButton(box, t("reject"), path, { decision: "reject" }),
+      actionButton(box, t("adjustBtn"), path, () => ({ decision: "adjust", text: text.value })),
+    );
+  });
+}
+
 // Dashboard reads: from the store when available; any failed call is retried through GH_API.
 async function getData(repo, path) {
   if (STORE_API) {
@@ -559,6 +657,12 @@ const I18N = {
     inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em", dataFrom: "dados",
     backlog: "Backlog do projeto", position: "Posição", dependsOn: "Depende de",
     st_pronto: "pronto", st_bloqueado: "bloqueado", st_andamento: "em andamento", st_concluido: "concluído",
+    newCard: "Novo card", cardTitle: "Título", cardDescription: "Descrição", create: "Criar", cancel: "Cancelar",
+    startCard: "Iniciar", moveUp: "Subir", moveDown: "Descer", approve: "Aprovar", reject: "Rejeitar",
+    adjustBtn: "Ajustar", adjustHint: "Descreva o ajuste pedido ao plano", actionFailed: "Não foi possível concluir a ação.",
+    auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
+    act_reply_plan: "respondeu ao plano", act_reorder_backlog: "reordenou o backlog",
+    res_ok: "ok", res_denied: "negado", res_failed: "falhou",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -584,6 +688,12 @@ const I18N = {
     inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at", dataFrom: "data",
     backlog: "Project backlog", position: "Position", dependsOn: "Depends on",
     st_pronto: "ready", st_bloqueado: "blocked", st_andamento: "in progress", st_concluido: "done",
+    newCard: "New card", cardTitle: "Title", cardDescription: "Description", create: "Create", cancel: "Cancel",
+    startCard: "Start", moveUp: "Move up", moveDown: "Move down", approve: "Approve", reject: "Reject",
+    adjustBtn: "Adjust", adjustHint: "Describe the adjustment to the plan", actionFailed: "The action could not be completed.",
+    auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
+    act_reply_plan: "answered the plan", act_reorder_backlog: "reordered the backlog",
+    res_ok: "ok", res_denied: "denied", res_failed: "failed",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -736,8 +846,11 @@ function renderBacklogColumn(root, backlog) {
   const h = el("h3");
   h.append(el("span", t("backlog")), el("span", String(backlog.length)));
   c.append(h);
+  const me = myRights();
+  const canStart = !!(me && me.can_start);
+  if (canStart) c.append(renderNewCard());
   const inBacklog = new Set(backlog.map((b) => b.issue_number));
-  for (const b of backlog) {
+  for (const [i, b] of backlog.entries()) {
     const card = el("div", null, "card");
     card.id = "bl-" + b.issue_number;
     const key = BACKLOG_STATUS_KEY[b.status] || "bloqueado";
@@ -757,9 +870,45 @@ function renderBacklogColumn(root, backlog) {
       });
       card.append(deps);
     }
+    if (canStart) {
+      const acts = el("div", null, "acts");
+      const move = (dir) => ({ issue: b.issue_number, direction: dir });
+      if (key === "pronto" || key === "bloqueado") {
+        acts.append(actionButton(card, t("startCard"), "/cards/" + b.issue_number + "/start", {}));
+      }
+      if (i > 0) acts.append(actionButton(card, "↑", "/backlog", move("up")));
+      if (i < backlog.length - 1) acts.append(actionButton(card, "↓", "/backlog", move("down")));
+      acts.querySelectorAll("button").forEach((x) => {
+        if (x.textContent === "↑") x.title = t("moveUp");
+        if (x.textContent === "↓") x.title = t("moveDown");
+      });
+      card.append(acts);
+    }
     c.append(card);
   }
   root.append(c);
+}
+
+function renderNewCard() {
+  const box = el("div");
+  const open = el("button", t("newCard"));
+  open.type = "button";
+  const form = el("div", null, "newcard");
+  form.hidden = true;
+  const title = el("input");
+  title.maxLength = 256; title.placeholder = t("cardTitle");
+  const desc = el("textarea");
+  desc.rows = 3; desc.maxLength = 10000; desc.placeholder = t("cardDescription");
+  const cancel = el("button", t("cancel"));
+  cancel.type = "button";
+  const create = actionButton(form, t("create"), "/cards", () => ({ title: title.value, description: desc.value }));
+  const row = el("div", null, "acts");
+  row.append(create, cancel);
+  form.append(title, desc, row);
+  open.addEventListener("click", () => { form.hidden = false; open.hidden = true; title.focus(); });
+  cancel.addEventListener("click", () => { form.hidden = true; open.hidden = false; });
+  box.append(open, form);
+  return box;
 }
 
 function renderBoard(issues, prs, agentRuns, backlog) {
@@ -799,6 +948,9 @@ function renderBoard(issues, prs, agentRuns, backlog) {
         openCards.add(issue.number);
         panel.replaceChildren(el("h4", t("activity")), el("div"));
         fillActivity(panel.lastChild, issue.number, false);
+        const audit = el("div");
+        panel.append(audit);
+        fillAudit(audit, issue.number);
       } else openCards.delete(issue.number);
     };
     card.addEventListener("click", toggle);
@@ -806,6 +958,13 @@ function renderBoard(issues, prs, agentRuns, backlog) {
       if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(); }
     });
     card.append(panel);
+    const mine = myRights();
+    // While the agent waits for the answer its run is still in progress, so the card shows as
+    // AGENT_WORKING: offer the answer there too. renderApproval adds controls only when the
+    // server says the agent's last comment is the plan.
+    if ((s === "WAITING_HUMAN" || s === "AGENT_WORKING") && mine && mine.can_approve) {
+      renderApproval(card, issue.number);
+    }
     if (openCards.has(issue.number)) { panel.hidden = true; toggle(); }
     cols[s].append(card);
   }

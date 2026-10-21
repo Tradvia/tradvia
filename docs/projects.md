@@ -68,8 +68,11 @@ For now every registered project is public. Visibility by role arrives with logi
 
 ## Backlog
 
-Status: **Shipped** (read-only). Reordering and starting cards in the panel is
-**Planned** under #46 (actions with login).
+Status: **Shipped** (read). Creating, starting and reordering cards in the panel
+(`POST /api/projects/{owner}/{repo}/cards`, `.../cards/{n}/start`, `.../backlog`)
+is **Partial**: code and offline tests are done; it only works in production once
+the GitHub App has the **Contents: Read-only** permission and sign-in is wired
+([docs/github-app.md](github-app.md)). A new card lands at the end of the backlog.
 
 The backlog is stored per project in the table `backlog_items` (`project_id`,
 `issue_number`, `position`, `depends_on int[]`, `note`, `updated_at`; primary key
