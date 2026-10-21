@@ -23,7 +23,8 @@ from urllib.parse import urlencode, urlsplit
 
 import requests
 
-from .policy import role_from_github, role_of
+from .actions import GitHubError
+from .policy import Policy, load_policy, role_from_github, role_of
 from .store import Store
 
 SESSION_COOKIE = "__Host-tradvia_session"
@@ -36,6 +37,7 @@ SESSION_TTL = 8 * 3600  # renewed on every use...
 SESSION_MAX = 7 * 24 * 3600  # ...up to this absolute limit
 STATE_TTL = 600
 ROLE_TTL = 300
+POLICY_TTL = 60
 MAX_RETURN_LENGTH = 512
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -169,6 +171,20 @@ class GitHubIdentity(Protocol):
     def get_permission(self, token: str, repo: str, login: str) -> tuple[str | None, str | None]:
         """`(permission, role_name)` of the collaborator, or `(None, None)`."""
 
+    def get_file(self, token: str, repo: str, path: str, ref: str) -> str | None:
+        """Text of a file (default branch when `ref` is empty); None on 404.
+
+        Raises PolicyUnreadable on 401/403."""
+
+
+class PolicyUnreadable(Exception):
+    """`.tradvia.yml` cannot be read with the user's token: the interaction is refused."""
+
+
+UNREADABLE_POLICY = (
+    "Cannot read .tradvia.yml: the GitHub App needs the Contents: Read-only permission."
+)
+
 
 class HttpGitHub:
     def __init__(self, client_id: str, client_secret: str) -> None:
@@ -216,17 +232,79 @@ class HttpGitHub:
         data = r.json()
         return data.get("permission"), data.get("role_name")
 
+    def get_file(self, token: str, repo: str, path: str, ref: str) -> str | None:
+        try:
+            r = self._get(token, f"/repos/{repo}/contents/{path}" + (f"?ref={ref}" if ref else ""))
+            if r.status_code == 404:
+                return None
+            if r.status_code in (401, 403):
+                raise PolicyUnreadable(UNREADABLE_POLICY)
+            if r.status_code != 200:
+                raise RuntimeError("github unavailable")
+            return base64.b64decode(r.json()["content"]).decode("utf-8")
+        except (PolicyUnreadable, RuntimeError):
+            raise
+        except Exception:  # never echo: the error may carry request headers
+            raise RuntimeError("github unavailable") from None
+
+    # Writes and card reads, always with the user's token (GitHubActions in actions.py).
+    def _call(self, token: str, method: str, path: str, **kw: Any) -> Any:
+        try:
+            r = requests.request(
+                method,
+                GITHUB_API + path,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=UPSTREAM_TIMEOUT,
+                **kw,
+            )
+            ok, status = r.status_code < 300, r.status_code
+            data = r.json() if ok else None
+        except Exception:  # never echo: the error may carry request headers
+            raise GitHubError(502) from None
+        if not ok:
+            raise GitHubError(status)
+        return data
+
+    def get_issue(self, token: str, repo: str, number: int) -> dict[str, Any]:
+        return self._call(token, "GET", f"/repos/{repo}/issues/{number}")
+
+    def create_issue(self, token: str, repo: str, title: str, body: str) -> dict[str, Any]:
+        return self._call(
+            token, "POST", f"/repos/{repo}/issues", json={"title": title, "body": body}
+        )
+
+    def add_label(self, token: str, repo: str, number: int, label: str) -> None:
+        self._call(token, "POST", f"/repos/{repo}/issues/{number}/labels", json={"labels": [label]})
+
+    def comment(self, token: str, repo: str, number: int, body: str) -> None:
+        self._call(token, "POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
+
+    def list_comments(self, token: str, repo: str, number: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for page in range(1, 11):  # 1000 comments at most; the plan is among the last ones
+            chunk = self._call(
+                token, "GET", f"/repos/{repo}/issues/{number}/comments",
+                params={"per_page": 100, "page": page},
+            )
+            out.extend(chunk)
+            if len(chunk) < 100:
+                break
+        return out
+
 
 class _UserRoles:
     """`policy.RoleSource` backed by the signed-in user's own token."""
 
-    base = ""
+    base = ""  # empty: the contents API then answers for the default branch
 
     def __init__(self, github: GitHubIdentity, token: str, repo: str) -> None:
         self._github, self._token, self._repo = github, token, repo
 
     def get_file(self, path: str, ref: str) -> str | None:
-        return None  # the panel does not read .tradvia.yml yet
+        return self._github.get_file(self._token, self._repo, path, ref)
 
     def get_collaborator_role(self, login: str) -> str | None:
         permission, role_name = self._github.get_permission(self._token, self._repo, login)
@@ -251,6 +329,12 @@ class LoginStart(NamedTuple):
     state: str
 
 
+class Access(NamedTuple):
+    role: str | None
+    policy: Policy | None  # None when the role is missing: the file is not even read
+    allowed: bool
+
+
 class Auth:
     def __init__(
         self,
@@ -264,6 +348,7 @@ class Auth:
         self.github = github or HttpGitHub(config.client_id, config.client_secret)
         self.now = now
         self.keys = Keys(config.secret_key)
+        self._policies: dict[tuple[str, str], tuple[float, Policy]] = {}
 
     # login
     def start_login(self, next_path: str | None) -> LoginStart:
@@ -371,3 +456,35 @@ class Auth:
             session.rec["id"], session.rec["expires_at"], session.rec["last_used_at"], cache
         )
         return role
+
+    def user_token(self, session: Session) -> str | None:
+        """The user's GitHub token, decrypted. Never log it or put it in a response."""
+        return self.keys.decrypt(session.rec["token_enc"])
+
+    def policy_for(self, session: Session, repo: str, fresh: bool = True) -> Policy:
+        """The project's `.tradvia.yml` read with the user's token (ADR 0004 defaults on 404).
+
+        Raises PolicyError (invalid file) or PolicyUnreadable (401/403): callers fail closed.
+        `fresh=False` reuses a successful read for POLICY_TTL seconds (display only).
+        """
+        now = self.now()
+        key = (session.rec["id"], repo)
+        hit = self._policies.get(key)
+        if not fresh and hit and now - hit[0] < POLICY_TTL:
+            return hit[1]
+        token = self.user_token(session)
+        if token is None:
+            raise PolicyUnreadable(UNREADABLE_POLICY)
+        policy = load_policy(_UserRoles(self.github, token, repo))
+        if len(self._policies) > 1000:
+            self._policies.clear()
+        self._policies[key] = (now, policy)
+        return policy
+
+    def can(self, session: Session, repo: str, interaction: str, fresh: bool = True) -> Access:
+        """Role, policy and whether the role meets the minimum for `interaction`."""
+        role = self.role_of(session, repo)
+        if role is None:
+            return Access(None, None, False)
+        policy = self.policy_for(session, repo, fresh)
+        return Access(role, policy, policy.allows(interaction, role))
