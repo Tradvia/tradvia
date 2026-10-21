@@ -69,13 +69,18 @@ class Store(Protocol):
 
     # Reads for the dashboard: newest first, timestamps as ISO strings. None means
     # the project has no rows in the table (data not loaded yet); [] means the filter
-    # matched nothing. Comments are never read.
+    # matched nothing. Comments are only read through list_plan_costs.
     def list_issues(
         self, project_id: int, labels: list[str], state: str, limit: int
     ) -> list[dict[str, Any]] | None: ...
     def list_pulls(
         self, project_id: int, state: str, limit: int
     ) -> list[dict[str, Any]] | None: ...
+
+    def list_plan_costs(self, project_id: int) -> list[dict[str, Any]]:
+        """Agent comments with a stored cost, oldest first:
+        `[{issue_number, created_at, cost_usd, tokens_in, tokens_out, tokens_cache}]`."""
+
     def list_runs(
         self, project_id: int, workflow: str, limit: int
     ) -> list[dict[str, Any]] | None: ...
@@ -234,6 +239,16 @@ class MemoryStore:
         rows.sort(key=lambda r: r.get(sort_key) or "", reverse=True)
         return rows[:limit]
 
+    def list_plan_costs(self, project_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            found = [
+                (key[1], {k: r.get(k) for k in _PLAN_COST_FIELDS})
+                for key, r in self.tables["comments"].items()
+                if key[0] == project_id and r.get("cost_usd") is not None
+            ]
+        found.sort(key=lambda f: (f[1]["issue_number"], f[1]["created_at"] or "", f[0]))
+        return [row for _, row in found]
+
     def list_issues(
         self, project_id: int, labels: list[str], state: str, limit: int
     ) -> list[dict[str, Any]] | None:
@@ -381,28 +396,35 @@ _UPSERT_SQL = {
     """,
     "comment": """
         INSERT INTO comments (project_id, id, issue_number, author, author_association,
-                              body, created_at, updated_at)
+                              body, created_at, updated_at, cost_usd,
+                              tokens_in, tokens_out, tokens_cache)
         VALUES (%(project_id)s, %(id)s, %(issue_number)s, %(author)s,
-                %(author_association)s, %(body)s, %(created_at)s, %(updated_at)s)
+                %(author_association)s, %(body)s, %(created_at)s, %(updated_at)s,
+                %(cost_usd)s, %(tokens_in)s, %(tokens_out)s, %(tokens_cache)s)
         ON CONFLICT (project_id, id) DO UPDATE SET
             issue_number = excluded.issue_number, author = excluded.author,
             author_association = excluded.author_association, body = excluded.body,
-            created_at = excluded.created_at, updated_at = excluded.updated_at
+            created_at = excluded.created_at, updated_at = excluded.updated_at,
+            cost_usd = excluded.cost_usd, tokens_in = excluded.tokens_in,
+            tokens_out = excluded.tokens_out, tokens_cache = excluded.tokens_cache
         WHERE excluded.updated_at >= comments.updated_at
     """,
     "pull_request": """
         INSERT INTO pull_requests (project_id, id, number, title, state, merged, branch,
                                    author, created_at, updated_at, merged_at, html_url,
-                                   cost_usd, cost_seconds)
+                                   cost_usd, cost_seconds, tokens_in, tokens_out, tokens_cache)
         VALUES (%(project_id)s, %(id)s, %(number)s, %(title)s, %(state)s, %(merged)s,
                 %(branch)s, %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s,
-                %(html_url)s, %(cost_usd)s, %(cost_seconds)s)
+                %(html_url)s, %(cost_usd)s, %(cost_seconds)s, %(tokens_in)s,
+                %(tokens_out)s, %(tokens_cache)s)
         ON CONFLICT (project_id, id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
             merged = excluded.merged, branch = excluded.branch, author = excluded.author,
             created_at = excluded.created_at, updated_at = excluded.updated_at,
             merged_at = excluded.merged_at, html_url = excluded.html_url,
-            cost_usd = excluded.cost_usd, cost_seconds = excluded.cost_seconds
+            cost_usd = excluded.cost_usd, cost_seconds = excluded.cost_seconds,
+            tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+            tokens_cache = excluded.tokens_cache
         WHERE excluded.updated_at >= pull_requests.updated_at
     """,
     "workflow_run": """
@@ -456,10 +478,17 @@ _LIST_ISSUES_SQL = """
 """
 _LIST_PULLS_SQL = """
     SELECT number, title, state, merged_at, branch, author, html_url,
-           created_at, updated_at, cost_usd, cost_seconds
+           created_at, updated_at, cost_usd, cost_seconds,
+           tokens_in, tokens_out, tokens_cache
     FROM pull_requests
     WHERE project_id = %(project_id)s AND (%(state)s = 'all' OR state = %(state)s)
     ORDER BY created_at DESC NULLS LAST, number DESC LIMIT %(limit)s
+"""
+_LIST_PLAN_COSTS_SQL = """
+    SELECT issue_number, created_at, cost_usd, tokens_in, tokens_out, tokens_cache
+    FROM comments
+    WHERE project_id = %(project_id)s AND cost_usd IS NOT NULL
+    ORDER BY issue_number, created_at, id
 """
 _LIST_RUNS_SQL = """
     SELECT id, name, display_title, event, status, conclusion, html_url, run_attempt,
@@ -531,6 +560,9 @@ _DELETE_SESSION_SQL = "DELETE FROM sessions WHERE id = %s"
 _SESSION_FIELDS = (
     "id", "user_id", "login", "avatar_url", "token_enc",
     "created_at", "expires_at", "absolute_expires_at", "last_used_at", "role_cache",
+)
+_PLAN_COST_FIELDS = (
+    "issue_number", "created_at", "cost_usd", "tokens_in", "tokens_out", "tokens_cache",
 )
 _NOT_EMPTY_SQL = {
     "issues": "SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = %(project_id)s)",
@@ -667,6 +699,13 @@ class PgStore:
             if not conn.execute(_NOT_EMPTY_SQL[table], params).fetchone()[0]:
                 return None
             cur = conn.execute(sql, params)
+            names = [c.name for c in cur.description]
+            rows = cur.fetchall()
+        return [{n: _iso(v) for n, v in zip(names, row)} for row in rows]
+
+    def list_plan_costs(self, project_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            cur = conn.execute(_LIST_PLAN_COSTS_SQL, {"project_id": project_id})
             names = [c.name for c in cur.description]
             rows = cur.fetchall()
         return [{n: _iso(v) for n, v in zip(names, row)} for row in rows]
