@@ -72,14 +72,20 @@ def parse_reply(decision: object, text: object) -> str:
 
 
 def plan_comment(comments: list[dict[str, Any]], login: str) -> str | None:
-    """Body of the agent's last comment when it is the plan; None otherwise."""
-    mine = [
-        c for c in comments
-        if ((c.get("user") or {}).get("login") or "").lower() == login.lower()
-    ]
-    if not mine:
+    """Body of the agent's last comment when it is the plan and nobody answered it yet.
+
+    The agent takes the first human comment after the plan as the answer (any text is
+    approval, rejection or an adjustment), so a reply already posted closes the window.
+    """
+    def by_agent(c: dict[str, Any]) -> bool:
+        return ((c.get("user") or {}).get("login") or "").lower() == login.lower()
+
+    last = max((i for i, c in enumerate(comments) if by_agent(c)), default=None)
+    if last is None:
         return None
-    body = mine[-1].get("body") or ""
+    if any(not by_agent(c) for c in comments[last + 1:]):
+        return None
+    body = comments[last].get("body") or ""
     return body if "❓" in body or _PLAN_RE.search(body) else None
 
 

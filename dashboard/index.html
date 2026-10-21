@@ -58,6 +58,7 @@
   .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .acts button, .approval button, .newcard button { padding: 2px 8px; font-size: 12px; }
   .newcard { display: grid; gap: 4px; margin-bottom: 8px; }
+  .newcard[hidden] { display: none; }
   .newcard input, .newcard textarea, .approval textarea {
     background: var(--bg); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; width: 100%; box-sizing: border-box;
@@ -958,7 +959,12 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     });
     card.append(panel);
     const mine = myRights();
-    if (s === "WAITING_HUMAN" && mine && mine.can_approve) renderApproval(card, issue.number);
+    // While the agent waits for the answer its run is still in progress, so the card shows as
+    // AGENT_WORKING: offer the answer there too. renderApproval adds controls only when the
+    // server says the agent's last comment is the plan.
+    if ((s === "WAITING_HUMAN" || s === "AGENT_WORKING") && mine && mine.can_approve) {
+      renderApproval(card, issue.number);
+    }
     if (openCards.has(issue.number)) { panel.hidden = true; toggle(); }
     cols[s].append(card);
   }

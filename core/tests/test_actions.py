@@ -46,7 +46,8 @@ def test_awaiting_plan_only_when_the_last_agent_comment_is_the_plan():
     plan = {"user": {"login": BOT}, "body": PLAN}
     other = {"user": {"login": BOT}, "body": "Rodando o agente."}
     assert awaiting_plan([plan], BOT)
-    assert awaiting_plan([plan, human], BOT)  # a human reply does not move the agent
+    # The agent takes the first human comment after the plan as the answer: the window closes.
+    assert not awaiting_plan([plan, human], BOT)
     assert not awaiting_plan([plan, other], BOT)
     assert not awaiting_plan([other, plan, other], BOT)
     assert not awaiting_plan([], BOT)
