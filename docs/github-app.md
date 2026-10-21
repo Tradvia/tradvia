@@ -7,7 +7,7 @@ deploy workflow. Actions from the panel are **Planned** (next card).
 
 The Tradvia GitHub App is only an **identity provider**: it proves who the
 person is and, with their own token, what role they have in each project. It
-has no webhook and does not act on repositories. Design: ADR 0007.
+has no webhook and does not act on repositories. Design: ADR 0008.
 
 ## Owner steps
 

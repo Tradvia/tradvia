@@ -436,7 +436,7 @@ def create_app(
             {"total_count": len(rows), "workflow_runs": [github_run(r) for r in rows]}
         )
 
-    # --- sign in with GitHub (auth.py, ADR 0007) -----------------------------------
+    # --- sign in with GitHub (auth.py, ADR 0008) -----------------------------------
 
     def private(response: Response) -> Response:
         response.headers["Cache-Control"] = "no-store"

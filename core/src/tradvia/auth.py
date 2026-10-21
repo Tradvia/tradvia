@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
-"""Sign in with GitHub (ADR 0004 phase 2, ADR 0007): sessions, CSRF and per-project roles.
+"""Sign in with GitHub (ADR 0004 phase 2, ADR 0008): sessions, CSRF and per-project roles.
 
 The GitHub App is only an identity provider (OAuth user-to-server flow with a random
 `state` and PKCE). The user token is stored encrypted, is never sent to the browser and

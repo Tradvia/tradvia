@@ -1,4 +1,4 @@
-# ADR 0007: Sessions, CSRF and per-project roles for sign in with GitHub
+# ADR 0008: Sessions, CSRF and per-project roles for sign in with GitHub
 
 - Status: Accepted
 - Date: 2026-10-21

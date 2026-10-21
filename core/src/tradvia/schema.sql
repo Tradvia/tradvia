@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS backlog_items (
 );
 CREATE INDEX IF NOT EXISTS backlog_items_position_idx ON backlog_items (project_id, position);
 
--- Sign in with GitHub (ADR 0007). Not project scoped: a session belongs to a person.
+-- Sign in with GitHub (ADR 0008). Not project scoped: a session belongs to a person.
 -- `id` is the SHA-256 of the cookie token, so a database leak does not yield live cookies.
 CREATE TABLE IF NOT EXISTS sessions (
     id                   text PRIMARY KEY,

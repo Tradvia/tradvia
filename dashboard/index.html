@@ -428,7 +428,7 @@ async function detectApi() {
   await loadProjects();
 }
 
-// Sign in with GitHub (ADR 0007). Without a session everything stays visible, read-only.
+// Sign in with GitHub (ADR 0008). Without a session everything stays visible, read-only.
 // The GitHub token never reaches this page: only the login, avatar, roles and a CSRF value.
 let authState = null; // answer of /api/auth/me; null while unknown or when the API is absent
 
