@@ -86,6 +86,29 @@ class Store(Protocol):
     def set_backlog(self, project_id: int, items: list[dict[str, Any]]) -> None:
         """Replace the project's whole backlog in one transaction; position is the list index."""
 
+    # Sign in (auth.py). Not project scoped. Times are epoch seconds.
+    def put_login_state(
+        self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
+    ) -> None:
+        """Remember a pending login; also drops expired states and sessions."""
+
+    def take_login_state(self, state: str, now: float) -> dict[str, Any] | None:
+        """`{code_verifier, return_path}` once: the state is deleted. None if unknown/expired."""
+
+    def create_session(self, rec: dict[str, Any]) -> None:
+        """`rec`: id, user_id, login, avatar_url, token_enc, created_at, expires_at,
+        absolute_expires_at, last_used_at, role_cache."""
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None: ...
+
+    def update_session(
+        self, session_id: str, expires_at: float, last_used_at: float,
+        role_cache: dict[str, Any] | None = None,
+    ) -> None:
+        """Renew a session; `role_cache` replaces the cached roles when given."""
+
+    def delete_session(self, session_id: str) -> None: ...
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
@@ -102,6 +125,8 @@ class MemoryStore:
             t: {} for t in _TABLES.values()
         }
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
+        self.sessions: dict[str, dict[str, Any]] = {}
+        self.login_states: dict[str, dict[str, Any]] = {}
         self._clock = 0
 
     def ensure_project(self, external_id: str) -> int:
@@ -246,6 +271,47 @@ class MemoryStore:
         with self._lock:
             self.backlogs[project_id] = rows
 
+    def put_login_state(
+        self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
+    ) -> None:
+        with self._lock:
+            self.login_states = {k: v for k, v in self.login_states.items() if v["expires_at"] > now}
+            self.sessions = {k: v for k, v in self.sessions.items() if v["expires_at"] > now}
+            self.login_states[state] = {
+                "code_verifier": code_verifier, "return_path": return_path, "expires_at": expires_at,
+            }
+
+    def take_login_state(self, state: str, now: float) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.login_states.pop(state, None)
+        if row is None or row["expires_at"] <= now:
+            return None
+        return {"code_verifier": row["code_verifier"], "return_path": row["return_path"]}
+
+    def create_session(self, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self.sessions[rec["id"]] = copy.deepcopy(rec)
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            rec = self.sessions.get(session_id)
+            return copy.deepcopy(rec) if rec else None
+
+    def update_session(
+        self, session_id: str, expires_at: float, last_used_at: float,
+        role_cache: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            rec = self.sessions.get(session_id)
+            if rec is not None:
+                rec["expires_at"], rec["last_used_at"] = expires_at, last_used_at
+                if role_cache is not None:
+                    rec["role_cache"] = copy.deepcopy(role_cache)
+
+    def delete_session(self, session_id: str) -> None:
+        with self._lock:
+            self.sessions.pop(session_id, None)
+
 
 _INSERT_DELIVERY = (
     "INSERT INTO deliveries (project_id, id, event) VALUES (%s, %s, %s) "
@@ -364,6 +430,43 @@ _INSERT_BACKLOG_SQL = """
     INSERT INTO backlog_items (project_id, issue_number, position, depends_on, note)
     VALUES (%s, %s, %s, %s, %s)
 """
+_PURGE_LOGIN_STATES_SQL = "DELETE FROM login_states WHERE expires_at <= to_timestamp(%s)"
+_PURGE_SESSIONS_SQL = "DELETE FROM sessions WHERE expires_at <= to_timestamp(%s)"
+_PUT_LOGIN_STATE_SQL = """
+    INSERT INTO login_states (state, code_verifier, return_path, expires_at)
+    VALUES (%s, %s, %s, to_timestamp(%s))
+"""
+_TAKE_LOGIN_STATE_SQL = """
+    DELETE FROM login_states WHERE state = %s AND expires_at > to_timestamp(%s)
+    RETURNING code_verifier, return_path
+"""
+_CREATE_SESSION_SQL = """
+    INSERT INTO sessions (id, user_id, login, avatar_url, token_enc, created_at, expires_at,
+                          absolute_expires_at, last_used_at, role_cache)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s), to_timestamp(%s),
+            to_timestamp(%s), %s)
+"""
+_GET_SESSION_SQL = """
+    SELECT id, user_id, login, avatar_url, token_enc,
+           extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from absolute_expires_at)::float8,
+           extract(epoch from last_used_at)::float8, role_cache
+    FROM sessions WHERE id = %s
+"""
+_UPDATE_SESSION_SQL = """
+    UPDATE sessions SET expires_at = to_timestamp(%s), last_used_at = to_timestamp(%s)
+    WHERE id = %s
+"""
+_UPDATE_SESSION_ROLES_SQL = """
+    UPDATE sessions SET expires_at = to_timestamp(%s), last_used_at = to_timestamp(%s),
+                        role_cache = %s
+    WHERE id = %s
+"""
+_DELETE_SESSION_SQL = "DELETE FROM sessions WHERE id = %s"
+_SESSION_FIELDS = (
+    "id", "user_id", "login", "avatar_url", "token_enc",
+    "created_at", "expires_at", "absolute_expires_at", "last_used_at", "role_cache",
+)
 _NOT_EMPTY_SQL = {
     "issues": "SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = %(project_id)s)",
     "pull_requests": (
@@ -539,3 +642,56 @@ class PgStore:
                         (project_id, it["issue_number"], i,
                          list(it.get("depends_on", [])), it.get("note", "")),
                     )
+
+    def put_login_state(
+        self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_PURGE_LOGIN_STATES_SQL, (now,))
+                conn.execute(_PURGE_SESSIONS_SQL, (now,))
+                conn.execute(_PUT_LOGIN_STATE_SQL, (state, code_verifier, return_path, expires_at))
+
+    def take_login_state(self, state: str, now: float) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(_TAKE_LOGIN_STATE_SQL, (state, now)).fetchone()
+        return {"code_verifier": row[0], "return_path": row[1]} if row else None
+
+    def create_session(self, rec: dict[str, Any]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(
+                    _CREATE_SESSION_SQL,
+                    (rec["id"], rec["user_id"], rec["login"], rec["avatar_url"],
+                     rec["token_enc"], rec["created_at"], rec["expires_at"],
+                     rec["absolute_expires_at"], rec["last_used_at"], Jsonb(rec["role_cache"])),
+                )
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_SESSION_SQL, (session_id,)).fetchone()
+        return dict(zip(_SESSION_FIELDS, row)) if row else None
+
+    def update_session(
+        self, session_id: str, expires_at: float, last_used_at: float,
+        role_cache: dict[str, Any] | None = None,
+    ) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                if role_cache is None:
+                    conn.execute(_UPDATE_SESSION_SQL, (expires_at, last_used_at, session_id))
+                else:
+                    conn.execute(
+                        _UPDATE_SESSION_ROLES_SQL,
+                        (expires_at, last_used_at, Jsonb(role_cache), session_id),
+                    )
+
+    def delete_session(self, session_id: str) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_DELETE_SESSION_SQL, (session_id,))
