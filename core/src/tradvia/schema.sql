@@ -74,6 +74,15 @@ ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS html_url text;
 -- Cost parsed from the PR description (the body itself is not stored).
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_usd numeric;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_seconds numeric;
+-- Tokens parsed from the "Tokens: N in · N out · N cache" line of the PR description.
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS tokens_in bigint;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS tokens_out bigint;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS tokens_cache bigint;
+-- Cost and tokens of a plan, parsed from the agent's plan comment (one row per plan).
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS cost_usd numeric;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS tokens_in bigint;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS tokens_out bigint;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS tokens_cache bigint;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS display_title text;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS html_url text;
