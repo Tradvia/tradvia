@@ -32,6 +32,10 @@ class Interactions:
     mention_assistant: str = "write"
     live_takeover: str = "maintain"
     budget_control: str = "admin"
+    merge_pr: str = "maintain"
+    update_branch: str = "maintain"
+    # Also approving, rejecting and cancelling deploys, and the post-deploy operation.
+    approve_deploy: str = "maintain"
 
 
 @dataclass(frozen=True)
