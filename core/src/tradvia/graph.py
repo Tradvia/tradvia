@@ -51,6 +51,19 @@ def classify_reply(text: str) -> str:
     return "feedback"
 
 
+def tokens_line(cost: dict | None) -> str:
+    """`Tokens: 12 345 in · 3 210 out · 80 000 cache` (space as thousands separator).
+
+    Parsed back by parse_tokens() in events.py and parseTokens() in dashboard/index.html.
+    """
+    c = cost or {}
+
+    def fmt(key: str) -> str:
+        return f"{int(c.get(key) or 0):,}".replace(",", " ")
+
+    return f"Tokens: {fmt('tokens_in')} in · {fmt('tokens_out')} out · {fmt('tokens_cache')} cache"
+
+
 def _conventional_title(title: str) -> str:
     """Prefix `feat: ` unless the title already starts with a Conventional Commit type."""
     return title if _CONVENTIONAL.match(title.strip()) else f"feat: {title}"
@@ -132,14 +145,19 @@ def build_graph(github: GitHub, chat: Chat,
             "pending_question": {"asked_by": "@Agent-Architect", "text": p["question"],
                                  "summary": p.get("summary", "")},
             "cost": p.get("_cost", {}),
+            "plan_cost": p.get("_cost", {}),
         }
 
     def ask_human(card: Card) -> dict:
         q = card["pending_question"]
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card["plan"])
         target = f"Arquivo: `{card['file_path']}`\n" if card.get("file_path") else ""
+        pc = card.get("plan_cost") or {}
+        has_cost = any(pc.get(k) for k in ("usd", "tokens_in", "tokens_out", "tokens_cache"))
+        cost_lines = (f"\nEstimated cost (API-equivalent): ${pc.get('usd', 0):.4f}\n"
+                      f"{tokens_line(pc)}\n") if has_cost else ""
         text = (f"🟡 **{card['id']} — {card['title']}**\n{q.get('summary', '')}\n{steps}\n"
-                f"{target}\n❓ {q['text']}\n"
+                f"{target}\n❓ {q['text']}\n{cost_lines}"
                 f"Responda **Aprovado**, **Rejeitado** ou escreva um ajuste.")
         message_id = chat.post(text)
         return {"pending_question": {**q, "channel": getattr(chat, "name", "chat").lower(),
@@ -239,7 +257,8 @@ def build_graph(github: GitHub, chat: Chat,
                 return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
-                     f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s")
+                     f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
+                     f"{tokens_line(run)}")
             if skipped:
                 extra += ("\n\nBinary files not included in this PR (add them manually): "
                           + ", ".join(f"`{b}`" for b in skipped))
