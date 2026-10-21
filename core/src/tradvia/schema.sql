@@ -134,3 +134,26 @@ CREATE TABLE IF NOT EXISTS backlog_items (
     PRIMARY KEY (project_id, issue_number)
 );
 CREATE INDEX IF NOT EXISTS backlog_items_position_idx ON backlog_items (project_id, position);
+
+-- Sign in with GitHub (ADR 0007). Not project scoped: a session belongs to a person.
+-- `id` is the SHA-256 of the cookie token, so a database leak does not yield live cookies.
+CREATE TABLE IF NOT EXISTS sessions (
+    id                   text PRIMARY KEY,
+    user_id              bigint NOT NULL,
+    login                text NOT NULL,
+    avatar_url           text,
+    token_enc            text NOT NULL,
+    created_at           timestamptz NOT NULL DEFAULT now(),
+    expires_at           timestamptz NOT NULL,
+    absolute_expires_at  timestamptz NOT NULL,
+    last_used_at         timestamptz NOT NULL DEFAULT now(),
+    role_cache           jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires_at);
+
+CREATE TABLE IF NOT EXISTS login_states (
+    state         text PRIMARY KEY,
+    code_verifier text NOT NULL,
+    return_path   text NOT NULL,
+    expires_at    timestamptz NOT NULL
+);
