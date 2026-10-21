@@ -28,6 +28,13 @@
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
   }
   button:hover:not(:disabled) { border-color: var(--muted); }
+  .auth { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  .auth img { width: 22px; height: 22px; border-radius: 50%; }
+  .auth a.btn {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px;
+  }
+  .auth a.btn:hover { border-color: var(--muted); text-decoration: none; }
   button:disabled { opacity: .5; cursor: default; }
   .msg { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); }
   .msg.error { border-color: var(--bad); color: var(--text); }
@@ -73,6 +80,7 @@
     <div class="sub" id="meta"></div>
   </div>
   <div class="controls">
+    <span id="auth" class="auth" hidden></span>
     <select id="project" aria-label="Project" hidden></select>
     <select id="lang" aria-label="Language">
       <option value="pt">PT-BR</option>
@@ -420,6 +428,59 @@ async function detectApi() {
   await loadProjects();
 }
 
+// Sign in with GitHub (ADR 0008). Without a session everything stays visible, read-only.
+// The GitHub token never reaches this page: only the login, avatar, roles and a CSRF value.
+let authState = null; // answer of /api/auth/me; null while unknown or when the API is absent
+
+async function loadAuth() {
+  if (GH_API !== "/api/github") return;
+  try {
+    const r = await fetch("/api/auth/me", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+    if (r.status === 200) authState = await r.json();
+  } catch (e) { /* no auth API: the button stays hidden */ }
+  renderAuth();
+}
+
+function renderAuth() {
+  const box = document.getElementById("auth");
+  box.textContent = "";
+  box.hidden = !(authState && authState.enabled === true);
+  if (box.hidden) return;
+  if (!authState.authenticated) {
+    const a = document.createElement("a");
+    a.className = "btn";
+    a.href = "/api/auth/login?next=" + encodeURIComponent("/runs/?repo=" + getRepo());
+    a.textContent = t("signIn");
+    box.append(a);
+    return;
+  }
+  if (typeof authState.avatar_url === "string" && authState.avatar_url.startsWith("https://avatars.githubusercontent.com/")) {
+    const img = document.createElement("img");
+    img.src = authState.avatar_url;
+    img.alt = "";
+    box.append(img);
+  }
+  const mine = (authState.projects || []).find((p) => p.external_id === getRepo());
+  const who = document.createElement("span");
+  who.textContent = authState.login + " · " + t("role") + ": " + ((mine && mine.role) || t("noRole"));
+  const out = document.createElement("button");
+  out.textContent = t("signOut");
+  out.addEventListener("click", signOut);
+  box.append(who, out);
+}
+
+async function signOut() {
+  try {
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-Tradvia-CSRF": authState.csrf },
+    });
+  } catch (e) { /* the session expires by itself */ }
+  authState = { enabled: true, authenticated: false };
+  renderAuth();
+}
+
 // Dashboard reads: from the store when available; any failed call is retried through GH_API.
 async function getData(repo, path) {
   if (STORE_API) {
@@ -477,6 +538,7 @@ async function loadData(repo) {
 
 const I18N = {
   pt: {
+    signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
     title: "Execuções", refresh: "Atualizar", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -501,6 +563,7 @@ const I18N = {
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
   en: {
+    signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
     title: "Runs", refresh: "Refresh", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -790,6 +853,7 @@ function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
   document.getElementById("lang").value = lang;
+  renderAuth();
   document.getElementById("meta").textContent =
     getRepo() + (updatedAt ? " · " + t("updated") + " " + updatedAt.toLocaleTimeString() : "") +
     (updatedAt ? " · " + t("dataFrom") + ": " + dataSource : "");
@@ -837,7 +901,7 @@ document.getElementById("project").addEventListener("change", (e) => {
 });
 document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
-detectApi().then(refresh);
+detectApi().then(() => { loadAuth(); return refresh(); });
 </script>
 </body>
 </html>

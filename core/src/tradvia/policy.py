@@ -95,6 +95,17 @@ def parse_policy(text: str | None) -> Policy:
     return Policy(view=view, interactions=interactions)
 
 
+def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:
+    """Maps the collaborator-permission answer to a policy role.
+
+    `role_name` is the granular role (triage, maintain...); `permission` is the legacy
+    admin/write/read/none. Anything unknown, including `none`, is no role at all.
+    """
+    if role_name in ROLES:
+        return role_name
+    return permission if permission in ROLES else None
+
+
 def role_of(github: RoleSource, login: str | None) -> str | None:
     """GitHub role of a person, or None (not a collaborator). Bots never count."""
     if not login or login.endswith("[bot]"):
