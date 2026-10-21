@@ -117,8 +117,18 @@ API works at the anonymous GitHub limit. The token is never returned or logged.
 | GitHub webhooks stored in Postgres | Shipped |
 | Dashboard reading issues, PRs and runs from the database | Shipped |
 | Card timeline from the database | Planned |
-| GitHub login | Planned |
+| GitHub login | Partial: implemented, stays off until the GitHub App is registered and its secrets are wired into the deploy ([github-app.md](github-app.md)) |
 | Actions from the dashboard | Planned |
+
+## Sign in with GitHub
+
+Optional. The API enables `/api/auth/*` only when `TRADVIA_GITHUB_APP_CLIENT_ID`,
+`TRADVIA_GITHUB_APP_CLIENT_SECRET` and `TRADVIA_SECRET_KEY` are all set in `.env`
+(`compose.yaml` already passes them to the API, plus `TRADVIA_DOMAIN`). Without
+them `GET /api/auth/me` answers `{"enabled": false}` and the panel hides the
+button. Reading stays public either way. Registering the App and generating the
+secrets are owner steps: see [github-app.md](github-app.md). A maintainer wires
+the three values into the deploy workflow in a separate pull request.
 
 ## Webhooks
 
