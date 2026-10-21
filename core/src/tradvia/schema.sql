@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 ALTER TABLE issues ADD COLUMN IF NOT EXISTS html_url text;
 ALTER TABLE issues ADD COLUMN IF NOT EXISTS state_reason text;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS html_url text;
+-- Cost parsed from the PR description (the body itself is not stored).
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_usd numeric;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_seconds numeric;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS display_title text;
 ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS html_url text;
