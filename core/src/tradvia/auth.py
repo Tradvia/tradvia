@@ -19,7 +19,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, NamedTuple, Protocol
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import requests
 
@@ -201,6 +201,15 @@ def _reason(data: Any, status: int) -> str:
     return f"HTTP {status}"
 
 
+def _github_message(r: requests.Response) -> str:
+    """GitHub's error `message` (short), only used to classify a refusal; never shown."""
+    try:
+        data = r.json()
+    except Exception:
+        return ""
+    return str(data.get("message") or "")[:200] if isinstance(data, dict) else ""
+
+
 class HttpGitHub:
     def __init__(self, client_id: str, client_secret: str) -> None:
         self._id, self._secret = client_id, client_secret
@@ -277,11 +286,11 @@ class HttpGitHub:
                 **kw,
             )
             ok, status = r.status_code < 300, r.status_code
-            data = r.json() if ok else None
+            data = (r.json() if r.content else None) if ok else None
         except Exception:  # never echo: the error may carry request headers
             raise GitHubError(502) from None
         if not ok:
-            raise GitHubError(status)
+            raise GitHubError(status, _github_message(r))
         return data
 
     def get_issue(self, token: str, repo: str, number: int) -> dict[str, Any]:
@@ -309,6 +318,86 @@ class HttpGitHub:
             if len(chunk) < 100:
                 break
         return out
+
+    # Pull requests and deploys (ADR 0007).
+    def _pages(self, token: str, path: str, key: str | None = None) -> list[Any]:
+        out: list[Any] = []
+        for page in range(1, 11):
+            data = self._call(token, "GET", path, params={"per_page": 100, "page": page})
+            chunk = data.get(key, []) if key else data
+            out.extend(chunk)
+            if len(chunk) < 100:
+                break
+        return out
+
+    def get_pull(self, token: str, repo: str, number: int) -> dict[str, Any]:
+        pull = self._call(token, "GET", f"/repos/{repo}/pulls/{number}")
+        pull["files"] = self._pages(token, f"/repos/{repo}/pulls/{number}/files")
+        return pull
+
+    def list_checks(self, token: str, repo: str, sha: str) -> list[dict[str, Any]]:
+        return self._pages(token, f"/repos/{repo}/commits/{sha}/check-runs", "check_runs")
+
+    def list_review_comments(self, token: str, repo: str, number: int) -> list[dict[str, Any]]:
+        reviews = self._pages(token, f"/repos/{repo}/pulls/{number}/reviews")
+        inline = self._pages(token, f"/repos/{repo}/pulls/{number}/comments")
+        out = [
+            {"user": r.get("user"), "body": r.get("body"), "state": r.get("state"),
+             "path": None, "created_at": r.get("submitted_at")}
+            for r in reviews
+            if (r.get("body") or "").strip() or r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
+        ]
+        out += [
+            {"user": c.get("user"), "body": c.get("body"), "state": "COMMENTED",
+             "path": c.get("path"), "created_at": c.get("created_at")}
+            for c in inline
+        ]
+        return sorted(out, key=lambda c: c.get("created_at") or "")
+
+    def merge_pull(self, token: str, repo: str, number: int, title: str, sha: str) -> None:
+        self._call(
+            token, "PUT", f"/repos/{repo}/pulls/{number}/merge",
+            json={"merge_method": "squash", "commit_title": title, "sha": sha},
+        )
+
+    def delete_branch(self, token: str, repo: str, branch: str) -> None:
+        self._call(token, "DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}")
+
+    def update_branch(self, token: str, repo: str, number: int) -> None:
+        self._call(token, "PUT", f"/repos/{repo}/pulls/{number}/update-branch")
+
+    def list_runs(self, token: str, repo: str, status: str) -> list[dict[str, Any]]:
+        data = self._call(
+            token, "GET", f"/repos/{repo}/actions/runs", params={"status": status, "per_page": 50}
+        )
+        return data.get("workflow_runs", [])
+
+    def list_pending_deployments(self, token: str, repo: str, run_id: int) -> list[dict[str, Any]]:
+        return self._call(token, "GET", f"/repos/{repo}/actions/runs/{run_id}/pending_deployments")
+
+    def review_pending_deployment(
+        self, token: str, repo: str, run_id: int, environment_ids: list[int], approve: bool,
+        comment: str,
+    ) -> None:
+        self._call(
+            token, "POST", f"/repos/{repo}/actions/runs/{run_id}/pending_deployments",
+            json={
+                "environment_ids": environment_ids,
+                "state": "approved" if approve else "rejected",
+                "comment": comment,
+            },
+        )
+
+    def cancel_run(self, token: str, repo: str, run_id: int) -> None:
+        self._call(token, "POST", f"/repos/{repo}/actions/runs/{run_id}/cancel")
+
+    def dispatch_workflow(
+        self, token: str, repo: str, workflow: str, ref: str, inputs: dict[str, str],
+    ) -> None:
+        self._call(
+            token, "POST", f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
+            json={"ref": ref, "inputs": inputs},
+        )
 
 
 class _UserRoles:
