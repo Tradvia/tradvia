@@ -74,6 +74,7 @@ ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS html_url text;
 -- Cost parsed from the PR description (the body itself is not stored).
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_usd numeric;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_seconds numeric;
+ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS cost_so_far_usd numeric;
 -- Tokens parsed from the "Tokens: N in · N out · N cache" line of the PR description.
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS tokens_in bigint;
 ALTER TABLE pull_requests ADD COLUMN IF NOT EXISTS tokens_out bigint;

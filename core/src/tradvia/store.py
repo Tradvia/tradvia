@@ -412,10 +412,11 @@ _UPSERT_SQL = {
     "pull_request": """
         INSERT INTO pull_requests (project_id, id, number, title, state, merged, branch,
                                    author, created_at, updated_at, merged_at, html_url,
-                                   cost_usd, cost_seconds, tokens_in, tokens_out, tokens_cache)
+                                   cost_usd, cost_seconds, cost_so_far_usd,
+                                   tokens_in, tokens_out, tokens_cache)
         VALUES (%(project_id)s, %(id)s, %(number)s, %(title)s, %(state)s, %(merged)s,
                 %(branch)s, %(author)s, %(created_at)s, %(updated_at)s, %(merged_at)s,
-                %(html_url)s, %(cost_usd)s, %(cost_seconds)s, %(tokens_in)s,
+                %(html_url)s, %(cost_usd)s, %(cost_seconds)s, %(cost_so_far_usd)s, %(tokens_in)s,
                 %(tokens_out)s, %(tokens_cache)s)
         ON CONFLICT (project_id, id) DO UPDATE SET
             number = excluded.number, title = excluded.title, state = excluded.state,
@@ -423,7 +424,7 @@ _UPSERT_SQL = {
             created_at = excluded.created_at, updated_at = excluded.updated_at,
             merged_at = excluded.merged_at, html_url = excluded.html_url,
             cost_usd = excluded.cost_usd, cost_seconds = excluded.cost_seconds,
-            tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+            cost_so_far_usd = excluded.cost_so_far_usd, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
             tokens_cache = excluded.tokens_cache
         WHERE excluded.updated_at >= pull_requests.updated_at
     """,
@@ -478,7 +479,7 @@ _LIST_ISSUES_SQL = """
 """
 _LIST_PULLS_SQL = """
     SELECT number, title, state, merged_at, branch, author, html_url,
-           created_at, updated_at, cost_usd, cost_seconds,
+           created_at, updated_at, cost_usd, cost_seconds, cost_so_far_usd,
            tokens_in, tokens_out, tokens_cache
     FROM pull_requests
     WHERE project_id = %(project_id)s AND (%(state)s = 'all' OR state = %(state)s)

@@ -541,6 +541,11 @@ function planCostsOf(comments) {
   return out;
 }
 
+function parseSoFar(body) {
+  const m = typeof body === "string" ? /cost so far[^$\n]*\$(\d+(?:\.\d+)?)/i.exec(body) : null;
+  return m ? parseFloat(m[1]) : null;
+}
+
 // Cost parts of a card: every plan plus the executor of its newest costed PR. The PR's
 // "estimated cost so far" already includes the plans, so it only stands in (`fallback`) when
 // no plan comment was stored. The executor line is the one with seconds ("$1.0051 · 285s").
@@ -560,10 +565,15 @@ function cardCostParts(issue, comments, prs) {
       : parseTokens(p.body) || { in: 0, out: 0, cache: 0 };
     const part = { usd: c.usd, in: tk.in, out: tk.out, cache: tk.cache, at: p.created_at || null };
     if (c.seconds != null) exec = part; else fallback = part;
+    // "Cost so far" (planning + execution) for cards whose plans carry no cost line.
+    const soFar = typeof tc.so_far_usd === "number" ? tc.so_far_usd : parseSoFar(p.body);
+    if (soFar != null) fallback = { ...part, usd: soFar };
     break;
   }
   if (!plans.length && !exec && !fallback) return null;
-  return { plans, exec, fallback: plans.length ? null : fallback };
+  // Without stored plans the "so far" total already covers the execution: use it alone.
+  if (!plans.length && fallback) return { plans, exec: null, fallback };
+  return { plans, exec, fallback: null };
 }
 
 // Total cost and tokens of a card, or null when nothing was recorded.

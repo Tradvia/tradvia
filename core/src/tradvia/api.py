@@ -223,8 +223,9 @@ def _tokens(r: dict[str, Any]) -> dict[str, int]:
 def _cost(usd: Any, seconds: Any, tokens: dict[str, Any]) -> dict[str, Any] | None:
     if usd is None:
         return None
+    so_far = tokens.get("cost_so_far_usd")
     return {"usd": float(usd), "seconds": float(seconds) if seconds is not None else None,
-            **_tokens(tokens)}
+            "so_far_usd": float(so_far) if so_far is not None else None, **_tokens(tokens)}
 
 
 def plan_cost(r: dict[str, Any]) -> dict[str, Any]:

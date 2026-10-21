@@ -111,6 +111,16 @@ def _token_fields(body: str | None) -> dict[str, int | None]:
     return dict(zip(keys, tokens)) if tokens else dict.fromkeys(keys)
 
 
+_SO_FAR = re.compile(r"cost so far[^$\n]*\$" + _NUM, re.I)
+
+
+def parse_cost_so_far(body: str | None) -> float | None:
+    """The PR's "estimated cost so far": planning plus execution, for cards whose plan
+    comments carry no cost line (written before plan costs were recorded)."""
+    m = _SO_FAR.search(body) if isinstance(body, str) else None
+    return float(m.group(1)) if m else None
+
+
 def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
     cost_usd, cost_seconds = parse_cost(pr.get("body"))
     return {
@@ -127,6 +137,7 @@ def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
         "html_url": pr.get("html_url"),
         "cost_usd": cost_usd,
         "cost_seconds": cost_seconds,
+        "cost_so_far_usd": parse_cost_so_far(pr.get("body")),
         **_token_fields(pr.get("body")),
     }
 

@@ -63,8 +63,8 @@ def test_store_read_serves_the_cost(monkeypatch):
         f"/api/store/repos/{REPO}/pulls?state=all").json()
     cost = {p["number"]: p["tradvia_cost"] for p in body}
     assert cost == {
-        1: {"usd": 1.0051, "seconds": 285.0, "tokens_in": 12345, "tokens_out": 3210,
-            "tokens_cache": 80000},
+        1: {"usd": 1.0051, "seconds": 285.0, "so_far_usd": 1.1636, "tokens_in": 12345,
+            "tokens_out": 3210, "tokens_cache": 80000},
         2: None,
     }
 
@@ -159,3 +159,11 @@ def test_backfill_writes_plan_and_pr_tokens(monkeypatch):
     pid = store.ensure_project(REPO)
     assert store.list_plan_costs(pid)[0]["tokens_out"] == 200
     assert store.list_pulls(pid, "all", 10)[0]["tokens_cache"] == 80000
+
+
+def test_cost_so_far_is_kept_for_cards_without_plan_costs():
+    from tradvia.events import parse_cost_so_far
+
+    assert parse_cost_so_far(AGENT_BODY) == 1.1636
+    assert parse_cost_so_far("Estimated cost (API-equivalent): $0.42 · 3s") is None
+    assert pull_request_record(pr(3, AGENT_BODY))["cost_so_far_usd"] == 1.1636

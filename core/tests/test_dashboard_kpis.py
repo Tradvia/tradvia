@@ -217,6 +217,18 @@ def test_cost_so_far_only_stands_in_when_there_are_no_plan_comments():
     assert got["usd"] == pytest.approx(0.2)  # the plans already are inside the 1.2
 
 
+def test_store_pr_with_cost_so_far_covers_old_cards_without_plan_costs():
+    # PRs written before plan costs were recorded: the store keeps the executor line and the
+    # "cost so far" (planning + execution). Without stored plans the latter is the card total.
+    old = [pr(11, "2026-03-29T11:00:00Z", "tradvia/issue-5", usd=0.41,
+              tokens={"so_far_usd": 0.52, "tokens_in": 9000})]
+    i = issue(5, "2026-03-29T10:00:00Z")
+    got = js("cardCosts(i, [], prs)", i=i, prs=old)
+    assert got["usd"] == pytest.approx(0.52) and got["in"] == 9000
+    with_plans = js("cardCosts(i, [p], prs)", i=i, prs=old, p=plan("2026-03-29T10:05:00Z", 0.1))
+    assert with_plans["usd"] == pytest.approx(0.1 + 0.41)
+
+
 def test_card_without_any_cost_is_null():
     assert js("cardCosts(i, [], [])", i=issue(5, "2026-03-29T10:00:00Z")) is None
 
