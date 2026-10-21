@@ -59,13 +59,19 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.TRADVIA_GITHUB_TOKEN }}
           TRADVIA_WEBHOOK_SECRET: ${{ secrets.TRADVIA_WEBHOOK_SECRET }}
+          TRADVIA_GITHUB_APP_CLIENT_ID: ${{ vars.TRADVIA_GITHUB_APP_CLIENT_ID }}
+          TRADVIA_GITHUB_APP_CLIENT_SECRET: ${{ secrets.TRADVIA_GITHUB_APP_CLIENT_SECRET }}
+          TRADVIA_SECRET_KEY: ${{ secrets.TRADVIA_SECRET_KEY }}
           TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL }}
         run: |
           # GITHUB_TOKEN is optional (fine-grained, read-only). Empty means anonymous GitHub API limits.
           # TRADVIA_WEBHOOK_SECRET signs GitHub webhooks (HMAC SHA-256). Empty means webhooks are rejected.
-          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\nTRADVIA_WEBHOOK_SECRET=%s\n' \
+          # Sign in with GitHub (docs/github-app.md) stays off until all three TRADVIA_GITHUB_APP_* /
+          # TRADVIA_SECRET_KEY values are set. The client ID is public, so it is a variable.
+          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\nTRADVIA_WEBHOOK_SECRET=%s\nTRADVIA_GITHUB_APP_CLIENT_ID=%s\nTRADVIA_GITHUB_APP_CLIENT_SECRET=%s\nTRADVIA_SECRET_KEY=%s\n' \
             "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" "$GITHUB_TOKEN" "$TRADVIA_WEBHOOK_SECRET" \
+            "$TRADVIA_GITHUB_APP_CLIENT_ID" "$TRADVIA_GITHUB_APP_CLIENT_SECRET" "$TRADVIA_SECRET_KEY" \
             | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
 
       - name: Upload compose, Caddyfile and dashboard
