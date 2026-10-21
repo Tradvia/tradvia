@@ -13,7 +13,8 @@ from starlette.testclient import TestClient  # noqa: E402
 
 from tradvia import auth  # noqa: E402
 from tradvia.api import create_app  # noqa: E402
-from tradvia.auth import AuthError, safe_return_path  # noqa: E402
+from tradvia.actions import GitHubError  # noqa: E402
+from tradvia.auth import AuthError, PolicyUnreadable, safe_return_path  # noqa: E402
 from tradvia.policy import role_from_github  # noqa: E402
 from tradvia.store import MemoryStore  # noqa: E402
 
@@ -31,6 +32,11 @@ class FakeGitHub:
         self.perm = {A: ("admin", "admin"), B: ("read", "read")}
         self.perm_calls = 0
         self.exchanges = []
+        self.calls = []
+        self.policy = None  # .tradvia.yml text, None (404) or an exception to raise
+        self.issues = {7: {"number": 7, "state": "open", "labels": []}}
+        self.comments = {}
+        self.next_number = 100
 
     def exchange_code(self, code, redirect_uri, code_verifier):
         self.exchanges.append((code, redirect_uri, code_verifier))
@@ -46,6 +52,46 @@ class FakeGitHub:
         assert token == TOKEN and login == "ana"
         self.perm_calls += 1
         return self.perm.get(repo, (None, None))
+
+    # policy file and panel actions: every call records the token it was made with
+    def get_file(self, token, repo, path, ref):
+        self.calls.append(("get_file", token, repo, path, ref))
+        if isinstance(self.policy, Exception):
+            raise self.policy
+        return self.policy
+
+    def get_issue(self, token, repo, number):
+        self.calls.append(("get_issue", token, repo, number))
+        if number not in self.issues:
+            raise GitHubError(404)
+        return self.issues[number]
+
+    def create_issue(self, token, repo, title, body):
+        self.calls.append(("create_issue", token, repo, title, body))
+        self.next_number += 1
+        issue = {
+            "id": 1000 + self.next_number, "number": self.next_number, "title": title,
+            "body": body, "state": "open", "labels": [], "user": {"login": "ana"},
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "html_url": f"https://github.com/{repo}/issues/{self.next_number}",
+        }
+        self.issues[self.next_number] = issue
+        return issue
+
+    def add_label(self, token, repo, number, label):
+        self.calls.append(("add_label", token, repo, number, label))
+
+    def comment(self, token, repo, number, body):
+        self.calls.append(("comment", token, repo, number, body))
+
+    def list_comments(self, token, repo, number):
+        self.calls.append(("list_comments", token, repo, number))
+        if number not in self.issues:
+            raise GitHubError(404)
+        return self.comments.get(number, [])
+
+    def writes(self, kind):
+        return [c for c in self.calls if c[0] == kind]
 
 
 @pytest.fixture(autouse=True)
@@ -134,8 +180,10 @@ def test_full_flow(client, gh):
     assert data["enabled"] and data["authenticated"] and data["login"] == "ana"
     assert data["avatar_url"].endswith("/u/7")
     assert data["projects"] == [
-        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin"},
-        {"slug": "acme-widgets", "external_id": B, "role": "read"},
+        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin",
+         "can_start": True, "can_approve": True},
+        {"slug": "acme-widgets", "external_id": B, "role": "read",
+         "can_start": False, "can_approve": False},
     ]
 
     out = client.post("/api/auth/logout", headers=csrf_headers(client))
@@ -456,3 +504,320 @@ def test_load_config():
     )
     assert cfg.origin == "https://app.tradvia.org"
     assert cfg.redirect_uri == "https://app.tradvia.org/api/auth/callback"
+
+
+# panel actions with the user's identity -------------------------------------------
+
+SERVER_TOKEN = "ghp_SERVER_token_must_not_be_used"
+PLAN = (
+    "🟡 **#8 — card**\nresumo\n1. passo\n\n❓ posso seguir?\n"
+    "Responda **Aprovado**, **Rejeitado** ou escreva um ajuste."
+)
+AGENT_PLAN = {"user": {"login": "github-actions[bot]"}, "body": PLAN}
+BASE = f"/api/projects/{A}"
+_keys = iter(range(10_000))
+
+
+def key():
+    return f"key-{next(_keys):08d}"
+
+
+def post(client, path, body=None, idem=None, csrf=True):
+    headers = csrf_headers(client) if csrf else {"Origin": ORIGIN}
+    if idem != "":
+        headers["X-Tradvia-Idempotency-Key"] = idem or key()
+    return client.post(path, json=body if body is not None else {}, headers=headers)
+
+
+@pytest.fixture
+def signed(client, gh, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", SERVER_TOKEN)
+    gh.issues[8] = {"number": 8, "state": "open", "labels": []}
+    gh.comments[8] = [AGENT_PLAN]
+    login(client)
+    return client
+
+
+def as_role(store, gh, clock, role):
+    gh.perm[A] = (role, role)
+    client = make_client(store, gh, clock)
+    login(client)
+    return client
+
+
+def audit_rows(store, number):
+    return store.list_audit(store.ensure_project(A), number)
+
+
+def test_create_card_uses_the_user_token_and_lands_at_the_end(signed, gh, store):
+    pid = store.ensure_project(A)
+    store.set_backlog(pid, [{"issue_number": 1}, {"issue_number": 2}])
+    r = post(signed, BASE + "/cards", {"title": "Novo", "description": "Depende do #2."})
+    assert r.status_code == 200 and r.json()["issue_number"] == 101
+    (call,) = gh.writes("create_issue")
+    assert call[1] == TOKEN and call[1] != SERVER_TOKEN and call[3] == "Novo"
+    items = store.list_backlog(pid)
+    assert [i["issue_number"] for i in items] == [1, 2, 101]
+    assert items[-1]["depends_on"] == [2]
+    assert store.list_issues(pid, [], "all", 10)[0]["title"] == "Novo"
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_create_card_validates_the_title(signed, gh):
+    assert post(signed, BASE + "/cards", {"title": "  "}).status_code == 400
+    assert post(signed, BASE + "/cards", {"title": "x" * 300}).status_code == 400
+    assert not gh.writes("create_issue")
+
+
+def test_start_card_adds_the_label_with_the_user_token(signed, gh):
+    r = post(signed, BASE + "/cards/8/start")
+    assert r.status_code == 200
+    assert gh.writes("add_label") == [("add_label", TOKEN, A, 8, "agent:ready")]
+    assert all(c[1] == TOKEN for c in gh.calls if c[0] != "get_permission")
+
+
+def test_start_card_in_the_wrong_state(signed, gh):
+    gh.issues[8]["labels"] = [{"name": "agent:ready"}]
+    assert post(signed, BASE + "/cards/8/start").status_code == 409
+    gh.issues[8].update(labels=[], state="closed")
+    assert post(signed, BASE + "/cards/8/start").status_code == 409
+    gh.issues[8].update(state="open", pull_request={})
+    assert post(signed, BASE + "/cards/8/start").status_code == 404
+    assert not gh.writes("add_label")
+
+
+@pytest.mark.parametrize("decision, comment", [
+    ("approve", "Aprovado"), ("reject", "Rejeitado"), ("adjust", "Ajuste: use outra lib"),
+])
+def test_reply_comments_with_the_user_token(signed, gh, decision, comment):
+    r = post(signed, BASE + "/cards/8/reply", {"decision": decision, "text": "use outra lib"})
+    assert r.status_code == 200
+    assert gh.writes("comment") == [("comment", TOKEN, A, 8, comment)]
+
+
+def test_reply_needs_a_plan_awaiting_an_answer(signed, gh):
+    gh.comments[8] = [AGENT_PLAN, {"user": {"login": "github-actions[bot]"}, "body": "Rodando."}]
+    assert post(signed, BASE + "/cards/8/reply", {"decision": "approve"}).status_code == 409
+    gh.comments[8] = [{"user": {"login": "ana"}, "body": PLAN}]  # not from the agent
+    assert post(signed, BASE + "/cards/8/reply", {"decision": "approve"}).status_code == 409
+    assert not gh.writes("comment")
+
+
+def test_reply_validates_the_decision(signed, gh):
+    assert post(signed, BASE + "/cards/8/reply", {"decision": "maybe"}).status_code == 400
+    assert post(signed, BASE + "/cards/8/reply", {"decision": "adjust", "text": " "}).status_code == 400
+    assert not gh.writes("comment")
+
+
+def test_card_outside_the_project_is_404(signed, gh):
+    assert post(signed, BASE + "/cards/999/start").status_code == 404
+    assert post(signed, BASE + "/cards/999/reply", {"decision": "approve"}).status_code == 404
+    assert signed.get(BASE + "/cards/999/audit").status_code == 404
+    assert post(signed, "/api/projects/Other/repo/cards", {"title": "x"}).status_code == 404
+    assert not gh.writes("add_label") and not gh.writes("comment")
+
+
+def test_insufficient_role_is_403_with_a_clear_message(store, gh, clock, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", SERVER_TOKEN)
+    gh.comments[7] = [AGENT_PLAN]
+    triage = as_role(store, gh, clock, "triage")
+    assert post(triage, BASE + "/cards/7/start").status_code == 200  # triage may start
+    r = post(triage, BASE + "/cards/7/reply", {"decision": "approve"})
+    assert r.status_code == 403
+    assert "'triage'" in r.json()["error"] and "approve_plan" in r.json()["error"]
+    assert "'write'" in r.json()["error"]
+    assert not gh.writes("comment")
+    reader = as_role(store, gh, clock, "read")
+    for path, body in (("/cards", {"title": "x"}), ("/cards/7/start", {})):
+        r = post(reader, BASE + path, body)
+        assert r.status_code == 403 and "'triage'" in r.json()["error"]
+    assert not gh.writes("create_issue")
+    assert post(reader, BASE + "/backlog", {"order": []}).status_code == 403
+
+
+def test_non_collaborator_has_no_access(store, gh, clock):
+    gh.perm[A] = (None, None)
+    client = make_client(store, gh, clock)
+    login(client)
+    r = post(client, BASE + "/cards/7/start")
+    assert r.status_code == 403 and "no access" in r.json()["error"]
+    assert not gh.writes("add_label")
+
+
+def test_policy_file_can_raise_the_minimum_role(store, gh, clock):
+    gh.policy = "interactions:\n  start_card: admin\n"
+    write = as_role(store, gh, clock, "write")
+    r = post(write, BASE + "/cards/7/start")
+    assert r.status_code == 403 and "'admin'" in r.json()["error"]
+
+
+def test_missing_policy_file_uses_the_adr_defaults(signed, gh):
+    gh.policy = None  # 404
+    assert post(signed, BASE + "/cards/8/start").status_code == 200
+    assert gh.writes("get_file")[-1] == ("get_file", TOKEN, A, ".tradvia.yml", "")  # default branch, user token
+
+
+def test_unreadable_policy_fails_closed_naming_the_permission(signed, gh, store):
+    gh.policy = PolicyUnreadable(auth.UNREADABLE_POLICY)
+    r = post(signed, BASE + "/cards/8/start")
+    assert r.status_code == 403 and "Contents: Read-only" in r.json()["error"]
+    assert not gh.writes("add_label")
+    assert audit_rows(store, 8)[0]["result"] == "denied"
+
+
+def test_invalid_policy_fails_closed(signed, gh):
+    gh.policy = "interactions:\n  start_card: emperor\n"
+    r = post(signed, BASE + "/cards/8/start")
+    assert r.status_code == 403 and ".tradvia.yml" in r.json()["error"]
+    assert not gh.writes("add_label")
+
+
+class _Resp:
+    def __init__(self, status, content=""):
+        import base64
+
+        self.status_code = status
+        self._content = base64.b64encode(content.encode()).decode()
+
+    def json(self):
+        return {"content": self._content}
+
+
+@pytest.mark.parametrize("status, outcome", [(404, None), (200, "x: 1")])
+def test_http_get_file(monkeypatch, status, outcome):
+    seen = {}
+
+    def fake_get(url, headers, timeout):
+        seen.update(url=url, auth=headers["Authorization"])
+        return _Resp(status, "x: 1")
+
+    monkeypatch.setattr(auth.requests, "get", fake_get)
+    http = auth.HttpGitHub("id", "secret")
+    assert http.get_file(TOKEN, A, ".tradvia.yml", "") == outcome
+    assert seen["url"].endswith(f"/repos/{A}/contents/.tradvia.yml")  # no ref: default branch
+    assert seen["auth"] == f"Bearer {TOKEN}"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_http_get_file_denied_is_unreadable(monkeypatch, status):
+    monkeypatch.setattr(auth.requests, "get", lambda *a, **k: _Resp(status))
+    with pytest.raises(PolicyUnreadable, match="Contents: Read-only"):
+        auth.HttpGitHub("id", "secret").get_file(TOKEN, A, ".tradvia.yml", "")
+
+
+def test_missing_csrf_is_403_on_every_action(signed, gh):
+    for path in ("/cards", "/cards/8/start", "/cards/8/reply", "/backlog"):
+        assert post(signed, BASE + path, {"title": "x"}, csrf=False).status_code == 403
+    assert not [c for c in gh.calls if c[0] in ("create_issue", "add_label", "comment")]
+
+
+def test_anonymous_is_401(client, gh):
+    r = client.post(BASE + "/cards/8/start", json={})
+    assert r.status_code == 401
+    assert client.get(BASE + "/cards/8/audit").status_code == 401
+    assert not gh.calls
+
+
+def test_invalid_idempotency_key_is_400(signed):
+    assert post(signed, BASE + "/cards/8/start", idem="no good!").status_code == 400
+
+
+def test_same_request_within_five_seconds_is_ignored(signed, gh, clock):
+    k = key()
+    first = post(signed, BASE + "/cards/8/start", idem=k)
+    clock.advance(3)
+    second = post(signed, BASE + "/cards/8/start", idem=k)
+    assert first.status_code == 200 and "duplicate" not in first.json()
+    assert second.status_code == 200 and second.json()["duplicate"] is True
+    assert len(gh.writes("add_label")) == 1
+    clock.advance(3)  # 6 s after the first: the key is free again
+    assert post(signed, BASE + "/cards/8/start", idem=k).status_code == 200
+    assert len(gh.writes("add_label")) == 2
+
+
+def test_a_different_key_is_not_a_repeat(signed, gh):
+    post(signed, BASE + "/cards/8/start")
+    post(signed, BASE + "/cards/8/start")
+    assert len(gh.writes("add_label")) == 2
+
+
+def test_every_attempt_is_audited(signed, gh, store, clock):
+    post(signed, BASE + "/cards/8/start")
+    gh.issues[8]["labels"] = [{"name": "agent:ready"}]
+    post(signed, BASE + "/cards/8/start")
+    post(signed, BASE + "/cards/8/reply", {"decision": "approve"})
+    rows = audit_rows(store, 8)
+    assert [(r["actor_login"], r["action"], r["result"]) for r in rows] == [
+        ("ana", "start_card", "ok"), ("ana", "start_card", "failed"), ("ana", "reply_plan", "ok"),
+    ]
+    assert rows[2]["detail"] == "decision=approve" and rows[0]["created_at"].endswith("Z")
+
+
+def test_denied_attempt_is_audited(store, gh, clock):
+    reader = as_role(store, gh, clock, "read")
+    post(reader, BASE + "/cards/7/start")
+    (row,) = audit_rows(store, 7)
+    assert (row["actor_login"], row["action"], row["result"]) == ("ana", "start_card", "denied")
+
+
+def test_audit_route_shows_entries_and_the_plan(signed, gh):
+    post(signed, BASE + "/cards/8/start")
+    r = signed.get(BASE + "/cards/8/audit")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    data = r.json()
+    assert [e["action"] for e in data["audit"]] == ["start_card"]
+    assert data["awaiting_plan"] is True and data["plan"] == PLAN
+    gh.comments[8] = []
+    assert signed.get(BASE + "/cards/8/audit").json()["plan"] is None
+
+
+def test_audit_route_is_closed_to_users_without_the_read_role(store, gh, clock):
+    gh.perm[A] = (None, None)
+    client = make_client(store, gh, clock)
+    login(client)
+    r = client.get(BASE + "/cards/8/audit")
+    assert r.status_code == 403 and "read" in r.json()["error"]
+
+
+def test_plan_is_not_fetched_for_users_who_cannot_approve(store, gh, clock):
+    gh.issues[8] = {"number": 8, "state": "open", "labels": []}
+    gh.comments[8] = [AGENT_PLAN]
+    reader = as_role(store, gh, clock, "read")
+    data = reader.get(BASE + "/cards/8/audit").json()
+    assert data["plan"] is None and not gh.writes("list_comments")
+
+
+def test_backlog_move_and_order(signed, store, gh):
+    pid = store.ensure_project(A)
+    store.set_backlog(pid, [{"issue_number": n, "depends_on": [1] if n == 3 else []} for n in (1, 2, 3)])
+
+    def numbers():
+        return [i["issue_number"] for i in store.list_backlog(pid)]
+
+    assert post(signed, BASE + "/backlog", {"issue": 3, "direction": "up"}).status_code == 200
+    assert numbers() == [1, 3, 2]
+    post(signed, BASE + "/backlog", {"issue": 1, "direction": "up"})  # already first
+    assert numbers() == [1, 3, 2]
+    post(signed, BASE + "/backlog", {"issue": 2, "direction": "down"})  # already last
+    assert numbers() == [1, 3, 2]
+    assert post(signed, BASE + "/backlog", {"issue": 9, "direction": "up"}).status_code == 404
+    assert post(signed, BASE + "/backlog", {"issue": 1, "direction": "left"}).status_code == 400
+    assert post(signed, BASE + "/backlog", {"order": [2, 3, 1]}).status_code == 200
+    assert numbers() == [2, 3, 1]
+    assert [i["depends_on"] for i in store.list_backlog(pid)] == [[], [1], []]
+    assert post(signed, BASE + "/backlog", {"order": [1, 2]}).status_code == 400
+    assert numbers() == [2, 3, 1]
+    assert not gh.writes("comment")
+
+
+def test_me_reports_what_the_panel_may_show(store, gh, clock):
+    gh.perm[A] = ("triage", "triage")
+    client = make_client(store, gh, clock)
+    login(client)
+    mine = me(client)["projects"][0]
+    assert (mine["can_start"], mine["can_approve"]) == (True, False)
+    gh.policy = PolicyUnreadable(auth.UNREADABLE_POLICY)
+    other = make_client(store, gh, clock)
+    login(other)
+    mine = me(other)["projects"][0]
+    assert (mine["can_start"], mine["can_approve"]) == (False, False)
