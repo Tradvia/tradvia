@@ -173,3 +173,12 @@ def test_invalid_policy_leaves_card_unstarted_with_reason(run_env):
     card = cli.run(5, 0, "github")
     assert card["status"] == "BACKLOG"
     assert "Invalid .tradvia.yml on main" in gh.comments[0][1] and "nobody" in gh.comments[0][1]
+
+
+def test_pull_and_deploy_interactions_default_to_maintain_and_can_be_changed():
+    p = Policy()
+    assert p.allows("merge_pr", "maintain") and not p.allows("merge_pr", "write")
+    assert p.allows("update_branch", "admin") and not p.allows("update_branch", "triage")
+    assert p.allows("approve_deploy", "maintain") and not p.allows("approve_deploy", None)
+    custom = parse_policy("interactions:\n  merge_pr: write\n  approve_deploy: admin\n")
+    assert custom.allows("merge_pr", "write") and not custom.allows("approve_deploy", "maintain")
