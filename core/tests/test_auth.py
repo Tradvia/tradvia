@@ -821,3 +821,23 @@ def test_me_reports_what_the_panel_may_show(store, gh, clock):
     login(other)
     mine = me(other)["projects"][0]
     assert (mine["can_start"], mine["can_approve"]) == (False, False)
+
+
+@pytest.mark.parametrize("status, body, expected", [
+    (200, {"error": "incorrect_client_credentials", "error_description": "secret abc"},
+     "(incorrect_client_credentials)"),
+    (200, {"error": "redirect_uri_mismatch"}, "(redirect_uri_mismatch)"),
+    (200, {"error": "Bad <script>"}, "(HTTP 200)"),
+    (401, {}, "(HTTP 401)"),
+])
+def test_token_exchange_error_shows_only_github_reason_code(monkeypatch, status, body, expected):
+    from types import SimpleNamespace
+
+    import tradvia.auth as auth_mod
+
+    monkeypatch.setattr(auth_mod.requests, "post",
+                        lambda *a, **k: SimpleNamespace(status_code=status, json=lambda: body))
+    with pytest.raises(auth_mod.AuthError) as exc:
+        auth_mod.HttpGitHub("id", "s3cr3t").exchange_code("code", "https://x/cb", "v")
+    msg = str(exc.value)
+    assert msg.endswith(expected) and "secret abc" not in msg and "s3cr3t" not in msg
