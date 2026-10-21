@@ -10,20 +10,28 @@ import pytest
 from langgraph.types import Command
 
 from tradvia.cli import make_executor, make_planner
-from tradvia.claude_code import ClaudeCodeExecutor, claude_code_plan, run_claude
-from tradvia.graph import build_graph
+from tradvia.claude_code import ClaudeCodeExecutor, _cost, claude_code_plan, run_claude
+from tradvia.events import parse_tokens
+from tradvia.graph import build_graph, tokens_line
 from tradvia.llm import architect_plan
 from test_hello_world import FakeChat, FakeGitHub, planner, start
 
 PLAN = {"summary": "s", "plan": ["a", "b"], "question": "Posso?"}
 
 
-def claude_output(result, cost=0.5, ms=2000, is_error=False):
-    return json.dumps({"result": result, "total_cost_usd": cost, "duration_ms": ms,
-                       "num_turns": 3, "is_error": is_error})
+USAGE = {"input_tokens": 12345, "output_tokens": 3210,
+         "cache_read_input_tokens": 70000, "cache_creation_input_tokens": 10000}
 
 
-def fake_runner(tmp_path, result, files=(), status=None):
+def claude_output(result, cost=0.5, ms=2000, is_error=False, usage=None):
+    data = {"result": result, "total_cost_usd": cost, "duration_ms": ms,
+            "num_turns": 3, "is_error": is_error}
+    if usage is not None:
+        data["usage"] = usage
+    return json.dumps(data)
+
+
+def fake_runner(tmp_path, result, files=(), status=None, usage=None):
     """`claude` writes `files` into tmp_path; `git status` lists them (or `status`)."""
     calls = []
 
@@ -35,7 +43,7 @@ def fake_runner(tmp_path, result, files=(), status=None):
         for f in files:
             (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / f).write_text(f"content of {f}")
-        return SimpleNamespace(returncode=0, stdout=claude_output(result), stderr="")
+        return SimpleNamespace(returncode=0, stdout=claude_output(result, usage=usage), stderr="")
 
     runner.calls = calls
     return runner
@@ -76,6 +84,75 @@ def test_plan_has_architect_shape_and_cost(tmp_path):
                          cwd=str(tmp_path))
     assert p["plan"] == ["a", "b"] and p["question"] == "Posso?"
     assert p["_cost"]["usd"] == 0.5 and p["_cost"]["duration_s"] == 2
+
+
+def test_cost_reads_usage_with_cache():
+    cost = _cost(json.loads(claude_output("x", usage=USAGE)))
+    assert (cost["tokens_in"], cost["tokens_out"], cost["tokens_cache"]) == (12345, 3210, 80000)
+    assert cost["usd"] == 0.5
+
+
+@pytest.mark.parametrize("usage, expected", [
+    ({"input_tokens": 10, "output_tokens": 4}, (10, 4, 0)),  # no cache fields
+    ({"input_tokens": 10, "cache_read_input_tokens": 7}, (10, 0, 7)),
+    ({"input_tokens": None, "output_tokens": "x"}, (0, 0, 0)),
+    ({}, (0, 0, 0)),
+    (None, (0, 0, 0)),  # no usage at all
+    ("oops", (0, 0, 0)),
+])
+def test_cost_tolerates_missing_usage(usage, expected):
+    cost = _cost(json.loads(claude_output("x", usage=usage)))
+    assert (cost["tokens_in"], cost["tokens_out"], cost["tokens_cache"]) == expected
+
+
+def test_plan_and_executor_carry_the_tokens(tmp_path):
+    runner = fake_runner(tmp_path, json.dumps(PLAN), usage=USAGE)
+    p = claude_code_plan("T", "B", 1, runner=runner, cwd=str(tmp_path))
+    assert (p["_cost"]["tokens_in"], p["_cost"]["tokens_out"], p["_cost"]["tokens_cache"]) == (
+        12345, 3210, 80000)
+    runner = fake_runner(tmp_path, "did it", ["docs/a.md"], usage=USAGE)
+    run = ClaudeCodeExecutor(runner=runner).execute(
+        {"source": {"issue_number": 1}, "title": "T", "plan": []}, str(tmp_path))
+    assert (run["tokens_in"], run["tokens_out"], run["tokens_cache"]) == (12345, 3210, 80000)
+
+
+def test_tokens_line_format():
+    assert tokens_line({"tokens_in": 12345, "tokens_out": 3210, "tokens_cache": 80000}) == (
+        "Tokens: 12 345 in · 3 210 out · 80 000 cache")
+    assert tokens_line({}) == "Tokens: 0 in · 0 out · 0 cache"
+    assert tokens_line(None) == "Tokens: 0 in · 0 out · 0 cache"
+
+
+def test_pr_body_and_plan_comment_carry_the_tokens_line(tmp_path):
+    usage_planner = lambda title, body, number: {
+        **planner(title, body, number),
+        "_cost": {"usd": 0.25, "tokens_in": 1000, "tokens_out": 200, "tokens_cache": 5000}}
+    runner = fake_runner(tmp_path, "did it", ["docs/a.md"], usage=USAGE)
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=usage_planner, executor=ClaudeCodeExecutor(runner=runner),
+                      cwd=str(tmp_path))
+    _, config = start(app)
+    plan_comment = chat.messages[0]
+    assert "Estimated cost (API-equivalent): $0.2500" in plan_comment
+    assert "Tokens: 1 000 in · 200 out · 5 000 cache" in plan_comment
+    app.invoke(Command(resume={"text": "Aprovado", "by": "anderson"}), config)
+    body = gh.prs[0][2]
+    assert "Tokens: 12 345 in · 3 210 out · 80 000 cache" in body
+    assert body.count("Tokens:") == 1  # the plan tokens are not repeated in the PR
+    assert parse_tokens(plan_comment) == (1000, 200, 5000)
+    assert parse_tokens(body) == (12345, 3210, 80000)
+
+
+def test_replanned_comment_reports_only_its_own_plan(tmp_path):
+    costs = iter([{"usd": 0.1, "tokens_in": 10, "tokens_out": 1, "tokens_cache": 0},
+                  {"usd": 0.3, "tokens_in": 30, "tokens_out": 3, "tokens_cache": 0}])
+    replanner = lambda title, body, number: {**planner(title, body, number), "_cost": next(costs)}
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=replanner)
+    _, config = start(app)
+    app.invoke(Command(resume={"text": "use inglês", "by": "anderson"}), config)
+    assert "$0.1000" in chat.messages[0] and "$0.3000" in chat.messages[1]
+    assert "$0.4000" not in chat.messages[1]  # not the accumulated card cost
 
 
 @pytest.mark.parametrize("result", ["not json", json.dumps({"plan": [], "question": "q"}),

@@ -26,7 +26,7 @@ def _offline_plan(title: str, body: str, number: int) -> dict:
         "file_path": f"docs/agent-notes/{number}-{slug}.md",
         "file_content": f"# {title}\n\nCreated by @Agent-Coder for issue #{number}.\n\n{body}\n",
         "question": "Posso criar esse arquivo e abrir o Pull Request?",
-        "_cost": {"usd": 0.0, "tokens_in": 0, "tokens_out": 0},
+        "_cost": {"usd": 0.0, "tokens_in": 0, "tokens_out": 0, "tokens_cache": 0},
     }
 
 
@@ -62,6 +62,7 @@ def architect_plan(title: str, body: str, number: int) -> dict:
         "usd": usd,
         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,
         "tokens_out": getattr(usage, "completion_tokens", 0) or 0,
+        "tokens_cache": 0,
     }
     for key in ("file_path", "file_content", "question"):
         if not plan.get(key):

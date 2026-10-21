@@ -103,8 +103,20 @@ def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
     return data
 
 
+def _count(usage: dict, key: str) -> int:
+    value = usage.get(key)
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
 def _cost(data: dict) -> dict:
-    return {"usd": float(data.get("total_cost_usd") or 0.0), "tokens_in": 0, "tokens_out": 0,
+    """Cost and tokens of one `claude -p` result; `usage` or its cache fields may be missing."""
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    return {"usd": float(data.get("total_cost_usd") or 0.0),
+            "tokens_in": _count(usage, "input_tokens"),
+            "tokens_out": _count(usage, "output_tokens"),
+            "tokens_cache": (_count(usage, "cache_read_input_tokens")
+                             + _count(usage, "cache_creation_input_tokens")),
             "duration_s": round((data.get("duration_ms") or 0) / 1000, 3)}
 
 
@@ -166,4 +178,5 @@ class ClaudeCodeExecutor:
         cost = _cost(data)
         return {"changed_files": changed_files(cwd, self.runner),
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
-                "duration_s": cost["duration_s"], "summary": str(data.get("result", "")).strip()}
+                "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
+                "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"], "summary": str(data.get("result", "")).strip()}

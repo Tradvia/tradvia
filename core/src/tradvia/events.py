@@ -37,20 +37,30 @@ def issue_record(issue: dict[str, Any]) -> dict[str, Any]:
 
 
 def comment_record(comment: dict[str, Any], issue_number: int) -> dict[str, Any]:
+    from .actions import agent_login  # lazy: actions -> backlog -> events would be circular
+
+    body = comment.get("body") or ""
+    author = _login(comment.get("user"))
+    # Only the agent's plan comments carry a cost line; a human quoting one must not count.
+    agent = author == agent_login()
+    cost_usd, _ = parse_cost(body) if agent else (None, None)
+    tokens = _token_fields(body if agent else None)
     return {
         "id": comment["id"],
         "issue_number": issue_number,
-        "author": _login(comment.get("user")),
+        "author": author,
         "author_association": comment.get("author_association"),
-        "body": comment.get("body") or "",
+        "body": body,
         "created_at": comment.get("created_at"),
         "updated_at": comment["updated_at"],
+        "cost_usd": cost_usd,
+        **tokens,
     }
 
 
 _NUM = r"(\d+(?:\.\d+)?)"
 _SECS = r"(?:\s*[·•|-]\s*" + _NUM + r"\s*s\b)?"
-# Same patterns, in the same order, as parseCost() in dashboard/index.html.
+# Same patterns, in the same order, as parseCost()/parseTokens() in dashboard/index.html.
 _COST_PATTERNS = (
     re.compile(r"estimated cost \(api-equivalent\):\s*\$" + _NUM + _SECS, re.I),
     re.compile(r"\bcost:\s*\$" + _NUM + _SECS, re.I),
@@ -75,6 +85,42 @@ def parse_cost(body: str | None) -> tuple[float | None, float | None]:
     return None, None
 
 
+# Thousands grouped by space, NBSP, narrow NBSP, dot or comma, or plain digits.
+_INT = r"(\d{1,3}(?:[   .,]\d{3})+|\d+)"
+_SEP = r"\s*[·•|-]\s*"
+_TOKENS = re.compile(
+    r"\btokens:\s*" + _INT + r"\s*in" + _SEP + _INT + r"\s*out(?:" + _SEP + _INT + r"\s*cache)?",
+    re.I,
+)
+
+
+def parse_tokens(body: str | None) -> tuple[int, int, int] | None:
+    """`(in, out, cache)` from the `Tokens: 12 345 in · 3 210 out · 80 000 cache` line."""
+    if not isinstance(body, str):
+        return None
+    m = _TOKENS.search(body)
+    if not m:
+        return None
+    n_in, n_out, n_cache = (int(re.sub(r"\D", "", g)) if g else 0 for g in m.groups())
+    return n_in, n_out, n_cache
+
+
+def _token_fields(body: str | None) -> dict[str, int | None]:
+    tokens = parse_tokens(body)
+    keys = ("tokens_in", "tokens_out", "tokens_cache")
+    return dict(zip(keys, tokens)) if tokens else dict.fromkeys(keys)
+
+
+_SO_FAR = re.compile(r"cost so far[^$\n]*\$" + _NUM, re.I)
+
+
+def parse_cost_so_far(body: str | None) -> float | None:
+    """The PR's "estimated cost so far": planning plus execution, for cards whose plan
+    comments carry no cost line (written before plan costs were recorded)."""
+    m = _SO_FAR.search(body) if isinstance(body, str) else None
+    return float(m.group(1)) if m else None
+
+
 def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
     cost_usd, cost_seconds = parse_cost(pr.get("body"))
     return {
@@ -91,6 +137,8 @@ def pull_request_record(pr: dict[str, Any]) -> dict[str, Any]:
         "html_url": pr.get("html_url"),
         "cost_usd": cost_usd,
         "cost_seconds": cost_seconds,
+        "cost_so_far_usd": parse_cost_so_far(pr.get("body")),
+        **_token_fields(pr.get("body")),
     }
 
 

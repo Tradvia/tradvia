@@ -181,8 +181,12 @@ def per_page(value: str | None) -> int:
     return max(1, min(n, MAX_PER_PAGE))
 
 
-def github_issue(r: dict[str, Any]) -> dict[str, Any]:
+def github_issue(r: dict[str, Any], plans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    # "tradvia_plan_cost" is not a GitHub field: cost and tokens of each plan comment of the
+    # agent on this card, only present when the store has any.
+    extra = {"tradvia_plan_cost": [plan_cost(p) for p in plans]} if plans else {}
     return {
+        **extra,
         "number": r["number"],
         "title": r["title"],
         "state": r["state"],
@@ -208,14 +212,25 @@ def github_pull(r: dict[str, Any]) -> dict[str, Any]:
         "created_at": r.get("created_at"),
         "updated_at": r["updated_at"],
         # Not a GitHub field: the cost parsed from the PR body, which the store does not keep.
-        "tradvia_cost": _cost(r.get("cost_usd"), r.get("cost_seconds")),
+        "tradvia_cost": _cost(r.get("cost_usd"), r.get("cost_seconds"), r),
     }
 
 
-def _cost(usd: Any, seconds: Any) -> dict[str, float | None] | None:
+def _tokens(r: dict[str, Any]) -> dict[str, int]:
+    return {k: int(r.get(k) or 0) for k in ("tokens_in", "tokens_out", "tokens_cache")}
+
+
+def _cost(usd: Any, seconds: Any, tokens: dict[str, Any]) -> dict[str, Any] | None:
     if usd is None:
         return None
-    return {"usd": float(usd), "seconds": float(seconds) if seconds is not None else None}
+    so_far = tokens.get("cost_so_far_usd")
+    return {"usd": float(usd), "seconds": float(seconds) if seconds is not None else None,
+            "so_far_usd": float(so_far) if so_far is not None else None, **_tokens(tokens)}
+
+
+def plan_cost(r: dict[str, Any]) -> dict[str, Any]:
+    """One plan of the agent on a card (not a GitHub field: the store keeps no comment body)."""
+    return {"created_at": r.get("created_at"), "usd": float(r["cost_usd"]), **_tokens(r)}
 
 
 def github_run(r: dict[str, Any]) -> dict[str, Any]:
@@ -491,7 +506,14 @@ def create_app(
         if rows is None:
             return _store_unavailable()
         if resource == "issues":
-            return JSONResponse([github_issue(r) for r in rows])
+            try:
+                plans = await run_in_threadpool(db.list_plan_costs, pid)
+            except Exception:
+                return _store_unavailable()
+            by_issue: dict[int, list[dict[str, Any]]] = {}
+            for p in plans:
+                by_issue.setdefault(p["issue_number"], []).append(p)
+            return JSONResponse([github_issue(r, by_issue.get(r["number"])) for r in rows])
         if resource == "pulls":
             return JSONResponse([github_pull(r) for r in rows])
         return JSONResponse(
