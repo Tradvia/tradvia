@@ -42,6 +42,7 @@ def add_cost(a: dict | None, b: dict | None) -> dict:
         "usd": round(a.get("usd", 0.0) + b.get("usd", 0.0), 6),
         "tokens_in": a.get("tokens_in", 0) + b.get("tokens_in", 0),
         "tokens_out": a.get("tokens_out", 0) + b.get("tokens_out", 0),
+        "tokens_cache": a.get("tokens_cache", 0) + b.get("tokens_cache", 0),
         "duration_s": round(a.get("duration_s", 0.0) + b.get("duration_s", 0.0), 3),
     }
 
@@ -62,5 +63,6 @@ class Card(TypedDict, total=False):
     plan_error: str | None
     approvals: Annotated[list[dict], operator.add]
     cost: Annotated[dict, add_cost]
+    plan_cost: dict  # cost of the latest plan only: the plan comment reports this one
     history: Annotated[list[dict], operator.add]
     updated_at: str
