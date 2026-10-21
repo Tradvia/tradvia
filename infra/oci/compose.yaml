@@ -34,6 +34,11 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       DATABASE_URL: postgresql://tradvia:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/tradvia
       TRADVIA_WEBHOOK_SECRET: ${TRADVIA_WEBHOOK_SECRET:-}
+      # Sign in with GitHub (docs/github-app.md). Off unless all three are set.
+      TRADVIA_DOMAIN: ${TRADVIA_DOMAIN:?set TRADVIA_DOMAIN in .env}
+      TRADVIA_GITHUB_APP_CLIENT_ID: ${TRADVIA_GITHUB_APP_CLIENT_ID:-}
+      TRADVIA_GITHUB_APP_CLIENT_SECRET: ${TRADVIA_GITHUB_APP_CLIENT_SECRET:-}
+      TRADVIA_SECRET_KEY: ${TRADVIA_SECRET_KEY:-}
     depends_on:
       db:
         condition: service_healthy
