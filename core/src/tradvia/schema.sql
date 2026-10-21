@@ -157,3 +157,19 @@ CREATE TABLE IF NOT EXISTS login_states (
     return_path   text NOT NULL,
     expires_at    timestamptz NOT NULL
 );
+
+-- Audit log of actions taken from the panel with the user's own identity (ADR 0008 addendum).
+-- Every attempt is recorded, whether it succeeded, was denied or failed.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id               bigserial PRIMARY KEY,
+    project_id       bigint NOT NULL REFERENCES projects (id),
+    actor_login      text NOT NULL,
+    action           text NOT NULL,
+    issue_number     integer,
+    result           text NOT NULL,
+    detail           text NOT NULL DEFAULT '',
+    idempotency_key  text,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
+CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
