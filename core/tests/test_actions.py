@@ -7,7 +7,13 @@ from tradvia.actions import (
     agent_login,
     apply_order,
     awaiting_plan,
+    backlog_string,
+    merge_block,
+    merge_title,
     new_backlog,
+    parse_backlog_input,
+    parse_pr_description,
+    replaced_run_ids,
     parse_new_card,
     parse_reply,
     plan_comment,
@@ -104,3 +110,58 @@ def test_parse_new_card():
                 {"title": "T", "description": 4}, {"title": "T", "description": "x" * 10_001}):
         with pytest.raises(ActionError):
             parse_new_card(bad)
+
+
+def test_parse_pr_description():
+    body = ("Closes #9\n\n### Claude Code\nFiz X.\nE Y.\n\n"
+            "Estimated cost (API-equivalent): $0.4200 · 31s\n\n### Ignored scratch files\n- a")
+    assert parse_pr_description(body) == {"summary": "Fiz X.\nE Y.", "cost_usd": 0.42, "duration_s": 31.0}
+    assert parse_pr_description("Card · estimated cost so far (API-equivalent): $1.5000") == {
+        "summary": None, "cost_usd": 1.5, "duration_s": None}
+    assert parse_pr_description(None)["cost_usd"] is None
+
+
+def _run(name, conclusion="success"):
+    return {"name": name, "status": "completed", "conclusion": conclusion}
+
+
+def test_merge_block_and_ignorable_cla():
+    ok = [_run("core-tests"), _run("license-boundary"), _run("cla")]
+    assert merge_block(ok) is None
+    bad_cla = [_run("core-tests"), _run("license-boundary"), _run("cla", "failure")]
+    assert "cla" in merge_block(bad_cla)
+    assert merge_block(bad_cla, ignore_cla=True) is None
+    bad_tests = [_run("core-tests", "failure"), _run("license-boundary"), _run("cla", "failure")]
+    assert "core-tests" in merge_block(bad_tests, ignore_cla=True)
+    # missing or pending checks are left to GitHub's own branch rules
+    assert merge_block([]) is None
+    assert merge_block([{"name": "core-tests", "status": "in_progress", "conclusion": None}]) is None
+
+
+def test_merge_title_needs_a_conventional_commit():
+    assert merge_title({"title": "feat(core): x", "number": 3}) == "feat(core): x (#3)"
+    assert merge_title({"title": "fix!: y", "number": 4}) == "fix!: y (#4)"
+    with pytest.raises(ActionError):
+        merge_title({"title": "Add x", "number": 3})
+
+
+def test_backlog_string_and_input():
+    view = [{"issue_number": 44, "state": "open"}, {"issue_number": 7, "state": "closed"},
+            {"issue_number": 45, "state": None}]
+    assert backlog_string(view) == "44 45"
+    assert parse_backlog_input("  44   50 ") == "44 50"
+    assert parse_backlog_input(None) == "" and parse_backlog_input("") == ""
+    for bad in ("44,50", "a", 44, "44 $(x)"):
+        with pytest.raises(ActionError):
+            parse_backlog_input(bad)
+
+
+def test_replaced_run_ids_keeps_the_newest_per_queue():
+    runs = [
+        {"id": 1, "workflow_id": 9, "created_at": "2026-01-01T10:00:00Z"},
+        {"id": 2, "workflow_id": 9, "created_at": "2026-01-01T12:00:00Z"},
+        {"id": 3, "workflow_id": 9, "created_at": "2026-01-01T11:00:00Z"},
+        {"id": 4, "workflow_id": 8, "created_at": "2026-01-01T09:00:00Z"},
+    ]
+    assert replaced_run_ids(runs) == {1, 3}
+    assert replaced_run_ids([]) == set()

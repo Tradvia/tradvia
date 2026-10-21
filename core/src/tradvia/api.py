@@ -30,14 +30,25 @@ from .actions import (
     ActionError,
     CardNotFound,
     GitHubError,
+    DEPLOY_REF,
+    DEPLOY_WORKFLOW,
     agent_login,
     apply_order,
     awaiting_plan,
+    backlog_string,
+    deploy_view,
+    merge_block,
+    merge_title,
     new_backlog,
+    parse_backlog_input,
+    parse_flag,
     parse_new_card,
+    parse_pr_description,
     parse_reply,
     plan_comment,
     reorder,
+    replaced_run_ids,
+    required_checks,
 )
 from .auth import (
     CSRF_HEADER,
@@ -66,6 +77,30 @@ ALLOWED_PARAMS = ("state", "per_page", "page", "labels", "sort", "direction")
 MAX_ENTRIES = 500
 UPSTREAM_TIMEOUT = 10
 DEFAULT_PER_PAGE = 30
+MAX_DIFF = 200_000
+MAX_DEPLOY_RUNS = 20
+MAX_COMMENT = 500
+# What the GitHub App needs for each panel action (docs/github-app.md).
+APP_PERMISSION = {
+    "merge_pr": "Contents: Read and write",
+    "update_branch": "Pull requests: Read and write",
+    "approve_deploy": "Deployments: Read and write",
+    "reject_deploy": "Deployments: Read and write",
+    "cancel_run": "Actions: Read and write",
+    "post_deploy": "Actions: Read and write",
+    "view_pull": "Pull requests: Read-only and Checks: Read-only",
+    "view_deploys": "Actions: Read-only and Deployments: Read-only",
+}
+NOT_FOUND_MESSAGE = {
+    "merge_pr": "Pull request not found in this project.",
+    "update_branch": "Pull request not found in this project.",
+    "view_pull": "Pull request not found in this project.",
+    "approve_deploy": "Deploy not found in this project.",
+    "reject_deploy": "Deploy not found in this project.",
+    "cancel_run": "Deploy not found in this project.",
+    "view_deploys": "Deploys not found in this project.",
+    "post_deploy": "The deploy-oci workflow was not found in this project.",
+}
 MAX_PER_PAGE = 100
 
 
@@ -592,9 +627,33 @@ def create_app(
     class Conflict(Exception):
         """The card is in the wrong state for the action."""
 
+    class Refused(Exception):
+        """The action is not allowed for this person (403); the message is safe to show."""
+
     class Outcome(NamedTuple):
         status: int
         body: dict[str, Any]
+
+    def github_failure(action: str, e: GitHubError) -> Outcome:
+        """The clear answer for a GitHub error: which permission, whose, or what state."""
+        if e.status == 404:
+            return Outcome(404, {"error": NOT_FOUND_MESSAGE.get(action, "Card not found in this project.")})
+        if e.status in (401, 403):
+            if e.app_permission_missing and action in APP_PERMISSION:
+                return Outcome(403, {"error": (
+                    f"The GitHub App needs {APP_PERMISSION[action]}. "
+                    "An owner must add it and accept the new permissions on the installation "
+                    "(docs/github-app.md).")})
+            if action in ("approve_deploy", "reject_deploy"):
+                return Outcome(403, {"error": "You are not a reviewer of the production environment."})
+            return Outcome(403, {"error": "GitHub refused the action for your account."})
+        if e.status in (405, 409, 422) and action == "merge_pr":
+            return Outcome(409, {"error": "GitHub refused the merge: the pull request is not "
+                                          "mergeable (conflicts, branch rules or it changed)."})
+        if e.status in (409, 422) and action == "update_branch":
+            return Outcome(409, {"error": "The branch could not be updated (already up to date, "
+                                          "or it has conflicts with main)."})
+        return Outcome(502, {"error": "GitHub is unavailable or refused the request."})
 
     inflight: dict[tuple[str, str], float] = {}
     inflight_lock = threading.Lock()
@@ -661,13 +720,12 @@ def create_app(
         except Conflict as e:
             log("failed", str(e))
             return Outcome(409, {"error": str(e)})
+        except Refused as e:
+            log("denied", str(e))
+            return Outcome(403, {"error": str(e)})
         except GitHubError as e:
             log("failed", f"github {e.status}")
-            if e.status == 404:
-                return Outcome(404, {"error": "Card not found in this project."})
-            if e.status in (401, 403):
-                return Outcome(403, {"error": "GitHub refused the action for your account."})
-            return Outcome(502, {"error": "GitHub is unavailable or refused the request."})
+            return github_failure(action, e)
         except Exception:  # never echo: the message may carry tokens or the DSN
             log("failed", "internal error")
             return Outcome(500, {"error": "internal error"})
@@ -756,6 +814,86 @@ def create_app(
             return Done(number, f"move {data.get('direction')}", {"issue_number": number})
         return work
 
+    def work_merge(repo: str, number: int, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            ignore_cla = parse_flag(data, "ignore_cla")
+            pull = auth.github.get_pull(token, repo, number)
+            if pull.get("merged") or pull.get("state") != "open":
+                raise Conflict("This pull request is not open.")
+            title = merge_title(pull)
+            if pull.get("mergeable_state") == "behind":
+                raise Conflict("The branch is behind main. Use 'Update branch' first.")
+            sha = pull["head"]["sha"]
+            checks = auth.github.list_checks(token, repo, sha)
+            blocked = merge_block(checks, ignore_cla)
+            if blocked:
+                raise Conflict(blocked)
+            ignored = ignore_cla and any(
+                c["name"] == "cla" and c["state"] == "failed" for c in required_checks(checks)
+            )
+            auth.github.merge_pull(token, repo, number, title, sha)
+            head = pull.get("head") or {}
+            deleted = False
+            if (head.get("repo") or {}).get("full_name") == repo and head.get("ref"):
+                try:  # the merge already happened: a branch that stays is not a failure
+                    auth.github.delete_branch(token, repo, head["ref"])
+                    deleted = True
+                except GitHubError:
+                    pass
+            detail = "squash" + (" ignore_cla (cla failed)" if ignored else "")
+            detail += "" if deleted else " (branch not deleted)"
+            return Done(number, detail, {"issue_number": number, "branch_deleted": deleted})
+        return work
+
+    def work_update_branch(repo: str, number: int) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            auth.github.update_branch(token, repo, number)
+            return Done(number, "update branch", {"issue_number": number})
+        return work
+
+    def work_review_deploy(
+        repo: str, run_id: int, approve: bool, data: dict[str, Any]
+    ) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            comment = data.get("comment")
+            if comment is not None and (not isinstance(comment, str) or len(comment) > MAX_COMMENT):
+                raise ActionError(f"comment must be text of at most {MAX_COMMENT} characters")
+            verb = "approve" if approve else "reject"
+            pending = auth.github.list_pending_deployments(token, repo, run_id)
+            if not pending:
+                raise Conflict("This deploy is not waiting for approval.")
+            mine = [
+                (p.get("environment") or {}).get("id")
+                for p in pending if p.get("current_user_can_approve")
+            ]
+            if not mine:
+                raise Refused("You are not a reviewer of the production environment.")
+            auth.github.review_pending_deployment(
+                token, repo, run_id, mine, approve, (comment or "").strip() or f"{verb}d in Tradvia"
+            )
+            return Done(None, f"{verb} run={run_id}", {"run_id": run_id})
+        return work
+
+    def work_cancel_run(repo: str, run_id: int) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            waiting = auth.github.list_runs(token, repo, "waiting")
+            if run_id not in replaced_run_ids(waiting):
+                raise Conflict("Only a deploy replaced by a newer one can be cancelled here.")
+            auth.github.cancel_run(token, repo, run_id)
+            return Done(None, f"cancel replaced run={run_id}", {"run_id": run_id})
+        return work
+
+    def work_post_deploy(repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            backfill = parse_flag(data, "backfill")
+            backlog = parse_backlog_input(data.get("backlog"))
+            auth.github.dispatch_workflow(
+                token, repo, DEPLOY_WORKFLOW, DEPLOY_REF,
+                {"backfill": "true" if backfill else "false", "backlog": backlog},
+            )
+            return Done(None, f"post-deploy backfill={backfill} backlog={backlog}", {})
+        return work
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
@@ -783,6 +921,18 @@ def create_app(
                 work = work_start(repo, number)
             elif action == "reply_plan":
                 work = work_reply(repo, number, data)
+            elif action == "merge_pr":
+                work = work_merge(repo, number, data)
+            elif action == "update_branch":
+                work = work_update_branch(repo, number)
+            elif action in ("approve_deploy", "reject_deploy"):
+                work = work_review_deploy(
+                    repo, request.path_params["run_id"], action == "approve_deploy", data
+                )
+            elif action == "cancel_run":
+                work = work_cancel_run(repo, request.path_params["run_id"])
+            elif action == "post_deploy":
+                work = work_post_deploy(repo, data)
             else:
                 number = data.get("issue") if isinstance(data.get("issue"), int) else None
                 work = work_backlog(repo, data)
@@ -827,6 +977,118 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    # --- reading pull requests and deploys with the user's token (ADR 0007) -------------------
+
+    def rights(session: Any, repo: str, *interactions: str) -> dict[str, bool]:
+        """Which buttons to show; the write routes check again on every request."""
+        out = {}
+        for name in interactions:
+            try:
+                out[name] = auth.can(session, repo, name, fresh=False).allowed
+            except Exception:  # unreadable or invalid policy: fail closed
+                out[name] = False
+        return out
+
+    def pull_diff(pull: dict[str, Any], filename: str) -> dict[str, Any]:
+        file = next((f for f in pull["files"] if f.get("filename") == filename), None)
+        if file is None:
+            raise CardNotFound("File not found in this pull request.")
+        patch = file.get("patch")
+        if patch is None:
+            return {"filename": filename, "diff": None, "truncated": False}
+        return {"filename": filename, "diff": patch[:MAX_DIFF], "truncated": len(patch) > MAX_DIFF}
+
+    def view_pull(
+        session: Any, repo: str, number: int, token: str, filename: str | None
+    ) -> dict[str, Any]:
+        pull = auth.github.get_pull(token, repo, number)
+        if filename is not None:
+            return pull_diff(pull, filename)
+        checks = auth.github.list_checks(token, repo, pull["head"]["sha"])
+        comments = auth.github.list_review_comments(token, repo, number)
+        body = pull.get("body") or ""
+        return {
+            "number": number,
+            "title": pull.get("title"),
+            "state": "merged" if pull.get("merged") else pull.get("state"),
+            "html_url": pull.get("html_url"),
+            "author": (pull.get("user") or {}).get("login"),
+            "branch": (pull.get("head") or {}).get("ref"),
+            "base": (pull.get("base") or {}).get("ref"),
+            "behind": pull.get("mergeable_state") == "behind",
+            "mergeable_state": pull.get("mergeable_state"),
+            "description": body,
+            "executor": parse_pr_description(body),
+            "files": [
+                {"filename": f["filename"], "status": f.get("status"),
+                 "additions": f.get("additions", 0), "deletions": f.get("deletions", 0),
+                 "has_diff": f.get("patch") is not None}
+                for f in pull["files"]
+            ],
+            "checks": required_checks(checks),
+            "review_comments": [
+                {"author": (c.get("user") or {}).get("login"), "body": c.get("body"),
+                 "state": c.get("state"), "path": c.get("path"), "created_at": c.get("created_at")}
+                for c in comments
+            ],
+            "can": rights(session, repo, "merge_pr", "update_branch"),
+        }
+
+    def view_deploys(session: Any, repo: str, token: str) -> dict[str, Any]:
+        runs = auth.github.list_runs(token, repo, "waiting")[:MAX_DEPLOY_RUNS]
+        pending = {r["id"]: auth.github.list_pending_deployments(token, repo, r["id"]) for r in runs}
+        return {
+            "deploys": deploy_view(runs, pending),
+            "backlog": backlog_string(backlog_view(project_id_of(repo))),
+            "can": rights(session, repo, "approve_deploy"),
+        }
+
+    def read_github(
+        session: Any, repo: str, action: str, work: Callable[[Any, str], dict[str, Any]]
+    ) -> Outcome:
+        assert auth is not None and db is not None
+        if auth.role_of(session, repo) is None:
+            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+        token = auth.user_token(session)
+        if token is None:
+            return Outcome(401, {"error": "Sign in again."})
+        try:
+            return Outcome(200, work(session, token))
+        except CardNotFound as e:
+            return Outcome(404, {"error": str(e)})
+        except ActionError as e:
+            return Outcome(400, {"error": str(e)})
+        except GitHubError as e:
+            return github_failure(action, e)
+        except Exception:  # never echo: the message may carry tokens or the DSN
+            return Outcome(500, {"error": "internal error"})
+
+    def read_route(kind: str) -> Callable[[Request], Any]:
+        async def handler(request: Request) -> Response:
+            params = request.path_params
+            repo = f"{params['owner']}/{params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            filename = params.get("path") if kind == "diff" else None
+            if kind == "diff" and not safe_path(filename or ""):
+                return _not_found()
+
+            def work(s: Any, t: str) -> dict[str, Any]:
+                if kind == "deploys":
+                    return view_deploys(s, repo, t)
+                return view_pull(s, repo, params["n"], t, filename)
+
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+                if session is None:
+                    return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+                action = "view_deploys" if kind == "deploys" else "view_pull"
+                out = await run_in_threadpool(read_github, session, repo, action, work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     return Starlette(
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
         routes=[
@@ -845,6 +1107,23 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/pulls/{n:int}/files/{path:path}/diff",
+                  read_route("diff"), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/pulls/{n:int}/merge",
+                  action_route("merge_pr", "merge_pr"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/pulls/{n:int}/update-branch",
+                  action_route("update_branch", "update_branch"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/deployments/pending",
+                  read_route("deploys"), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/deployments/{run_id:int}/approve",
+                  action_route("approve_deploy", "approve_deploy"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/deployments/{run_id:int}/reject",
+                  action_route("reject_deploy", "approve_deploy"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/deployments/{run_id:int}/cancel",
+                  action_route("cancel_run", "approve_deploy"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/operations/post-deploy",
+                  action_route("post_deploy", "approve_deploy"), methods=["POST"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),

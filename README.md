@@ -38,6 +38,15 @@ always resolved by a human through Live Session Takeover.
 
 See [ADR 0003](docs/adr/0003-agentops-hybrid-execution-control-plane.md).
 
+**Review, merge and deploy from the dashboard** (ADR 0007): the card shows the
+pull request (executor summary and cost, changed files with a per-file diff,
+the `core-tests`, `license-boundary` and `cla` checks, review comments), and a
+maintainer can squash-merge it, update its branch, approve or reject pending
+`production` deploys, cancel replaced ones and run the post-deploy operation,
+always with their own GitHub token and an audit entry. Status: 🟦 Partial,
+tested offline; it works in production once the GitHub App has the new
+permissions ([docs/github-app.md](docs/github-app.md)).
+
 ## Architecture
 
 ```mermaid

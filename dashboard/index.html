@@ -67,6 +67,16 @@
   .approval h4 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .approval pre.plan { white-space: pre-wrap; margin: 0; max-height: 220px; overflow: auto; }
   .action-error { padding: 4px 8px; font-size: 12px; }
+  .pull { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; font-size: 12px; display: grid; gap: 4px; }
+  .pull h4, .deploys h4 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pull pre { white-space: pre-wrap; margin: 0; max-height: 260px; overflow: auto; background: var(--bg); padding: 4px 6px; border-radius: 6px; }
+  .pull ul, .deploys ul { list-style: none; margin: 0; padding: 0; }
+  .pull li, .deploys li { padding: 3px 0; overflow-wrap: anywhere; }
+  .pull button.file { border: 0; background: none; padding: 0; color: var(--info); text-align: left; font-size: 12px; }
+  .pull button, .deploys button, .deploys input[type=text] { padding: 2px 8px; font-size: 12px; }
+  .deploys input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; }
+  .deploys { display: grid; gap: 6px; }
+  .deploys .op { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
   .activity li, .recent li { padding: 3px 0; }
   .when { color: var(--muted); }
@@ -110,6 +120,10 @@
     <div class="kpis" id="kpis"></div>
     <h2 data-i18n="board"></h2>
     <div class="board" id="board"></div>
+    <div id="deploys-section" hidden>
+      <h2 data-i18n="deploys"></h2>
+      <div class="deploys" id="deploys"></div>
+    </div>
     <h2 data-i18n="runs"></h2>
     <label class="sub"><input type="checkbox" id="show-skipped"> <span data-i18n="showSkipped"></span></label>
     <div id="runs"></div>
@@ -579,6 +593,146 @@ function renderApproval(card, number) {
   });
 }
 
+// Review and merge a pull request, with the user's own GitHub token (ADR 0007). Everything is
+// text (textContent only); the server checks role, checks and CSRF again on every write.
+const CHECK_CLASS = { passed: "ok", failed: "bad", pending: "run", missing: "neutral" };
+
+function encodePath(p) { return p.split("/").map(encodeURIComponent).join("/"); }
+
+function toggleDiff(li, n, file) {
+  const open = li.querySelector("pre");
+  if (open) { open.remove(); return; }
+  const pre = el("pre", t("loadingDiff"));
+  li.append(pre);
+  panelRequest("GET", "/pulls/" + n + "/files/" + encodePath(file.filename) + "/diff").then((res) => {
+    pre.textContent = !res.ok ? res.error : res.data.diff === null ? t("noDiff") : res.data.diff + (res.data.truncated ? "\n…" : "");
+  });
+}
+
+async function renderPull(box, n) {
+  box.className = "pull";
+  box.textContent = t("loadingPull");
+  const res = await panelRequest("GET", "/pulls/" + n);
+  box.replaceChildren();
+  if (!res.ok) { box.append(el("div", res.error, "msg error action-error")); return; }
+  const p = res.data;
+  const title = el("div");
+  const link = el("a", "#" + p.number + " " + p.title);
+  const href = safeGithubUrl(p.html_url);
+  if (href) { link.href = href; link.target = "_blank"; link.rel = "noopener"; }
+  title.append(el("h4", t("pullRequest")), link, el("span", " · " + t("pr_" + p.state), "sub"));
+  box.append(title);
+  const ex = p.executor || {};
+  if (ex.summary) box.append(el("h4", t("executorSummary")), el("pre", ex.summary));
+  if (ex.cost_usd !== null && ex.cost_usd !== undefined) {
+    box.append(el("div", "$" + ex.cost_usd.toFixed(4) + " · " + t("costLabel"), "sub"));
+  }
+  if (p.description) box.append(el("h4", t("description")), el("pre", p.description));
+
+  box.append(el("h4", t("changedFiles")));
+  const files = el("ul");
+  p.files.forEach((f) => {
+    const li = el("li");
+    const b = el("button", f.filename, "file");
+    b.type = "button";
+    b.disabled = !f.has_diff;
+    b.addEventListener("click", () => toggleDiff(li, p.number, f));
+    li.append(b, el("span", " +" + f.additions, "ok"), el("span", " −" + f.deletions, "bad"));
+    files.append(li);
+  });
+  box.append(files);
+
+  box.append(el("h4", t("checks")));
+  const checks = el("ul");
+  p.checks.forEach((c) => {
+    const li = el("li");
+    li.append(el("span", c.name + ": "), el("span", t("check_" + c.state), CHECK_CLASS[c.state]));
+    checks.append(li);
+  });
+  box.append(checks);
+
+  if (p.review_comments.length) {
+    box.append(el("h4", t("reviewComments")));
+    const list = el("ul");
+    p.review_comments.forEach((c) => {
+      const li = el("li");
+      li.append(el("span", "@" + c.author + (c.path ? " (" + c.path + ")" : "") + ": "), el("span", c.body || c.state));
+      list.append(li);
+    });
+    box.append(list);
+  }
+
+  if (p.state !== "open") return;
+  const path = "/pulls/" + p.number;
+  const claFailed = p.checks.some((c) => c.name === "cla" && c.state === "failed");
+  const acts = el("div", null, "acts");
+  let ignore = null;
+  if (p.can.merge_pr) {
+    if (claFailed) {
+      ignore = el("input");
+      ignore.type = "checkbox";
+      const label = el("label", null, "sub");
+      label.append(ignore, document.createTextNode(" " + t("ignoreCla")));
+      acts.append(label);
+    }
+    acts.append(actionButton(box, t("merge"), path + "/merge", () => ({ ignore_cla: !!(ignore && ignore.checked) })));
+  }
+  if (p.can.update_branch && p.behind) acts.append(actionButton(box, t("updateBranch"), path + "/update-branch", {}));
+  if (acts.children.length) box.append(acts);
+}
+
+// Deploys waiting for approval in the protected environment, and the post-deploy operation.
+let deploysToken = 0;
+
+async function renderDeploys() {
+  const section = document.getElementById("deploys-section");
+  const box = document.getElementById("deploys");
+  const mine = myRights();
+  section.hidden = !mine;
+  box.replaceChildren();
+  if (!mine) return;
+  const mineToken = ++deploysToken;
+  const res = await panelRequest("GET", "/deployments/pending");
+  if (mineToken !== deploysToken) return; // a newer render took over
+  if (!res.ok) { box.append(el("div", res.error, "msg error action-error")); return; }
+  const d = res.data;
+  if (!d.deploys.length) box.append(el("div", t("noDeploys"), "sub"));
+  const list = el("ul");
+  d.deploys.forEach((x) => {
+    const li = el("li");
+    const link = el("a", "#" + x.run_id + " " + (x.title || ""));
+    const href = safeGithubUrl(x.html_url);
+    if (href) { link.href = href; link.target = "_blank"; link.rel = "noopener"; }
+    li.append(link, el("span", " · " + (x.environments || []).join(", ") + " · " + fmtTime(x.created_at), "sub"));
+    if (x.replaced) li.append(el("span", " · " + t("replaced"), "badge"));
+    if (d.can.approve_deploy) {
+      const base = "/deployments/" + x.run_id;
+      const acts = el("div", null, "acts");
+      if (x.replaced) acts.append(actionButton(li, t("cancelRun"), base + "/cancel", {}));
+      else if (x.can_approve) {
+        acts.append(actionButton(li, t("approve"), base + "/approve", {}), actionButton(li, t("reject"), base + "/reject", {}));
+      }
+      li.append(acts);
+    }
+    list.append(li);
+  });
+  box.append(list);
+  if (!d.can.approve_deploy) return;
+  const op = el("div", null, "op");
+  const backfill = el("input");
+  backfill.type = "checkbox";
+  const bl = el("label", null, "sub");
+  bl.append(backfill, document.createTextNode(" backfill"));
+  const backlog = el("input");
+  backlog.type = "text";
+  backlog.value = d.backlog || "";
+  backlog.setAttribute("aria-label", "backlog");
+  backlog.placeholder = "44 50 45";
+  op.append(el("h4", t("postDeploy")), bl, backlog,
+    actionButton(op, t("runPostDeploy"), "/operations/post-deploy", () => ({ backfill: backfill.checked, backlog: backlog.value })));
+  box.append(op);
+}
+
 // Dashboard reads: from the store when available; any failed call is retried through GH_API.
 async function getData(repo, path) {
   if (STORE_API) {
@@ -663,6 +817,17 @@ const I18N = {
     auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
     act_reply_plan: "respondeu ao plano", act_reorder_backlog: "reordenou o backlog",
     res_ok: "ok", res_denied: "negado", res_failed: "falhou",
+    act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR",
+    act_approve_deploy: "aprovou o deploy", act_reject_deploy: "rejeitou o deploy",
+    act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
+    deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído",
+    cancelRun: "Cancelar", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
+    pullRequest: "Pull request", pr_open: "aberto", pr_closed: "fechado", pr_merged: "mesclado",
+    executorSummary: "Resumo do executor", description: "Descrição", changedFiles: "Arquivos alterados",
+    checks: "Checks", reviewComments: "Comentários de revisão", loadingPull: "Carregando PR…",
+    loadingDiff: "Carregando diff…", noDiff: "Sem diff em texto para este arquivo.",
+    check_passed: "passou", check_failed: "falhou", check_pending: "em andamento", check_missing: "ausente",
+    ignoreCla: "ignorar o CLA", merge: "Merge (squash)", updateBranch: "Atualizar branch",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -694,6 +859,17 @@ const I18N = {
     auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
     act_reply_plan: "answered the plan", act_reorder_backlog: "reordered the backlog",
     res_ok: "ok", res_denied: "denied", res_failed: "failed",
+    act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch",
+    act_approve_deploy: "approved the deploy", act_reject_deploy: "rejected the deploy",
+    act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
+    deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced",
+    cancelRun: "Cancel", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
+    pullRequest: "Pull request", pr_open: "open", pr_closed: "closed", pr_merged: "merged",
+    executorSummary: "Executor summary", description: "Description", changedFiles: "Changed files",
+    checks: "Checks", reviewComments: "Review comments", loadingPull: "Loading PR…",
+    loadingDiff: "Loading diff…", noDiff: "No text diff for this file.",
+    check_passed: "passed", check_failed: "failed", check_pending: "in progress", check_missing: "missing",
+    ignoreCla: "ignore the CLA", merge: "Merge (squash)", updateBranch: "Update branch",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
     COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
   },
@@ -951,6 +1127,12 @@ function renderBoard(issues, prs, agentRuns, backlog) {
         const audit = el("div");
         panel.append(audit);
         fillAudit(audit, issue.number);
+        const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
+        if (pr && myRights()) {
+          const pull = el("div");
+          panel.append(pull);
+          renderPull(pull, pr.number);
+        }
       } else openCards.delete(issue.number);
     };
     card.addEventListener("click", toggle);
@@ -1028,6 +1210,7 @@ function render() {
     renderRecent();
     renderKpis(computeKpis(data.runs, data.prs));
     renderBoard(data.issues, data.prs, data.agentRuns, data.backlog);
+    renderDeploys();
     renderRuns(visibleRuns(data.runs, showSkipped));
   }
 }
