@@ -108,6 +108,7 @@
       <option value="pt">PT-BR</option>
       <option value="en">EN</option>
     </select>
+    <label class="sub auto"><input type="checkbox" id="auto-refresh" checked> <span data-i18n="autoRefresh"></span></label>
     <button id="refresh" data-i18n="refresh"></button>
   </div>
 </header>
@@ -802,7 +803,7 @@ async function loadData(repo) {
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
-    title: "Execuções", refresh: "Atualizar", loading: "Carregando…",
+    title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
     error: "Não foi possível carregar os dados do GitHub.",
@@ -844,7 +845,7 @@ const I18N = {
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
-    title: "Runs", refresh: "Refresh", loading: "Loading…",
+    title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
     error: "Could not load data from GitHub.",
@@ -891,6 +892,19 @@ const I18N = {
 let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
 let showSkipped = false;
 let data = null;
+// auto-refresh (pure)
+// The panel reloads by itself while the tab is visible, but never while someone is typing
+// or another load is running. Reads from the store are cheap (no GitHub rate limit), so it
+// can poll more often there than through the GitHub proxy.
+const AUTO_REFRESH_STORE_MS = 30000;
+const AUTO_REFRESH_PROXY_MS = 60000;
+function autoRefreshDue(s) {
+  if (!s.enabled || s.hidden || s.editing || s.busy) return false;
+  const interval = s.store ? AUTO_REFRESH_STORE_MS : AUTO_REFRESH_PROXY_MS;
+  return s.lastAt == null || s.now - s.lastAt >= interval;
+}
+// end auto-refresh
+
 let fetchState = "loading"; // loading | ok | ratelimit | error
 let updatedAt = null;
 const t = (k) => I18N[lang][k];
@@ -1226,26 +1240,76 @@ function render() {
   }
 }
 
-async function refresh() {
+let loading = false;
+let refreshAgain = false; // a refresh asked for while another was running (e.g. after an action)
+
+// quiet: an automatic reload keeps the current data on screen until the new data arrives,
+// and keeps it if the reload fails (the next manual refresh shows the error).
+async function refresh(quiet = false) {
+  if (loading) { refreshAgain = true; return; }
+  loading = true;
   timelineCache.clear();
-  recentToken++;
-  recentState = { status: "idle", items: [] };
-  fetchState = "loading";
-  render();
+  if (!quiet) {
+    recentToken++;
+    recentState = { status: "idle", items: [] };
+    fetchState = "loading";
+    render();
+  }
   try {
     selectStore(getRepo());
-    data = await loadData(getRepo());
+    const fresh = await loadData(getRepo());
+    data = fresh;
     updatedAt = new Date();
     fetchState = "ok";
   } catch (e) {
-    data = null;
-    fetchState = e instanceof RateLimitError ? "ratelimit" : "error";
+    if (!quiet || !data) {
+      data = null;
+      fetchState = e instanceof RateLimitError ? "ratelimit" : "error";
+    }
+  } finally {
+    loading = false;
   }
   render();
-  if (fetchState === "ok") loadRecent();
+  if (fetchState === "ok") {
+    if (quiet) recentToken++;
+    loadRecent();
+  }
+  if (refreshAgain) { refreshAgain = false; refresh(true); }
 }
 
-document.getElementById("refresh").addEventListener("click", refresh);
+function isEditing() {
+  const a = document.activeElement;
+  if (a && (a.tagName === "TEXTAREA" || a.tagName === "SELECT" ||
+            (a.tagName === "INPUT" && a.type !== "checkbox" && a.type !== "button"))) return true;
+  if (document.querySelector(".newcard:not([hidden])")) return true;
+  return [...document.querySelectorAll("#content textarea, #content input[type=text]")]
+    .some((x) => x.value.trim() !== "");
+}
+
+function autoRefreshEnabled() {
+  return document.getElementById("auto-refresh").checked;
+}
+
+try {
+  if (localStorage.getItem("tradvia.autoRefresh") === "off") {
+    document.getElementById("auto-refresh").checked = false;
+  }
+} catch (e) { /* storage unavailable: default on */ }
+document.getElementById("auto-refresh").addEventListener("change", (e) => {
+  try { localStorage.setItem("tradvia.autoRefresh", e.target.checked ? "on" : "off"); } catch (err) { /* ignore */ }
+});
+
+function tickAutoRefresh() {
+  const due = autoRefreshDue({
+    enabled: autoRefreshEnabled(), hidden: document.hidden, editing: isEditing(), busy: loading,
+    store: !!STORE_API, lastAt: updatedAt ? updatedAt.getTime() : null, now: Date.now(),
+  });
+  if (due) refresh(true);
+}
+setInterval(tickAutoRefresh, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tickAutoRefresh(); });
+
+document.getElementById("refresh").addEventListener("click", () => refresh());
 document.getElementById("project").addEventListener("change", (e) => {
   const url = new URL(location.href);
   url.searchParams.set("repo", e.target.value);
