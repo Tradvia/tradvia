@@ -186,3 +186,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
 CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
+
+-- Orchestrator conversation (ADR 0007): one chat per project. `refs` points at cards, pull
+-- requests and deploys; `kind` is message, reply, pending (needs the human) or warning.
+-- The cost columns record what the orchestrator run behind a reply cost.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          bigserial PRIMARY KEY,
+    project_id  bigint NOT NULL REFERENCES projects (id),
+    author      text NOT NULL,
+    kind        text NOT NULL DEFAULT 'message',
+    text        text NOT NULL,
+    refs        jsonb NOT NULL DEFAULT '[]',
+    cost_usd    numeric,
+    tokens_in   bigint,
+    tokens_out  bigint,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS chat_messages_project_idx ON chat_messages (project_id, id);
