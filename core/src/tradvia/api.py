@@ -62,6 +62,7 @@ from .auth import (
     load_config,
 )
 from .backlog import READY_LABEL, backlog_status
+from .connections import Connections, ConnectionInputError
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -264,6 +265,11 @@ def create_app(
     # Sign-in is off unless client id, client secret and secret key are all set.
     auth_config = load_config()
     auth = Auth(auth_config, db, identity, clock) if auth_config and db is not None else None
+    connections = None
+    if auth is not None:
+        # GitHub Actions delivery needs the three secrets calls; a client without them skips it.
+        has_secrets_api = hasattr(auth.github, "put_actions_secret")
+        connections = Connections(db, auth.keys, auth.github if has_secrets_api else None, clock)
     repos = registered_projects()
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -637,7 +643,7 @@ def create_app(
 
     def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
         """What the panel may show as buttons; the routes check again on every request."""
-        rights = {"can_start": False, "can_approve": False}
+        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False}
         if role is None:
             return rights
         try:
@@ -647,6 +653,7 @@ def create_app(
         return {
             "can_start": policy.allows("start_card", role),
             "can_approve": policy.allows("approve_plan", role),
+            "can_manage_connections": policy.allows("manage_connections", role),
         }
 
     class Done(NamedTuple):
@@ -975,6 +982,82 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    # --- project connections (connections.py, ADR 0009) --------------------------------------
+    # Never log or echo the request body here: it carries the secret.
+
+    def manage_connections(
+        session: Any, repo: str, kind: str, params: dict[str, Any], data: dict[str, Any]
+    ) -> Outcome:
+        assert auth is not None and db is not None and connections is not None
+        pid, login = project_id_of(repo), session.login
+        action = {
+            "get": "view_connections", "role": "set_connection",
+            "secret_put": "secret_set", "secret_delete": "secret_remove",
+        }[kind]
+        try:
+            access = auth.can(session, repo, "manage_connections")
+        except PolicyUnreadable as e:
+            record_audit(pid, login, action, None, "denied", "policy unreadable", None)
+            return Outcome(403, {"error": str(e)})
+        except PolicyError as e:
+            record_audit(pid, login, action, None, "denied", "invalid policy", None)
+            return Outcome(403, {"error": f"Invalid .tradvia.yml, so the action is refused: {e}"})
+        except Exception:
+            record_audit(pid, login, action, None, "failed", "role check failed", None)
+            return Outcome(502, {"error": "Could not check your permission on GitHub."})
+        if not access.allowed:
+            record_audit(pid, login, action, None, "denied",
+                         f"role {access.role or 'none'} below admin", None)
+            who = f"Your role in {repo} is '{access.role}'" if access.role else f"You have no access to {repo}"
+            return Outcome(403, {"error": f"{who}; managing connections needs the 'admin' role."})
+        defaults = access.policy.providers if access.policy else {}
+        token = auth.user_token(session)
+        try:
+            body: dict[str, Any] = {"ok": True}
+            if kind == "secret_put":
+                body.update(connections.set_secret(
+                    pid, login, repo, token, params["provider"], data.get("value")))
+            elif kind == "secret_delete":
+                body.update(connections.delete_secret(pid, login, repo, token, params["provider"]))
+            elif kind == "role":
+                connections.set_role(pid, login, params["role"], data.get("provider"), data.get("model"))
+            body["connections"] = connections.state(pid, defaults)
+            return Outcome(200, body)
+        except ConnectionInputError as e:
+            record_audit(pid, login, action, None, "failed", "invalid input", None)
+            return Outcome(400, {"error": str(e)})
+        except Exception:  # never echo: the message may carry the secret or the DSN
+            record_audit(pid, login, action, None, "failed", "internal error", None)
+            return Outcome(500, {"error": "internal error"})
+
+    def connections_route(kind: str) -> Callable[[Request], Any]:
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+            except Exception:
+                return private(_store_unavailable())
+            if session is None:
+                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+            data: Any = {}
+            if kind in ("secret_put", "role"):
+                try:
+                    data = await request.json()
+                except ValueError:
+                    data = None
+                if not isinstance(data, dict):
+                    return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            try:
+                out = await run_in_threadpool(
+                    manage_connections, session, repo, kind, dict(request.path_params), data
+                )
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     def read_card(session: Any, repo: str, number: int) -> Outcome:
         assert auth is not None and db is not None
         role = auth.role_of(session, repo)
@@ -1154,6 +1237,14 @@ def create_app(
                   action_route("cancel_run", "approve_deploy"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/operations/post-deploy",
                   action_route("post_deploy", "approve_deploy"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/connections", connections_route("get"),
+                  methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/connections/secrets/{provider}",
+                  connections_route("secret_put"), methods=["PUT"]),
+            Route("/api/projects/{owner}/{repo}/connections/secrets/{provider}",
+                  connections_route("secret_delete"), methods=["DELETE"]),
+            Route("/api/projects/{owner}/{repo}/connections/roles/{role}",
+                  connections_route("role"), methods=["PUT"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
