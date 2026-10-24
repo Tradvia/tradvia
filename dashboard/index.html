@@ -9,17 +9,68 @@
   :root {
     --bg: #0e1116; --panel: #161b22; --line: #262d37; --text: #e6e9ee;
     --muted: #8b95a3; --ok: #3fb68b; --bad: #e5605a; --warn: #d9a441; --info: #5b9bf0;
+    --surface: #1c222b; --line-strong: #333c49; --brand: #6c8cff; --brand-ink: #0e1116;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35);
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+    --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 18px; --fs-xl: 22px;
+    --radius: 8px;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --line: #dfe3e9; --text: #1b2230;
+    --muted: #5b6676; --ok: #12755a; --bad: #b3261e; --warn: #8a5a00; --info: #1d5fbf;
+    --surface: #eef0f4; --line-strong: #c5ccd6; --brand: #3b5bdb; --brand-ink: #ffffff;
+    --shadow: 0 1px 2px rgba(20, 30, 50, .08);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: light) {
+    :root[data-theme="system"] {
+      --bg: #f5f6f8; --panel: #ffffff; --line: #dfe3e9; --text: #1b2230;
+      --muted: #5b6676; --ok: #12755a; --bad: #b3261e; --warn: #8a5a00; --info: #1d5fbf;
+      --surface: #eef0f4; --line-strong: #c5ccd6; --brand: #3b5bdb; --brand-ink: #ffffff;
+      --shadow: 0 1px 2px rgba(20, 30, 50, .08);
+      color-scheme: light;
+    }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: var(--fs-md)/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   a { color: var(--info); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  header, main { max-width: 1200px; margin: 0 auto; padding: 12px 16px; }
-  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
-  h1 { font-size: 20px; margin: 0; }
+  main { max-width: 1200px; margin: 0 auto; padding: var(--s3) var(--s4) var(--s5); }
+  .topbar {
+    position: sticky; top: 0; z-index: 10; background: var(--panel);
+    border-bottom: 1px solid var(--line-strong); box-shadow: var(--shadow);
+  }
+  .topbar-in {
+    max-width: 1200px; margin: 0 auto; padding: var(--s2) var(--s4);
+    display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); align-items: center; justify-content: space-between;
+  }
+  .brand { display: flex; align-items: center; gap: var(--s2); font-weight: 650; font-size: var(--fs-lg); letter-spacing: -.01em; }
+  .brand-mark {
+    width: 24px; height: 24px; border-radius: 6px; background: var(--brand); color: var(--brand-ink);
+    display: inline-grid; place-items: center; font-size: var(--fs-md); font-weight: 700;
+  }
+  nav.mainnav { display: flex; gap: var(--s1); flex: 1; flex-wrap: wrap; }
+  nav.mainnav a {
+    color: var(--muted); padding: var(--s2) var(--s3); border-bottom: 2px solid transparent;
+    display: inline-flex; align-items: center; gap: var(--s2); font-weight: 500;
+  }
+  nav.mainnav a:hover { color: var(--text); text-decoration: none; }
+  nav.mainnav a[aria-current="page"] { color: var(--text); border-bottom-color: var(--brand); }
+  nav.mainnav a[aria-disabled="true"] { opacity: .65; cursor: default; }
+  .soon-badge { font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 6px; color: var(--muted); }
+  .view[hidden] { display: none; }
+  .settings-section, .help-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s4); margin-bottom: var(--s4); }
+  .settings-section h3, .help-section h3 { margin: 0 0 var(--s2); font-size: var(--fs-md); }
+  .settings-section p { margin: var(--s1) 0; }
+  .settings-section label { display: flex; gap: var(--s3); align-items: center; margin: var(--s2) 0; }
+  .settings-section label > span { min-width: 120px; color: var(--muted); }
+  .help-section ul { margin: 0; padding-left: var(--s5); }
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
   .controls { display: flex; gap: 8px; align-items: center; }
@@ -39,14 +90,14 @@
   .msg { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); }
   .msg.error { border-color: var(--bad); color: var(--text); }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-  .kpi .v { font-size: 22px; font-weight: 600; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s3); }
+  .kpi .v { font-size: var(--fs-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .kpi .l { color: var(--muted); font-size: 12px; }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
   .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
   .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 10px; }
-  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px; }
   .chart svg { width: 100%; height: 90px; display: block; }
   .chart rect { fill: var(--info); }
   .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
@@ -56,7 +107,7 @@
   .badge.pronto, .badge.concluido { color: var(--ok); }
   .badge.bloqueado { color: var(--bad); }
   .badge.andamento { color: var(--info); }
-  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-height: 80px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s2); min-height: 80px; }
   .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
   .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
   .card:focus-visible { outline: 2px solid var(--info); }
@@ -97,6 +148,7 @@
   .col.DONE h3 { color: var(--ok); }
   .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
   table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  td { font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   td.title { white-space: normal; min-width: 180px; overflow-wrap: anywhere; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -105,24 +157,22 @@
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>Tradvia · <span data-i18n="title"></span></h1>
-    <div class="sub" id="meta"></div>
-  </div>
-  <div class="controls">
-    <span id="auth" class="auth" hidden></span>
-    <select id="project" aria-label="Project" hidden></select>
-    <select id="lang" aria-label="Language">
-      <option value="pt">PT-BR</option>
-      <option value="en">EN</option>
-    </select>
-    <label class="sub auto"><input type="checkbox" id="auto-refresh" checked> <span data-i18n="autoRefresh"></span></label>
-    <button id="refresh" data-i18n="refresh"></button>
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">T</span><span>Tradvia</span></div>
+    <nav class="mainnav" id="mainnav" aria-label="Main"></nav>
+    <div class="controls">
+      <span id="auth" class="auth" hidden></span>
+      <select id="project" aria-label="Project" hidden></select>
+      <label class="sub auto"><input type="checkbox" id="auto-refresh" checked> <span data-i18n="autoRefresh"></span></label>
+      <button id="refresh" data-i18n="refresh"></button>
+    </div>
   </div>
 </header>
 <main>
   <div id="status" class="msg" hidden></div>
+  <section id="view-panel" class="view">
+  <div class="sub" id="meta"></div>
   <div id="content" hidden>
     <h2 data-i18n="recent"></h2>
     <div class="recent" id="recent"></div>
@@ -141,6 +191,9 @@
     <label class="sub"><input type="checkbox" id="show-skipped"> <span data-i18n="showSkipped"></span></label>
     <div id="runs"></div>
   </div>
+  </section>
+  <section id="view-settings" class="view" hidden></section>
+  <section id="view-help" class="view" hidden></section>
 </main>
 
 <script>
@@ -750,7 +803,7 @@ async function loadAuth() {
     const r = await fetch("/api/auth/me", { headers: { Accept: "application/json" }, credentials: "same-origin" });
     if (r.status === 200) authState = await r.json();
   } catch (e) { /* no auth API: the button stays hidden */ }
-  renderAuth();
+  render();
 }
 
 function renderAuth() {
@@ -790,7 +843,7 @@ async function signOut() {
     });
   } catch (e) { /* the session expires by itself */ }
   authState = { enabled: true, authenticated: false };
-  renderAuth();
+  render();
 }
 
 // Panel actions run on GitHub as the signed-in user (ADR 0004 phase 2). The buttons exist only
@@ -1127,6 +1180,20 @@ const I18N = {
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
     planPlusExec: "planejamento + execução", chartCost: "Custo por dia (US$)", chartTokens: "Tokens por dia",
+    "nav.panel": "Painel", "nav.connections": "Conexões", "nav.settings": "Configurações", "nav.help": "Ajuda",
+    soon: "em breve",
+    "settings.title": "Configurações", "settings.project": "Projeto",
+    "settings.roles": "Papéis e permissões", "settings.yourRole": "Seu papel neste projeto",
+    "settings.canStart": "Pode iniciar cards", "settings.canApprove": "Pode aprovar planos",
+    "settings.yes": "sim", "settings.no": "não",
+    "settings.signInHint": "Entre com o GitHub para ver seu papel. Sem sessão, só idioma e tema ficam disponíveis.",
+    "settings.rolesNote": "Somente leitura: papéis e permissões continuam sendo editados no .tradvia.yml do repositório.",
+    "settings.example": "Exemplo de .tradvia.yml", "settings.projectsDoc": "Documentação de projetos",
+    "settings.notifications": "Notificações", "settings.notificationsNote": "Avisos de aprovações pendentes e falhas (#47).",
+    "settings.prefs": "Preferências", "settings.language": "Idioma", "settings.theme": "Tema",
+    "theme.dark": "Escuro", "theme.light": "Claro", "theme.system": "Sistema",
+    "help.title": "Ajuda e documentação", "help.readme": "README", "help.kpis": "Indicadores do painel",
+    "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
   },
   en: {
@@ -1181,13 +1248,77 @@ const I18N = {
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
     planPlusExec: "planning + execution", chartCost: "Cost per day (US$)", chartTokens: "Tokens per day",
+    "nav.panel": "Dashboard", "nav.connections": "Connections", "nav.settings": "Settings", "nav.help": "Help",
+    soon: "soon",
+    "settings.title": "Settings", "settings.project": "Project",
+    "settings.roles": "Roles and permissions", "settings.yourRole": "Your role in this project",
+    "settings.canStart": "Can start cards", "settings.canApprove": "Can approve plans",
+    "settings.yes": "yes", "settings.no": "no",
+    "settings.signInHint": "Sign in with GitHub to see your role. Without a session only language and theme are available.",
+    "settings.rolesNote": "Read-only: roles and permissions are still edited in the repository's .tradvia.yml.",
+    "settings.example": "Example .tradvia.yml", "settings.projectsDoc": "Projects documentation",
+    "settings.notifications": "Notifications", "settings.notificationsNote": "Alerts for pending approvals and failures (#47).",
+    "settings.prefs": "Preferences", "settings.language": "Language", "settings.theme": "Theme",
+    "theme.dark": "Dark", "theme.light": "Light", "theme.system": "System",
+    "help.title": "Help and documentation", "help.readme": "README", "help.kpis": "Dashboard KPIs",
+    "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
   },
 };
 
 /* ---------- Rendering ---------- */
 
-let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
+// nav (pure)
+// rights: null without a session (read-only), otherwise an object (role may be empty).
+// Without a session Configurações is limited to language and theme.
+const VIEWS = ["panel", "settings", "help"];
+function navItems(rights) {
+  return [
+    { id: "panel", labelKey: "nav.panel", status: "ready" },
+    { id: "connections", labelKey: "nav.connections", status: "soon" }, // #58
+    { id: "settings", labelKey: "nav.settings", status: "ready", limited: !rights },
+    { id: "help", labelKey: "nav.help", status: "ready" },
+  ];
+}
+
+function parseView(hash) {
+  const v = String(hash || "").replace(/^#\/?/, "");
+  return VIEWS.includes(v) ? v : "panel";
+}
+// end nav
+
+// prefs (pure)
+const PREFS_KEY = "tradvia.prefs";
+const PREF_LANGS = ["pt", "en"];
+const PREF_THEMES = ["dark", "light", "system"];
+function prefsDefaults(navLang) {
+  return { lang: String(navLang || "").toLowerCase().startsWith("pt") ? "pt" : "en", theme: "dark" };
+}
+
+function prefsLoad(storage, navLang) {
+  const prefs = prefsDefaults(navLang);
+  try {
+    const raw = JSON.parse(storage.getItem(PREFS_KEY));
+    if (raw && PREF_LANGS.includes(raw.lang)) prefs.lang = raw.lang;
+    if (raw && PREF_THEMES.includes(raw.theme)) prefs.theme = raw.theme;
+  } catch (e) { /* storage unavailable or corrupt: defaults */ }
+  return prefs;
+}
+
+function prefsSave(storage, prefs) {
+  try {
+    storage.setItem(PREFS_KEY, JSON.stringify({ lang: prefs.lang, theme: prefs.theme }));
+    return true;
+  } catch (e) { return false; }
+}
+// end prefs
+
+function safeStorage() {
+  try { return localStorage; } catch (e) { return null; }
+}
+let prefs = prefsLoad(safeStorage(), navigator.language);
+document.documentElement.dataset.theme = prefs.theme;
+let lang = prefs.lang;
 let showSkipped = false;
 let data = null;
 // auto-refresh (pure)
@@ -1622,18 +1753,140 @@ function renderRuns(runs) {
   root.append(wrap);
 }
 
+function currentView() {
+  return parseView(location.hash);
+}
+
+function navRights() {
+  if (!authState || authState.authenticated !== true) return null;
+  return myRights() || { role: null };
+}
+
+function renderNav() {
+  const nav = document.getElementById("mainnav");
+  nav.textContent = "";
+  const view = currentView();
+  for (const it of navItems(navRights())) {
+    const a = el("a", t(it.labelKey));
+    if (it.status === "soon") {
+      a.setAttribute("aria-disabled", "true");
+      a.append(el("span", t("soon"), "soon-badge"));
+    } else {
+      a.href = "#" + it.id;
+      if (it.id === view) a.setAttribute("aria-current", "page");
+    }
+    nav.append(a);
+  }
+}
+
+function setPref(key, value) {
+  prefs = { ...prefs, [key]: value };
+  prefsSave(safeStorage(), prefs);
+  lang = prefs.lang;
+  document.documentElement.dataset.theme = prefs.theme;
+  render();
+}
+
+function settingsSelect(label, value, options, onChange) {
+  const sel = el("select");
+  sel.setAttribute("aria-label", label);
+  for (const [v, text] of options) {
+    const o = el("option", text);
+    o.value = v;
+    sel.append(o);
+  }
+  sel.value = value;
+  sel.addEventListener("change", (e) => onChange(e.target.value));
+  const row = el("label");
+  row.append(el("span", label), sel);
+  return row;
+}
+
+function renderSettings() {
+  const root = document.getElementById("view-settings");
+  root.textContent = "";
+  root.append(el("h2", t("settings.title")));
+  const base = safeGithubUrl("https://github.com/" + getRepo());
+
+  const roles = el("div", null, "settings-section");
+  roles.append(el("h3", t("settings.roles")), el("p", t("settings.project") + ": " + getRepo(), "sub"));
+  const mine = myRights();
+  roles.append(
+    el("p", t("settings.yourRole") + ": " + ((mine && mine.role) || t("noRole"))),
+    el("p", t("settings.canStart") + ": " + t(mine && mine.can_start ? "settings.yes" : "settings.no")),
+    el("p", t("settings.canApprove") + ": " + t(mine && mine.can_approve ? "settings.yes" : "settings.no")),
+  );
+  roles.append(el("p", t("settings.rolesNote"), "note"));
+  if (base) {
+    const links = el("p");
+    const ex = el("a", t("settings.example"));
+    ex.href = base + "/blob/main/docs/tradvia.example.yml";
+    const pr = el("a", t("settings.projectsDoc"));
+    pr.href = base + "/blob/main/docs/projects.md";
+    links.append(ex, document.createTextNode(" · "), pr);
+    roles.append(links);
+  }
+  if (navRights()) root.append(roles);
+  else root.append(el("p", t("settings.signInHint"), "sub"));
+
+  if (navRights()) {
+    const notif = el("div", null, "settings-section");
+    const h = el("h3", t("settings.notifications") + " ");
+    h.append(el("span", t("soon"), "soon-badge"));
+    notif.append(h, el("p", t("settings.notificationsNote"), "sub"));
+    root.append(notif);
+  }
+
+  const pref = el("div", null, "settings-section");
+  pref.append(
+    el("h3", t("settings.prefs")),
+    settingsSelect(t("settings.language"), prefs.lang, [["pt", "PT-BR"], ["en", "EN"]], (v) => setPref("lang", v)),
+    settingsSelect(t("settings.theme"), prefs.theme,
+      PREF_THEMES.map((v) => [v, t("theme." + v)]), (v) => setPref("theme", v)),
+  );
+  root.append(pref);
+}
+
+function renderHelp() {
+  const root = document.getElementById("view-help");
+  root.textContent = "";
+  root.append(el("h2", t("help.title")));
+  const base = safeGithubUrl("https://github.com/" + getRepo());
+  if (!base) return;
+  const sec = el("div", null, "help-section");
+  const ul = el("ul");
+  for (const [key, path] of [["help.readme", "/blob/main/README.md"], ["help.kpis", "/blob/main/docs/dashboard-kpis.md"],
+    ["help.projects", "/blob/main/docs/projects.md"], ["help.adr", "/tree/main/docs/adr"]]) {
+    const a = el("a", t(key));
+    a.href = base + path;
+    const li = el("li");
+    li.append(a);
+    ul.append(li);
+  }
+  sec.append(ul);
+  root.append(sec);
+}
+
+function renderView() {
+  const view = currentView();
+  for (const id of VIEWS) document.getElementById("view-" + id).hidden = id !== view;
+  renderNav();
+  if (view === "settings") renderSettings();
+  if (view === "help") renderHelp();
+}
+
 function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
-  document.getElementById("lang").value = lang;
   renderAuth();
+  renderView();
   document.getElementById("meta").textContent =
     getRepo() + (updatedAt ? " · " + t("updated") + " " + updatedAt.toLocaleTimeString() : "") +
     (updatedAt ? " · " + t("dataFrom") + ": " + dataSource : "");
   const status = document.getElementById("status");
   const content = document.getElementById("content");
   document.getElementById("refresh").disabled = fetchState === "loading";
-  status.hidden = fetchState === "ok";
+  status.hidden = fetchState === "ok" || currentView() !== "panel";
   status.className = "msg" + (fetchState === "ratelimit" || fetchState === "error" ? " error" : "");
   status.textContent = fetchState === "loading" ? t("loading")
     : fetchState === "ratelimit" ? t("rateLimit") : fetchState === "error" ? t("error") : "";
@@ -1712,7 +1965,7 @@ document.getElementById("auto-refresh").addEventListener("change", (e) => {
 
 function tickAutoRefresh() {
   const due = autoRefreshDue({
-    enabled: autoRefreshEnabled(), hidden: document.hidden, editing: isEditing(), busy: loading,
+    enabled: autoRefreshEnabled(), hidden: document.hidden || currentView() !== "panel", editing: isEditing(), busy: loading,
     store: !!STORE_API, lastAt: updatedAt ? updatedAt.getTime() : null, now: Date.now(),
   });
   if (due) refresh(true);
@@ -1727,7 +1980,7 @@ document.getElementById("project").addEventListener("change", (e) => {
   history.replaceState(null, "", url);
   refresh();
 });
-document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
+window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
 detectApi().then(() => { loadAuth(); return refresh(); });
 </script>
