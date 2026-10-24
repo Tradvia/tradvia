@@ -13,3 +13,27 @@ interactions:
   merge_pr: maintain       # enforced: squash-merge a pull request from the panel
   update_branch: maintain  # enforced: bring a pull request branch up to date with main
   approve_deploy: maintain # enforced: approve/reject/cancel deploys, run the post-deploy operation
+  # manage_connections is fixed to admin (ADR 0009); lowering it makes the file invalid.
+
+risk:                      # enforced: risk-based permission gateway (ADR 0006)
+  read: free               # free | read | triage | write | maintain | admin
+  reversible_write: free   # create branch, commit, open PR, comment
+  destructive_external: maintain # merge, delete, publish, deploy, external messages; undeclared actions count as this
+
+# Execution budget per card. Invalid values fall back to these defaults.
+# At 80% of any limit the agent gets a system notice; at 100% it stops and the card
+# waits for a human.
+budget:
+  max_minutes: 30          # minutes of agent work
+  max_steps: 40            # planner/executor iterations + reported tool calls
+  max_usd: 5.0             # estimated cost (API-equivalent)
+
+# Default provider and model per role (ADR 0009). What an admin sets on the Connections
+# screen overrides these, per project. Roles: planner, executor, reviewer, orchestrator.
+# Providers: anthropic (claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5),
+# gemini (gemini-2.5-pro, gemini-2.5-flash), openai (gpt-5, gpt-5-mini).
+# Secrets never go here: they are set on the Connections screen.
+providers:
+  planner:
+    provider: anthropic
+    model: claude-sonnet-5-5

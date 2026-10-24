@@ -207,3 +207,42 @@ CREATE TABLE IF NOT EXISTS notify_prefs (
     kinds      jsonb NOT NULL DEFAULT '{}',
     PRIMARY KEY (login, project_id)
 );
+
+-- Project connections (ADR 0009): which provider and model each flow role uses, and the
+-- provider secrets. Secrets are stored encrypted only (Fernet, key derived from
+-- TRADVIA_SECRET_KEY); the plain value is never kept and never returned.
+CREATE TABLE IF NOT EXISTS project_connections (
+    project_id  bigint NOT NULL REFERENCES projects (id),
+    role        text NOT NULL CHECK (role IN ('planner', 'executor', 'reviewer', 'orchestrator')),
+    provider    text NOT NULL,
+    model       text NOT NULL,
+    updated_by  text NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    project_id  bigint NOT NULL REFERENCES projects (id),
+    provider    text NOT NULL,
+    ciphertext  text NOT NULL,
+    set_by      text NOT NULL,
+    set_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, provider)
+);
+
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS via text;
+
+-- API tokens for the programmatic API (ADR 0009). Only the SHA-256 of the token is kept.
+-- `token_enc` is the owner's GitHub user token (Fernet), so the token acts with the owner's
+-- identity and never beyond `role` or the owner's current role.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           bigserial PRIMARY KEY,
+    login        text NOT NULL,
+    project_id   bigint NOT NULL REFERENCES projects (id),
+    role         text NOT NULL,
+    token_hash   text NOT NULL UNIQUE,
+    token_enc    text NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    expires_at   timestamptz NOT NULL,
+    revoked_at   timestamptz
+);
