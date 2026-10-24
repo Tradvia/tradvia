@@ -89,10 +89,12 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         return not_started
 
     chat = make_chat(chat_kind, issue, policy)
-    app = build_graph(github, chat, planner=make_planner(), executor=make_executor())
+    app = build_graph(github, chat, planner=make_planner(), executor=make_executor(),
+                      budget=policy.budget)
 
-    config = {"configurable": {"thread_id": card_id}}
-    result = app.invoke({"id": card_id, "status": "BACKLOG",
+    # Checkpoints and usage are keyed by project (repository) and never cross projects.
+    config = {"configurable": {"thread_id": f"{github.repo}#{card_id}"}}
+    result = app.invoke({"id": card_id, "project_id": github.repo, "status": "BACKLOG",
                          "source": {"provider": "github", "issue_number": issue}}, config)
 
     while result.get("__interrupt__"):
