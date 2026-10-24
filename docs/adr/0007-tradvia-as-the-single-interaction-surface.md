@@ -88,3 +88,11 @@ GitHub App permissions in `docs/github-app.md`).
   short sessions and an audit log are requirements of the first card (#45), not
   later hardening.
 - Until #46 ships, plan approvals still happen in the issue thread.
+
+## Addendum: the orchestrator conversation (#57)
+
+The orchestrator agent that talks to the owner inside Tradvia works through a closed set of
+Tradvia tools, never a free shell. The tool boundary follows ADR 0004: approving a plan,
+merging and deploying have no tool, so those decisions stay with the human; the orchestrator
+can only answer a plan with an adjustment and queue a pending item with a button. See
+[docs/orchestrator.md](../orchestrator.md).
