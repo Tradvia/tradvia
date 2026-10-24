@@ -36,6 +36,15 @@
   }
   .auth a.btn:hover { border-color: var(--muted); text-decoration: none; }
   button:disabled { opacity: .5; cursor: default; }
+  #bell.has { border-color: var(--warn); }
+  #bell.has #bell-count { color: var(--warn); font-weight: 600; }
+  .inbox { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 14px 12px; margin-bottom: 14px; }
+  .inbox[hidden], .notify[hidden] { display: none; }
+  .inbox h3 { margin: 10px 0 4px; font-size: 13px; }
+  .inbox ul { list-style: none; margin: 0; padding: 0; }
+  .inbox li { padding: 3px 0; overflow-wrap: anywhere; }
+  .notify { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; font-size: 13px; }
+  .notify label { display: flex; gap: 6px; align-items: center; }
   .msg { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); }
   .msg.error { border-color: var(--bad); color: var(--text); }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -111,6 +120,7 @@
     <div class="sub" id="meta"></div>
   </div>
   <div class="controls">
+    <button id="bell" type="button" hidden><span aria-hidden="true">🔔</span> <span id="bell-count">0</span></button>
     <span id="auth" class="auth" hidden></span>
     <select id="project" aria-label="Project" hidden></select>
     <select id="lang" aria-label="Language">
@@ -122,6 +132,11 @@
   </div>
 </header>
 <main>
+  <section id="inbox" class="inbox" hidden>
+    <h2 data-i18n="inbox"></h2>
+    <div id="inbox-list"></div>
+    <div id="notify" class="notify" hidden></div>
+  </section>
   <div id="status" class="msg" hidden></div>
   <div id="content" hidden>
     <h2 data-i18n="recent"></h2>
@@ -708,6 +723,15 @@ async function loadProjects() {
     if (r.status !== 200) return;
     const list = await r.json();
     if (!Array.isArray(list) || !list.length) return;
+    // A notification names the project by slug only: map it to the repository.
+    const url = new URL(location.href);
+    const slug = url.searchParams.get("project");
+    const hit = slug && !url.searchParams.get("repo") ? list.find((p) => p.slug === slug) : null;
+    if (hit) {
+      url.searchParams.set("repo", hit.external_id);
+      url.searchParams.delete("project");
+      history.replaceState(null, "", url);
+    }
     const current = getRepo();
     const repos = list.map((p) => p.external_id);
     if (!repos.includes(current)) repos.push(current);
@@ -751,9 +775,14 @@ async function loadAuth() {
     if (r.status === 200) authState = await r.json();
   } catch (e) { /* no auth API: the button stays hidden */ }
   renderAuth();
+  if (authState && authState.authenticated === true) {
+    if (pushKey === null) loadPushKey(); else renderNotify();
+    if (inboxOpen) loadInbox();
+  }
 }
 
 function renderAuth() {
+  renderBell();
   const box = document.getElementById("auth");
   box.textContent = "";
   box.hidden = !(authState && authState.enabled === true);
@@ -803,7 +832,7 @@ function myRights() {
 
 async function panelRequest(method, path, body) {
   const headers = { Accept: "application/json" };
-  if (method === "POST") {
+  if (method !== "GET") {
     const key = (crypto.randomUUID ? crypto.randomUUID() : "k" + Date.now() + Math.random().toString(36).slice(2))
       .replace(/[^A-Za-z0-9_-]/g, "-");
     Object.assign(headers, {
@@ -812,7 +841,7 @@ async function panelRequest(method, path, body) {
   }
   try {
     const r = await fetch("/api/projects/" + getRepo() + path, {
-      method, headers, credentials: "same-origin", body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+      method, headers, credentials: "same-origin", body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
     });
     const j = await r.json().catch(() => ({}));
     return r.ok ? { ok: true, data: j } : { ok: false, error: j.error || t("actionFailed") };
@@ -1072,11 +1101,188 @@ async function loadData(repo) {
   return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
 }
 
+/* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
+
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit"];
+let inboxOpen = false;
+let inboxData = []; // [{ repo, items }] of the projects that have something pending
+let pushKey = null; // VAPID public key; null while unknown or when notifications are off
+let pushError = "";
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function pendingTotal() {
+  if (!authState || authState.authenticated !== true) return 0;
+  return (authState.projects || []).reduce((n, p) => n + (p.pending_count || 0), 0);
+}
+
+function renderBell() {
+  const bell = document.getElementById("bell");
+  const signedIn = !!(authState && authState.authenticated === true);
+  bell.hidden = !signedIn;
+  document.getElementById("inbox").hidden = !(signedIn && inboxOpen);
+  if (!signedIn) return;
+  const n = pendingTotal();
+  document.getElementById("bell-count").textContent = String(n);
+  bell.classList.toggle("has", n > 0);
+  bell.title = t("inbox") + ": " + n;
+}
+
+// A direct link to the card: opening it shows the reply, approve or merge controls (#46).
+function cardLink(repo, number) {
+  return "?repo=" + encodeURIComponent(repo) + "&card=" + number;
+}
+
+function renderInbox() {
+  const root = document.getElementById("inbox-list");
+  root.replaceChildren();
+  const groups = inboxData.filter((g) => g.items.length);
+  if (!groups.length) root.append(el("div", t("inboxEmpty"), "when"));
+  for (const g of groups) {
+    root.append(el("h3", g.repo));
+    const ul = el("ul");
+    for (const it of g.items) {
+      const li = el("li");
+      const a = el("a", "#" + it.number + " " + it.title);
+      a.href = cardLink(g.repo, it.number);
+      li.append(a, el("span", t("kind_" + it.kind) || it.kind, "badge"));
+      ul.append(li);
+    }
+    root.append(ul);
+  }
+}
+
+async function loadInbox() {
+  const projects = (authState && authState.projects) || [];
+  const found = [];
+  for (const p of projects) {
+    if (!p.role) continue;
+    try {
+      const r = await fetch("/api/projects/" + p.external_id + "/pending",
+        { headers: { Accept: "application/json" }, credentials: "same-origin" });
+      if (!r.ok) continue;
+      const j = await r.json();
+      p.pending_count = j.count;
+      found.push({ repo: p.external_id, items: j.items });
+    } catch (e) { /* the inbox just shows what it could load */ }
+  }
+  inboxData = found;
+  renderBell();
+  renderInbox();
+  renderNotify();
+}
+
+function b64urlToBytes(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function loadPushKey() {
+  if (!pushSupported() || GH_API !== "/api/github") return;
+  try {
+    const r = await fetch("/api/push/key", { headers: { Accept: "application/json" } });
+    if (r.ok) pushKey = (await r.json()).key || null;
+  } catch (e) { /* notifications stay hidden */ }
+  renderNotify();
+}
+
+async function currentSubscription() {
+  const reg = await navigator.serviceWorker.getRegistration("sw.js");
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function enablePush() {
+  pushError = "";
+  try {
+    if ((await Notification.requestPermission()) !== "granted") throw new Error(t("pushDenied"));
+    const reg = await navigator.serviceWorker.register("sw.js");
+    await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) ||
+      (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(pushKey) }));
+    const res = await panelRequest("POST", "/push/subscription", sub.toJSON());
+    if (!res.ok) throw new Error(res.error);
+  } catch (e) {
+    pushError = e && e.message ? e.message : t("actionFailed");
+  }
+  renderNotify();
+}
+
+async function disablePush() {
+  pushError = "";
+  try {
+    const sub = await currentSubscription();
+    if (sub) await panelRequest("DELETE", "/push/subscription", { endpoint: sub.endpoint });
+  } catch (e) { pushError = t("actionFailed"); }
+  renderNotify();
+}
+
+async function renderNotify() {
+  const box = document.getElementById("notify");
+  const mine = myRights();
+  box.hidden = !(inboxOpen && pushKey && pushSupported() && mine);
+  if (box.hidden) return;
+  const token = ++notifyToken;
+  const [sub, prefs] = await Promise.all([currentSubscription().catch(() => null), panelRequest("GET", "/push/prefs")]);
+  if (token !== notifyToken) return;
+  box.replaceChildren(el("h3", t("notifications") + " · " + getRepo()));
+  const toggle = el("button", sub ? t("disableNotify") : t("enableNotify"));
+  toggle.type = "button";
+  toggle.addEventListener("click", () => { toggle.disabled = true; (sub ? disablePush : enablePush)(); });
+  box.append(toggle);
+  if (pushError) box.append(el("div", pushError, "msg error"));
+  if (!prefs.ok) return;
+  box.append(el("div", t("notifyEvents"), "when"));
+  for (const kind of PUSH_KINDS) {
+    const label = el("label");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = prefs.data.kinds[kind] !== false;
+    cb.addEventListener("change", async () => {
+      const res = await panelRequest("PUT", "/push/prefs", { kinds: { [kind]: cb.checked } });
+      if (!res.ok) { cb.checked = !cb.checked; pushError = res.error; renderNotify(); }
+    });
+    label.append(cb, document.createTextNode(t("kind_" + kind)));
+    box.append(label);
+  }
+}
+let notifyToken = 0;
+
+document.getElementById("bell").addEventListener("click", () => {
+  inboxOpen = !inboxOpen;
+  renderBell();
+  if (inboxOpen) loadInbox();
+});
+
+// ?card=N (from the inbox or a notification): open that card once the board is on screen.
+let cardToOpen = (() => {
+  const n = Number(new URLSearchParams(location.search).get("card"));
+  return Number.isInteger(n) && n > 0 ? n : null;
+})();
+
+function openRequestedCard() {
+  if (cardToOpen === null) return;
+  const node = document.getElementById("card-" + cardToOpen);
+  if (!node) return;
+  const n = cardToOpen;
+  cardToOpen = null;
+  node.scrollIntoView({ block: "center" });
+  if (!openCards.has(n)) node.click();
+}
+
 /* ---------- i18n ---------- */
 
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
+    inbox: "Pendências", inboxEmpty: "Nada aguardando você.", notifications: "Notificações",
+    enableNotify: "Ativar notificações", disableNotify: "Desativar notificações",
+    notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
+    kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
+    kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
+    kind_adjust_limit: "limite de ajustes",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1131,6 +1337,12 @@ const I18N = {
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
+    inbox: "Pending", inboxEmpty: "Nothing is waiting for you.", notifications: "Notifications",
+    enableNotify: "Enable notifications", disableNotify: "Disable notifications",
+    notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
+    kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
+    kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
+    kind_adjust_limit: "adjustment limit",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -1533,6 +1745,7 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     const s = deriveCardState(issue, prs, agentRuns);
     counts[s]++;
     const card = el("div", null, "card");
+    card.id = "card-" + issue.number;
     card.tabIndex = 0;
     card.setAttribute("role", "button");
     const a = el("a", issue.title);
@@ -1648,6 +1861,7 @@ function render() {
     renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
     renderDeploys();
     renderRuns(visibleRuns(view.runs, showSkipped));
+    openRequestedCard();
   }
 }
 
@@ -1681,6 +1895,7 @@ async function refresh(quiet = false) {
     loading = false;
   }
   render();
+  if (authState && authState.authenticated === true) loadAuth(); // keeps the pending counter fresh
   if (fetchState === "ok") {
     if (quiet) recentToken++;
     loadRecent();

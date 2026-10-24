@@ -180,9 +180,9 @@ def test_full_flow(client, gh):
     assert data["enabled"] and data["authenticated"] and data["login"] == "ana"
     assert data["avatar_url"].endswith("/u/7")
     assert data["projects"] == [
-        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin",
+        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "pending_count": 0,
          "can_start": True, "can_approve": True},
-        {"slug": "acme-widgets", "external_id": B, "role": "read",
+        {"slug": "acme-widgets", "external_id": B, "role": "read", "pending_count": 0,
          "can_start": False, "can_approve": False},
     ]
 

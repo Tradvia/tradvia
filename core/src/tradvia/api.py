@@ -15,7 +15,7 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, NamedTuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from starlette.applications import Starlette
@@ -59,8 +59,10 @@ from .auth import (
     AuthError,
     GitHubIdentity,
     PolicyUnreadable,
+    Session,
     load_config,
 )
+from . import pending, push
 from .backlog import READY_LABEL, backlog_status
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
@@ -102,6 +104,33 @@ NOT_FOUND_MESSAGE = {
     "post_deploy": "The deploy-oci workflow was not found in this project.",
 }
 MAX_PER_PAGE = 100
+MAX_ENDPOINT = 2048
+MAX_KEY = 256
+_KEY_B64 = re.compile(r"[A-Za-z0-9_=-]+")
+_IP_HOST = re.compile(r"[\d.]+|\[.*\]")
+
+
+def parse_subscription(data: dict[str, Any]) -> tuple[str, str, str]:
+    """`(endpoint, p256dh, auth)` of a browser `PushSubscription`, or ActionError.
+
+    The server later POSTs to the endpoint, so only a public https host name is accepted
+    (no IP literal, no localhost or single-label name): the endpoint is a request target.
+    """
+    endpoint, keys = data.get("endpoint"), data.get("keys")
+    if not isinstance(endpoint, str) or not isinstance(keys, dict):
+        raise ActionError("endpoint and keys are required")
+    url = urlsplit(endpoint)
+    host = (url.hostname or "").lower()
+    if (
+        len(endpoint) > MAX_ENDPOINT or url.scheme != "https" or url.username or url.password
+        or "." not in host or host.endswith(".localhost") or _IP_HOST.fullmatch(host)
+    ):
+        raise ActionError("endpoint must be a public https URL")
+    p256dh, auth_key = keys.get("p256dh"), keys.get("auth")
+    for value in (p256dh, auth_key):
+        if not isinstance(value, str) or not value or len(value) > MAX_KEY or not _KEY_B64.fullmatch(value):
+            raise ActionError("keys.p256dh and keys.auth must be base64url text")
+    return endpoint, p256dh, auth_key
 
 
 class Upstream(NamedTuple):
@@ -255,8 +284,11 @@ def create_app(
     store: Store | None = None,
     identity: GitHubIdentity | None = None,
     clock: Callable[[], float] = time.time,
+    push_sender: push.Sender | None = None,
 ) -> Starlette:
     fetch = fetch or default_fetch
+    # Web Push is off unless both VAPID keys are set (or a sender is injected, in tests).
+    sender: push.Sender | None = push_sender or push.default_sender()
     webhook_secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
     db: Store | None = store
     if db is None and os.environ.get("DATABASE_URL"):
@@ -428,12 +460,51 @@ def create_app(
             return JSONResponse({"error": "storage not configured"}, status_code=503)
         try:
             project_id = await run_in_threadpool(project_id_of, repo)
-            await run_in_threadpool(db.apply, project_id, delivery, event, ops)
+            before = await run_in_threadpool(pending_before, project_id, ops)
+            applied = await run_in_threadpool(db.apply, project_id, delivery, event, ops)
         except StoreUnavailable:
             return JSONResponse({"error": "storage unavailable"}, status_code=503)
         except Exception:  # never log or echo: payloads and DSNs may be sensitive
             return JSONResponse({"error": "internal error"}, status_code=500)
+        if applied and before is not None:
+            try:  # a push failure must never change the answer to GitHub
+                await run_in_threadpool(push_entered, repo, project_id, ops, before)
+            except Exception:
+                pass
         return accepted  # also for duplicate deliveries
+
+    def pending_before(project_id: int, ops: list[Any]) -> dict[int, str] | None:
+        """Pending kinds of the cards a delivery touches, before it is applied (None: no push)."""
+        assert db is not None
+        if sender is None:
+            return None
+        try:
+            numbers = pending.affected_cards(ops)
+            if not numbers or not db.list_subscriptions(project_id):
+                return None
+            return pending.kinds_of(db, project_id, numbers)
+        except Exception:
+            return None
+
+    def push_entered(repo: str, project_id: int, ops: list[Any], before: dict[int, str]) -> None:
+        """Notify for the cards that entered a pending kind in this delivery."""
+        assert db is not None and sender is not None
+        after = pending.kinds_of(db, project_id, pending.affected_cards(ops))
+        entered = {n: k for n, k in after.items() if before.get(n) != k}
+        push.notify(db, sender, project_id, project_slug(repo), entered, subscriber_can(repo))
+
+    def subscriber_can(repo: str) -> Callable[[str, str], bool]:
+        """Whether a subscriber's cached role may answer a kind; fails closed without a session."""
+        def check(login: str, kind: str) -> bool:
+            if auth is None or db is None:
+                return False
+            rec = db.session_for_login(login, clock())
+            if rec is None:
+                return False
+            session = Session("", rec, 0)
+            role = auth.role_of(session, repo)
+            return pending.can_answer(auth.policy_for(session, repo, fresh=False), role, kind)
+        return check
 
     async def store_health(request: Request) -> Response:
         if db is None:
@@ -617,6 +688,9 @@ def create_app(
             return private(response)
         roles = await run_in_threadpool(lambda: [auth.role_of(session, r) for r in repos])
         can = await run_in_threadpool(lambda: [panel_rights(session, r, x) for r, x in zip(repos, roles)])
+        counts = await run_in_threadpool(
+            lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
+        )
         response = JSONResponse(
             {
                 "enabled": True,
@@ -625,13 +699,103 @@ def create_app(
                 "avatar_url": session.rec["avatar_url"],
                 "csrf": auth.csrf_token(session),
                 "projects": [
-                    {"slug": project_slug(r), "external_id": r, "role": role, **rights}
-                    for r, role, rights in zip(repos, roles, can)
+                    {"slug": project_slug(r), "external_id": r, "role": role,
+                     "pending_count": n, **rights}
+                    for r, role, rights, n in zip(repos, roles, can, counts)
                 ],
             }
         )
         set_cookie(response, SESSION_COOKIE, session.token, session.max_age)  # sliding renewal
         return private(response)
+
+    # --- pending inbox and Web Push (pending.py, push.py, ADR 0009) -------------------------
+
+    def pending_items(session: Any, repo: str, role: str | None) -> list[dict[str, Any]]:
+        """Cards waiting for this person's role; empty without a role or a readable policy."""
+        if auth is None or db is None or role is None:
+            return []
+        try:
+            policy = auth.policy_for(session, repo, fresh=False)
+            cards = pending.cards_of(db, project_id_of(repo))
+            return pending.pending_for(role, policy, cards)
+        except Exception:  # unreadable policy or storage: fail closed, the panel still works
+            return []
+
+    def pending_view(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        items = pending_items(session, repo, auth.role_of(session, repo))
+        base = f"/runs/?repo={repo}&card="
+        return Outcome(200, {
+            "count": len(items),
+            "items": [{**it, "link": f"{base}{it['number']}"} for it in items],
+        })
+
+    def push_enabled(session: Any, repo: str, data: dict[str, Any]) -> Outcome | None:
+        if sender is None:
+            return Outcome(404, {"error": "Notifications are not enabled on this server."})
+        if auth.role_of(session, repo) is None:
+            return Outcome(403, {"error": f"You have no access to {repo}."})
+        return None
+
+    def subscribe(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        refused = push_enabled(session, repo, data)
+        if refused:
+            return refused
+        try:
+            endpoint, p256dh, auth_key = parse_subscription(data)
+        except ActionError as e:
+            return Outcome(400, {"error": str(e)})
+        db.save_subscription(project_id_of(repo), session.login, endpoint, p256dh, auth_key)
+        return Outcome(200, {"ok": True})
+
+    def unsubscribe(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        endpoint = data.get("endpoint")
+        if not isinstance(endpoint, str) or len(endpoint) > MAX_ENDPOINT:
+            return Outcome(400, {"error": "endpoint is required"})
+        db.delete_subscription(endpoint, session.login, project_id_of(repo))  # only their own
+        return Outcome(200, {"ok": True})
+
+    def prefs_view(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        saved = db.get_prefs(project_id_of(repo), session.login)
+        return Outcome(200, {"kinds": {k: push.kind_enabled(saved, k) for k in pending.KINDS}})
+
+    def prefs_save(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        kinds = push.valid_prefs(data.get("kinds"))
+        if kinds is None:
+            return Outcome(400, {"error": "kinds must map known event kinds to true or false"})
+        pid = project_id_of(repo)
+        merged = {**(db.get_prefs(pid, session.login) or {}), **kinds}
+        db.set_prefs(pid, session.login, merged)
+        return Outcome(200, {"kinds": {k: push.kind_enabled(merged, k) for k in pending.KINDS}})
+
+    def user_route(
+        work: Callable[[Any, str, dict[str, Any]], Outcome], body: bool = False
+    ) -> Callable[[Request], Any]:
+        """A route for the signed-in person on one project; the cookie decides who."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+                if session is None:
+                    return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+                data: Any = {}
+                if body:
+                    try:
+                        data = await request.json()
+                    except ValueError:
+                        data = None
+                    if not isinstance(data, dict):
+                        return private(JSONResponse({"error": "invalid json"}, status_code=400))
+                out = await run_in_threadpool(work, session, repo, data)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
+    async def push_key(request: Request) -> Response:
+        key = push.public_key() if sender is not None else None
+        return private(JSONResponse({"key": key}))
 
     # --- panel actions with the user's own identity (actions.py, ADR 0004 phase 2) --------
 
@@ -1128,6 +1292,15 @@ def create_app(
             Route("/api/auth/me", auth_me, methods=["GET"]),
             Route(WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/api/projects", projects, methods=["GET"]),
+            Route("/api/push/key", push_key, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/pending", user_route(pending_view), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/push/subscription",
+                  user_route(subscribe, body=True), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/push/subscription",
+                  user_route(unsubscribe, body=True), methods=["DELETE"]),
+            Route("/api/projects/{owner}/{repo}/push/prefs", user_route(prefs_view), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/push/prefs",
+                  user_route(prefs_save, body=True), methods=["PUT"]),
             Route("/api/projects/{owner}/{repo}/cards", action_route("create_card", "start_card"),
                   methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/start",
