@@ -301,6 +301,12 @@ class HttpGitHub:
             token, "POST", f"/repos/{repo}/issues", json={"title": title, "body": body}
         )
 
+    def update_issue(
+        self, token: str, repo: str, number: int, title: str | None, body: str | None
+    ) -> dict[str, Any]:
+        fields = {k: v for k, v in (("title", title), ("body", body)) if v is not None}
+        return self._call(token, "PATCH", f"/repos/{repo}/issues/{number}", json=fields)
+
     def add_label(self, token: str, repo: str, number: int, label: str) -> None:
         self._call(token, "POST", f"/repos/{repo}/issues/{number}/labels", json={"labels": [label]})
 
