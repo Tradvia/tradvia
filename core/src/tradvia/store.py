@@ -92,7 +92,8 @@ class Store(Protocol):
         """Replace the project's whole backlog in one transaction; position is the list index."""
 
     # Audit log of panel actions (api.py). `rec`: actor_login, action, issue_number | None,
-    # result ("ok", "denied" or "failed"), detail, idempotency_key | None, created_at (epoch).
+    # result ("ok", "denied" or "failed"), detail, idempotency_key | None, created_at (epoch),
+    # via (optional: "api_token" when an API token acted).
     def append_audit(self, project_id: int, rec: dict[str, Any]) -> None: ...
 
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
@@ -113,6 +114,26 @@ class Store(Protocol):
 
     def project_cost(self, project_id: int) -> dict[str, Any]:
         """`{usd, tokens_in, tokens_out, runs}` summed over the project's recorded runs."""
+    # Project connections (connections.py, ADR 0009). Secrets are ciphertext only.
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None: ...
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        """`{role: {provider, model, updated_by, updated_at}}`, `updated_at` as ISO text."""
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        """Insert or replace; True when it replaced an existing secret."""
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        """The ciphertext, or None."""
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool: ...
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        """`{provider: {set_by, set_at}}` only: never the ciphertext."""
 
     # Sign in (auth.py). Not project scoped. Times are epoch seconds.
     def put_login_state(
@@ -137,9 +158,51 @@ class Store(Protocol):
 
     def delete_session(self, session_id: str) -> None: ...
 
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        """The newest live session of a person (same fields as `get_session`), or None."""
+
+    # Comments of open cards, for the pending inbox.
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        """`[{issue_number, author, body}]` of these cards, oldest first."""
+
+    # Web Push (push.py). A user keeps one subscription per project.
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        """Upsert by project and endpoint; any other subscription of this user and project is
+        replaced."""
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        """Remove by endpoint (every project); with `login`, only that person's rows, and
+        with `project_id` only that project's."""
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        """`[{login, endpoint, p256dh, auth}]` of the project."""
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        """The saved map of event kind to enabled, or None when the person never chose."""
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None: ...
+    # API tokens (ADR 0009). Only the hash of the token is stored. Times are epoch seconds.
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        """`rec`: login, project_id, role, token_hash, token_enc, created_at, expires_at.
+        Returns the id."""
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        """`rec` plus `id` and `revoked_at` (None while valid), or None if unknown."""
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        """Revoke a token of this login and project. False if there is none (or already revoked)."""
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
+
+
+def _epoch_iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
 class MemoryStore:
@@ -155,8 +218,13 @@ class MemoryStore:
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
         self.audit: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
+        self.connection_roles: dict[tuple[int, str], dict[str, Any]] = {}
+        self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
+        self.api_tokens: dict[int, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
+        self.subscriptions: dict[tuple[int, str], dict[str, Any]] = {}
+        self.prefs: dict[tuple[int, str], dict[str, bool]] = {}
         self._clock = 0
 
     def ensure_project(self, external_id: str) -> int:
@@ -326,7 +394,7 @@ class MemoryStore:
             {
                 "actor_login": r["actor_login"], "action": r["action"],
                 "issue_number": r["issue_number"], "result": r["result"],
-                "detail": r["detail"],
+                "detail": r["detail"], "via": r.get("via"),
                 "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
             }
             for r in rows
@@ -365,6 +433,46 @@ class MemoryStore:
         return {"usd": sum(r["cost_usd"] for r in rows),
                 "tokens_in": sum(r["tokens_in"] or 0 for r in rows),
                 "tokens_out": sum(r["tokens_out"] or 0 for r in rows), "runs": len(rows)}
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None:
+        with self._lock:
+            self.connection_roles[(project_id, role)] = {
+                "provider": provider, "model": model, "updated_by": actor, "updated_at": now,
+            }
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                role: {**row, "updated_at": _epoch_iso(row["updated_at"])}
+                for (pid, role), row in self.connection_roles.items() if pid == project_id
+            }
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        with self._lock:
+            replaced = (project_id, provider) in self.connection_secrets
+            self.connection_secrets[(project_id, provider)] = {
+                "ciphertext": ciphertext, "set_by": actor, "set_at": now,
+            }
+            return replaced
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        with self._lock:
+            row = self.connection_secrets.get((project_id, provider))
+            return row["ciphertext"] if row else None
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool:
+        with self._lock:
+            return self.connection_secrets.pop((project_id, provider), None) is not None
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                provider: {"set_by": row["set_by"], "set_at": _epoch_iso(row["set_at"])}
+                for (pid, provider), row in self.connection_secrets.items() if pid == project_id
+            }
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -406,6 +514,92 @@ class MemoryStore:
     def delete_session(self, session_id: str) -> None:
         with self._lock:
             self.sessions.pop(session_id, None)
+
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        with self._lock:
+            live = [
+                r for r in self.sessions.values()
+                if r["login"] == login and r["expires_at"] > now and r["absolute_expires_at"] > now
+            ]
+            best = max(live, key=lambda r: r["last_used_at"], default=None)
+            return copy.deepcopy(best) if best else None
+
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        wanted = set(issue_numbers)
+        with self._lock:
+            rows = [
+                r for (pid, _), r in self.tables["comments"].items()
+                if pid == project_id and r["issue_number"] in wanted
+            ]
+        rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]))
+        return [
+            {"issue_number": r["issue_number"], "author": r.get("author"), "body": r.get("body") or ""}
+            for r in rows
+        ]
+
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        with self._lock:
+            self.subscriptions = {
+                k: r for k, r in self.subscriptions.items()
+                if not (r["project_id"] == project_id and r["login"] == login)
+            }
+            self.subscriptions[(project_id, endpoint)] = {
+                "project_id": project_id, "login": login, "endpoint": endpoint,
+                "p256dh": p256dh, "auth": auth,
+            }
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        with self._lock:
+            self.subscriptions = {
+                k: r for k, r in self.subscriptions.items()
+                if not (
+                    r["endpoint"] == endpoint
+                    and (login is None or (
+                        r["login"] == login and (project_id is None or r["project_id"] == project_id)
+                    ))
+                )
+            }
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {k: r[k] for k in ("login", "endpoint", "p256dh", "auth")}
+                for r in self.subscriptions.values() if r["project_id"] == project_id
+            ]
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        with self._lock:
+            prefs = self.prefs.get((project_id, login))
+            return dict(prefs) if prefs is not None else None
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
+        with self._lock:
+            self.prefs[(project_id, login)] = dict(kinds)
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        with self._lock:
+            token_id = len(self.api_tokens) + 1
+            self.api_tokens[token_id] = {**copy.deepcopy(rec), "id": token_id, "revoked_at": None}
+            return token_id
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        with self._lock:
+            for rec in self.api_tokens.values():
+                if rec["token_hash"] == token_hash:
+                    return copy.deepcopy(rec)
+        return None
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        with self._lock:
+            rec = self.api_tokens.get(token_id)
+            if (rec is None or rec["login"] != login or rec["project_id"] != project_id
+                    or rec["revoked_at"] is not None):
+                return False
+            rec["revoked_at"] = now
+            return True
 
 
 _INSERT_DELIVERY = (
@@ -544,11 +738,11 @@ _INSERT_BACKLOG_SQL = """
 """
 _INSERT_AUDIT_SQL = """
     INSERT INTO audit_log (project_id, actor_login, action, issue_number, result, detail,
-                           idempotency_key, created_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s))
+                           idempotency_key, created_at, via)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s)
 """
 _LIST_AUDIT_SQL = """
-    SELECT actor_login, action, issue_number, result, detail, created_at
+    SELECT actor_login, action, issue_number, result, detail, created_at, via
     FROM audit_log WHERE project_id = %s AND issue_number = %s
     ORDER BY created_at, id
 """
@@ -574,6 +768,35 @@ _PROJECT_COST_SQL = """
     SELECT coalesce(sum(cost_usd), 0), coalesce(sum(tokens_in), 0),
            coalesce(sum(tokens_out), 0), count(cost_usd)
     FROM chat_messages WHERE project_id = %s AND cost_usd IS NOT NULL
+"""
+_PUT_CONNECTION_ROLE_SQL = """
+    INSERT INTO project_connections (project_id, role, provider, model, updated_by, updated_at)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, role) DO UPDATE SET
+        provider = EXCLUDED.provider, model = EXCLUDED.model,
+        updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at
+"""
+_LIST_CONNECTION_ROLES_SQL = """
+    SELECT role, provider, model, updated_by, updated_at
+    FROM project_connections WHERE project_id = %s
+"""
+_PUT_CONNECTION_SECRET_SQL = """
+    INSERT INTO connection_secrets (project_id, provider, ciphertext, set_by, set_at)
+    VALUES (%s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, provider) DO UPDATE SET
+        ciphertext = EXCLUDED.ciphertext, set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at
+"""
+_HAS_CONNECTION_SECRET_SQL = (
+    "SELECT 1 FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_GET_CONNECTION_SECRET_SQL = (
+    "SELECT ciphertext FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_DELETE_CONNECTION_SECRET_SQL = (
+    "DELETE FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_LIST_CONNECTION_SECRETS_SQL = """
+    SELECT provider, set_by, set_at FROM connection_secrets WHERE project_id = %s
 """
 _PURGE_LOGIN_STATES_SQL = "DELETE FROM login_states WHERE expires_at <= to_timestamp(%s)"
 _PURGE_SESSIONS_SQL = "DELETE FROM sessions WHERE expires_at <= to_timestamp(%s)"
@@ -608,6 +831,61 @@ _UPDATE_SESSION_ROLES_SQL = """
     WHERE id = %s
 """
 _DELETE_SESSION_SQL = "DELETE FROM sessions WHERE id = %s"
+_SESSION_FOR_LOGIN_SQL = """
+    SELECT id, user_id, login, avatar_url, token_enc,
+           extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from absolute_expires_at)::float8,
+           extract(epoch from last_used_at)::float8, role_cache
+    FROM sessions
+    WHERE login = %s AND expires_at > to_timestamp(%s) AND absolute_expires_at > to_timestamp(%s)
+    ORDER BY last_used_at DESC LIMIT 1
+"""
+_LIST_COMMENTS_SQL = """
+    SELECT issue_number, author, body FROM comments
+    WHERE project_id = %s AND issue_number = ANY(%s)
+    ORDER BY created_at, id
+"""
+_DELETE_USER_SUBSCRIPTIONS_SQL = """
+    DELETE FROM push_subscriptions WHERE project_id = %s AND login = %s AND endpoint <> %s
+"""
+_UPSERT_SUBSCRIPTION_SQL = """
+    INSERT INTO push_subscriptions (login, project_id, endpoint, p256dh, auth)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (project_id, endpoint) DO UPDATE SET
+        login = excluded.login, p256dh = excluded.p256dh, auth = excluded.auth
+"""
+_DELETE_SUBSCRIPTION_SQL = "DELETE FROM push_subscriptions WHERE endpoint = %s"
+_DELETE_OWN_SUBSCRIPTION_SQL = """
+    DELETE FROM push_subscriptions
+    WHERE endpoint = %s AND login = %s AND (%s::bigint IS NULL OR project_id = %s)
+"""
+_LIST_SUBSCRIPTIONS_SQL = """
+    SELECT login, endpoint, p256dh, auth FROM push_subscriptions WHERE project_id = %s
+"""
+_GET_PREFS_SQL = "SELECT kinds FROM notify_prefs WHERE project_id = %s AND login = %s"
+_SET_PREFS_SQL = """
+    INSERT INTO notify_prefs (login, project_id, kinds) VALUES (%s, %s, %s)
+    ON CONFLICT (login, project_id) DO UPDATE SET kinds = excluded.kinds
+"""
+_CREATE_API_TOKEN_SQL = """
+    INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+    RETURNING id
+"""
+_GET_API_TOKEN_SQL = """
+    SELECT id, login, project_id, role, token_hash, token_enc,
+           extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from revoked_at)::float8
+    FROM api_tokens WHERE token_hash = %s
+"""
+_REVOKE_API_TOKEN_SQL = """
+    UPDATE api_tokens SET revoked_at = to_timestamp(%s)
+    WHERE id = %s AND login = %s AND project_id = %s AND revoked_at IS NULL
+"""
+_API_TOKEN_FIELDS = (
+    "id", "login", "project_id", "role", "token_hash", "token_enc",
+    "created_at", "expires_at", "revoked_at",
+)
 _SESSION_FIELDS = (
     "id", "user_id", "login", "avatar_url", "token_enc",
     "created_at", "expires_at", "absolute_expires_at", "last_used_at", "role_cache",
@@ -822,7 +1100,8 @@ class PgStore:
                 conn.execute(
                     _INSERT_AUDIT_SQL,
                     (project_id, rec["actor_login"], rec["action"], rec["issue_number"],
-                     rec["result"], rec["detail"], rec.get("idempotency_key"), rec["created_at"]),
+                     rec["result"], rec["detail"], rec.get("idempotency_key"), rec["created_at"],
+                     rec.get("via")),
                 )
 
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
@@ -830,7 +1109,7 @@ class PgStore:
             rows = conn.execute(_LIST_AUDIT_SQL, (project_id, issue_number)).fetchall()
         return [
             {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
-             "detail": r[4], "created_at": _iso(r[5])}
+             "detail": r[4], "via": r[6], "created_at": _iso(r[5])}
             for r in rows
         ]
 
@@ -878,6 +1157,49 @@ class PgStore:
             row = conn.execute(_PROJECT_COST_SQL, (project_id,)).fetchone()
         return {"usd": float(row[0]), "tokens_in": int(row[1]), "tokens_out": int(row[2]),
                 "runs": int(row[3])}
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_PUT_CONNECTION_ROLE_SQL, (project_id, role, provider, model, actor, now))
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_CONNECTION_ROLES_SQL, (project_id,)).fetchall()
+        return {
+            r[0]: {"provider": r[1], "model": r[2], "updated_by": r[3], "updated_at": _iso(r[4])}
+            for r in rows
+        }
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                replaced = conn.execute(
+                    _HAS_CONNECTION_SECRET_SQL, (project_id, provider)
+                ).fetchone() is not None
+                conn.execute(
+                    _PUT_CONNECTION_SECRET_SQL, (project_id, provider, ciphertext, actor, now)
+                )
+        return replaced
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_CONNECTION_SECRET_SQL, (project_id, provider)).fetchone()
+        return row[0] if row else None
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_DELETE_CONNECTION_SECRET_SQL, (project_id, provider))
+        return cur.rowcount > 0
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_CONNECTION_SECRETS_SQL, (project_id,)).fetchall()
+        return {r[0]: {"set_by": r[1], "set_at": _iso(r[2])} for r in rows}
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -931,3 +1253,70 @@ class PgStore:
         with self._conn() as conn:
             with conn.transaction():
                 conn.execute(_DELETE_SESSION_SQL, (session_id,))
+
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_SESSION_FOR_LOGIN_SQL, (login, now, now)).fetchone()
+        return dict(zip(_SESSION_FIELDS, row)) if row else None
+
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_COMMENTS_SQL, (project_id, issue_numbers)).fetchall()
+        return [{"issue_number": r[0], "author": r[1], "body": r[2]} for r in rows]
+
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_DELETE_USER_SUBSCRIPTIONS_SQL, (project_id, login, endpoint))
+                conn.execute(_UPSERT_SUBSCRIPTION_SQL, (login, project_id, endpoint, p256dh, auth))
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                if login is None:
+                    conn.execute(_DELETE_SUBSCRIPTION_SQL, (endpoint,))
+                else:
+                    conn.execute(
+                        _DELETE_OWN_SUBSCRIPTION_SQL, (endpoint, login, project_id, project_id)
+                    )
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_SUBSCRIPTIONS_SQL, (project_id,)).fetchall()
+        return [{"login": r[0], "endpoint": r[1], "p256dh": r[2], "auth": r[3]} for r in rows]
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_PREFS_SQL, (project_id, login)).fetchone()
+        return dict(row[0]) if row else None
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_SET_PREFS_SQL, (login, project_id, Jsonb(kinds)))
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(
+                    _CREATE_API_TOKEN_SQL,
+                    (rec["login"], rec["project_id"], rec["role"], rec["token_hash"],
+                     rec["token_enc"], rec["created_at"], rec["expires_at"]),
+                ).fetchone()
+        return row[0]
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_API_TOKEN_SQL, (token_hash,)).fetchone()
+        return dict(zip(_API_TOKEN_FIELDS, row)) if row else None
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_REVOKE_API_TOKEN_SQL, (now, token_id, login, project_id))
+                return cur.rowcount == 1

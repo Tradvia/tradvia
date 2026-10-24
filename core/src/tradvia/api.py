@@ -16,7 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, NamedTuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from starlette.applications import Starlette
@@ -52,6 +52,7 @@ from .actions import (
     required_checks,
 )
 from .auth import (
+    API_TOKEN_DEFAULT_DAYS,
     CSRF_HEADER,
     SESSION_COOKIE,
     STATE_COOKIE,
@@ -60,10 +61,13 @@ from .auth import (
     AuthError,
     GitHubIdentity,
     PolicyUnreadable,
+    Session,
     load_config,
 )
+from . import pending, push
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
+from .connections import Connections, ConnectionInputError
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -83,6 +87,9 @@ MAX_DIFF = 200_000
 MAX_DEPLOY_RUNS = 20
 MAX_COMMENT = 500
 CHAT_HISTORY = 100
+VIA_API_TOKEN = "api_token"
+# What a bearer API token may do (ADR 0009); everything else needs a signed-in session.
+TOKEN_ACTIONS = ("create_card", "start_card")
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -105,6 +112,33 @@ NOT_FOUND_MESSAGE = {
     "post_deploy": "The deploy-oci workflow was not found in this project.",
 }
 MAX_PER_PAGE = 100
+MAX_ENDPOINT = 2048
+MAX_KEY = 256
+_KEY_B64 = re.compile(r"[A-Za-z0-9_=-]+")
+_IP_HOST = re.compile(r"[\d.]+|\[.*\]")
+
+
+def parse_subscription(data: dict[str, Any]) -> tuple[str, str, str]:
+    """`(endpoint, p256dh, auth)` of a browser `PushSubscription`, or ActionError.
+
+    The server later POSTs to the endpoint, so only a public https host name is accepted
+    (no IP literal, no localhost or single-label name): the endpoint is a request target.
+    """
+    endpoint, keys = data.get("endpoint"), data.get("keys")
+    if not isinstance(endpoint, str) or not isinstance(keys, dict):
+        raise ActionError("endpoint and keys are required")
+    url = urlsplit(endpoint)
+    host = (url.hostname or "").lower()
+    if (
+        len(endpoint) > MAX_ENDPOINT or url.scheme != "https" or url.username or url.password
+        or "." not in host or host.endswith(".localhost") or _IP_HOST.fullmatch(host)
+    ):
+        raise ActionError("endpoint must be a public https URL")
+    p256dh, auth_key = keys.get("p256dh"), keys.get("auth")
+    for value in (p256dh, auth_key):
+        if not isinstance(value, str) or not value or len(value) > MAX_KEY or not _KEY_B64.fullmatch(value):
+            raise ActionError("keys.p256dh and keys.auth must be base64url text")
+    return endpoint, p256dh, auth_key
 
 
 class Upstream(NamedTuple):
@@ -261,10 +295,13 @@ def create_app(
     chat_model: orchestrator.Model | None = None,
     chat_runner: Callable[..., Any] | None = None,
     spawn: Callable[[Callable[[], None]], None] | None = None,
+    push_sender: push.Sender | None = None,
 ) -> Starlette:
     """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
     background thread of the orchestrator conversation (tests inject fakes)."""
     fetch = fetch or default_fetch
+    # Web Push is off unless both VAPID keys are set (or a sender is injected, in tests).
+    sender: push.Sender | None = push_sender or push.default_sender()
     webhook_secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
     db: Store | None = store
     if db is None and os.environ.get("DATABASE_URL"):
@@ -272,6 +309,11 @@ def create_app(
     # Sign-in is off unless client id, client secret and secret key are all set.
     auth_config = load_config()
     auth = Auth(auth_config, db, identity, clock) if auth_config and db is not None else None
+    connections = None
+    if auth is not None:
+        # GitHub Actions delivery needs the three secrets calls; a client without them skips it.
+        has_secrets_api = hasattr(auth.github, "put_actions_secret")
+        connections = Connections(db, auth.keys, auth.github if has_secrets_api else None, clock)
     repos = registered_projects()
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -436,12 +478,51 @@ def create_app(
             return JSONResponse({"error": "storage not configured"}, status_code=503)
         try:
             project_id = await run_in_threadpool(project_id_of, repo)
-            await run_in_threadpool(db.apply, project_id, delivery, event, ops)
+            before = await run_in_threadpool(pending_before, project_id, ops)
+            applied = await run_in_threadpool(db.apply, project_id, delivery, event, ops)
         except StoreUnavailable:
             return JSONResponse({"error": "storage unavailable"}, status_code=503)
         except Exception:  # never log or echo: payloads and DSNs may be sensitive
             return JSONResponse({"error": "internal error"}, status_code=500)
+        if applied and before is not None:
+            try:  # a push failure must never change the answer to GitHub
+                await run_in_threadpool(push_entered, repo, project_id, ops, before)
+            except Exception:
+                pass
         return accepted  # also for duplicate deliveries
+
+    def pending_before(project_id: int, ops: list[Any]) -> dict[int, str] | None:
+        """Pending kinds of the cards a delivery touches, before it is applied (None: no push)."""
+        assert db is not None
+        if sender is None:
+            return None
+        try:
+            numbers = pending.affected_cards(ops)
+            if not numbers or not db.list_subscriptions(project_id):
+                return None
+            return pending.kinds_of(db, project_id, numbers)
+        except Exception:
+            return None
+
+    def push_entered(repo: str, project_id: int, ops: list[Any], before: dict[int, str]) -> None:
+        """Notify for the cards that entered a pending kind in this delivery."""
+        assert db is not None and sender is not None
+        after = pending.kinds_of(db, project_id, pending.affected_cards(ops))
+        entered = {n: k for n, k in after.items() if before.get(n) != k}
+        push.notify(db, sender, project_id, project_slug(repo), entered, subscriber_can(repo))
+
+    def subscriber_can(repo: str) -> Callable[[str, str], bool]:
+        """Whether a subscriber's cached role may answer a kind; fails closed without a session."""
+        def check(login: str, kind: str) -> bool:
+            if auth is None or db is None:
+                return False
+            rec = db.session_for_login(login, clock())
+            if rec is None:
+                return False
+            session = Session("", rec, 0)
+            role = auth.role_of(session, repo)
+            return pending.can_answer(auth.policy_for(session, repo, fresh=False), role, kind)
+        return check
 
     async def store_health(request: Request) -> Response:
         if db is None:
@@ -625,6 +706,9 @@ def create_app(
             return private(response)
         roles = await run_in_threadpool(lambda: [auth.role_of(session, r) for r in repos])
         can = await run_in_threadpool(lambda: [panel_rights(session, r, x) for r, x in zip(repos, roles)])
+        counts = await run_in_threadpool(
+            lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
+        )
         response = JSONResponse(
             {
                 "enabled": True,
@@ -633,19 +717,109 @@ def create_app(
                 "avatar_url": session.rec["avatar_url"],
                 "csrf": auth.csrf_token(session),
                 "projects": [
-                    {"slug": project_slug(r), "external_id": r, "role": role, **rights}
-                    for r, role, rights in zip(repos, roles, can)
+                    {"slug": project_slug(r), "external_id": r, "role": role,
+                     "pending_count": n, **rights}
+                    for r, role, rights, n in zip(repos, roles, can, counts)
                 ],
             }
         )
         set_cookie(response, SESSION_COOKIE, session.token, session.max_age)  # sliding renewal
         return private(response)
 
+    # --- pending inbox and Web Push (pending.py, push.py, ADR 0009) -------------------------
+
+    def pending_items(session: Any, repo: str, role: str | None) -> list[dict[str, Any]]:
+        """Cards waiting for this person's role; empty without a role or a readable policy."""
+        if auth is None or db is None or role is None:
+            return []
+        try:
+            policy = auth.policy_for(session, repo, fresh=False)
+            cards = pending.cards_of(db, project_id_of(repo))
+            return pending.pending_for(role, policy, cards)
+        except Exception:  # unreadable policy or storage: fail closed, the panel still works
+            return []
+
+    def pending_view(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        items = pending_items(session, repo, auth.role_of(session, repo))
+        base = f"/runs/?repo={repo}&card="
+        return Outcome(200, {
+            "count": len(items),
+            "items": [{**it, "link": f"{base}{it['number']}"} for it in items],
+        })
+
+    def push_enabled(session: Any, repo: str, data: dict[str, Any]) -> Outcome | None:
+        if sender is None:
+            return Outcome(404, {"error": "Notifications are not enabled on this server."})
+        if auth.role_of(session, repo) is None:
+            return Outcome(403, {"error": f"You have no access to {repo}."})
+        return None
+
+    def subscribe(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        refused = push_enabled(session, repo, data)
+        if refused:
+            return refused
+        try:
+            endpoint, p256dh, auth_key = parse_subscription(data)
+        except ActionError as e:
+            return Outcome(400, {"error": str(e)})
+        db.save_subscription(project_id_of(repo), session.login, endpoint, p256dh, auth_key)
+        return Outcome(200, {"ok": True})
+
+    def unsubscribe(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        endpoint = data.get("endpoint")
+        if not isinstance(endpoint, str) or len(endpoint) > MAX_ENDPOINT:
+            return Outcome(400, {"error": "endpoint is required"})
+        db.delete_subscription(endpoint, session.login, project_id_of(repo))  # only their own
+        return Outcome(200, {"ok": True})
+
+    def prefs_view(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        saved = db.get_prefs(project_id_of(repo), session.login)
+        return Outcome(200, {"kinds": {k: push.kind_enabled(saved, k) for k in pending.KINDS}})
+
+    def prefs_save(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
+        kinds = push.valid_prefs(data.get("kinds"))
+        if kinds is None:
+            return Outcome(400, {"error": "kinds must map known event kinds to true or false"})
+        pid = project_id_of(repo)
+        merged = {**(db.get_prefs(pid, session.login) or {}), **kinds}
+        db.set_prefs(pid, session.login, merged)
+        return Outcome(200, {"kinds": {k: push.kind_enabled(merged, k) for k in pending.KINDS}})
+
+    def user_route(
+        work: Callable[[Any, str, dict[str, Any]], Outcome], body: bool = False
+    ) -> Callable[[Request], Any]:
+        """A route for the signed-in person on one project; the cookie decides who."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+                if session is None:
+                    return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+                data: Any = {}
+                if body:
+                    try:
+                        data = await request.json()
+                    except ValueError:
+                        data = None
+                    if not isinstance(data, dict):
+                        return private(JSONResponse({"error": "invalid json"}, status_code=400))
+                out = await run_in_threadpool(work, session, repo, data)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
+    async def push_key(request: Request) -> Response:
+        key = push.public_key() if sender is not None else None
+        return private(JSONResponse({"key": key}))
+
     # --- panel actions with the user's own identity (actions.py, ADR 0004 phase 2) --------
 
     def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
         """What the panel may show as buttons; the routes check again on every request."""
-        rights = {"can_start": False, "can_approve": False}
+        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False}
         if role is None:
             return rights
         try:
@@ -655,6 +829,7 @@ def create_app(
         return {
             "can_start": policy.allows("start_card", role),
             "can_approve": policy.allows("approve_plan", role),
+            "can_manage_connections": policy.allows("manage_connections", role),
         }
 
     class Done(NamedTuple):
@@ -698,14 +873,14 @@ def create_app(
 
     def record_audit(
         pid: int, login: str, action: str, number: int | None, result: str, detail: str,
-        key: str | None,
+        key: str | None, via: str | None = None,
     ) -> None:
         assert db is not None
         try:
             db.append_audit(pid, {
                 "actor_login": login, "action": action, "issue_number": number,
                 "result": result, "detail": detail[:200], "idempotency_key": key,
-                "created_at": clock(),
+                "created_at": clock(), "via": via,
             })
         except Exception:  # the action already ran (or was refused): never turn that into a 500
             pass
@@ -717,9 +892,10 @@ def create_app(
         assert auth is not None and db is not None
         pid = project_id_of(repo)
         login = session.login
+        via = VIA_API_TOKEN if session.rec.get("api_token") else None
 
         def log(result: str, detail: str = "", n: int | None = number) -> None:
-            record_audit(pid, login, action, n, result, detail, key)
+            record_audit(pid, login, action, n, result, detail, key, via)
 
         try:
             access = auth.can(session, repo, interaction)
@@ -1034,17 +1210,90 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    async def caller(request: Request, bearer_ok: bool) -> tuple[Any, Response | None]:
+        """Who is calling: the session cookie or, without one, `Authorization: Bearer <token>`.
+
+        Returns `(session, None)` or `(None, error response)`. A bearer token is never a
+        fallback for a bad cookie, and it is refused where `bearer_ok` is False.
+        """
+        assert auth is not None
+        cookie = request.cookies.get(SESSION_COOKIE)
+        scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
+        use_token = cookie is None and scheme.lower() == "bearer"
+        try:
+            if use_token:
+                session = await run_in_threadpool(auth.api_session, bearer.strip())
+            else:
+                session = await run_in_threadpool(auth.session_from, cookie)
+        except Exception:
+            return None, private(_store_unavailable())
+        if session is None:
+            message = (
+                "Invalid, expired or revoked API token." if use_token else "Sign in with GitHub first."
+            )
+            return None, private(JSONResponse({"error": message}, status_code=401))
+        if use_token and not bearer_ok:
+            return None, private(JSONResponse(
+                {"error": "This action is not available with an API token."}, status_code=403))
+        return session, None
+
+    def token_route(revoke: bool) -> Callable[[Request], Any]:
+        """Create or revoke an API token: only with a signed-in session (cookie + CSRF)."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            try:
+                data = {} if revoke else await request.json()
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
+            role = data.get("role", "triage")
+            if isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str):
+                return private(JSONResponse(
+                    {"error": "role must be text and expires_in_days a number"}, status_code=400))
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                try:
+                    if revoke:
+                        number = request.path_params["token_id"]
+                        if not auth.revoke_api_token(session, repo, number):
+                            return Outcome(404, {"error": "Token not found."})
+                        record_audit(pid, session.login, "revoke_token", None, "ok",
+                                     f"token={number}", None)
+                        return Outcome(200, {"ok": True})
+                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days)
+                except AuthError as e:
+                    record_audit(pid, session.login, "create_token", None, "denied", str(e), None)
+                    return Outcome(e.status, {"error": str(e)})
+                record_audit(pid, session.login, "create_token", None, "ok",
+                             f"token={token_id} role={role} days={days}", None)
+                return Outcome(201, {
+                    "id": token_id, "token": raw, "role": role, "expires_at": expires_at,
+                    "login": session.login, "project": repo,
+                })
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
             if auth is None or db is None or repo not in repos:
                 return _not_found()
-            try:
-                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
-            except Exception:
-                return private(_store_unavailable())
+            session, failure = await caller(request, action in TOKEN_ACTIONS)
             if session is None:
-                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+                return failure
             key = request.headers.get(IDEMPOTENCY_HEADER)
             if key is not None and not _KEY_RE.fullmatch(key):
                 return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
@@ -1085,6 +1334,82 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    # --- project connections (connections.py, ADR 0009) --------------------------------------
+    # Never log or echo the request body here: it carries the secret.
+
+    def manage_connections(
+        session: Any, repo: str, kind: str, params: dict[str, Any], data: dict[str, Any]
+    ) -> Outcome:
+        assert auth is not None and db is not None and connections is not None
+        pid, login = project_id_of(repo), session.login
+        action = {
+            "get": "view_connections", "role": "set_connection",
+            "secret_put": "secret_set", "secret_delete": "secret_remove",
+        }[kind]
+        try:
+            access = auth.can(session, repo, "manage_connections")
+        except PolicyUnreadable as e:
+            record_audit(pid, login, action, None, "denied", "policy unreadable", None)
+            return Outcome(403, {"error": str(e)})
+        except PolicyError as e:
+            record_audit(pid, login, action, None, "denied", "invalid policy", None)
+            return Outcome(403, {"error": f"Invalid .tradvia.yml, so the action is refused: {e}"})
+        except Exception:
+            record_audit(pid, login, action, None, "failed", "role check failed", None)
+            return Outcome(502, {"error": "Could not check your permission on GitHub."})
+        if not access.allowed:
+            record_audit(pid, login, action, None, "denied",
+                         f"role {access.role or 'none'} below admin", None)
+            who = f"Your role in {repo} is '{access.role}'" if access.role else f"You have no access to {repo}"
+            return Outcome(403, {"error": f"{who}; managing connections needs the 'admin' role."})
+        defaults = access.policy.providers if access.policy else {}
+        token = auth.user_token(session)
+        try:
+            body: dict[str, Any] = {"ok": True}
+            if kind == "secret_put":
+                body.update(connections.set_secret(
+                    pid, login, repo, token, params["provider"], data.get("value")))
+            elif kind == "secret_delete":
+                body.update(connections.delete_secret(pid, login, repo, token, params["provider"]))
+            elif kind == "role":
+                connections.set_role(pid, login, params["role"], data.get("provider"), data.get("model"))
+            body["connections"] = connections.state(pid, defaults)
+            return Outcome(200, body)
+        except ConnectionInputError as e:
+            record_audit(pid, login, action, None, "failed", "invalid input", None)
+            return Outcome(400, {"error": str(e)})
+        except Exception:  # never echo: the message may carry the secret or the DSN
+            record_audit(pid, login, action, None, "failed", "internal error", None)
+            return Outcome(500, {"error": "internal error"})
+
+    def connections_route(kind: str) -> Callable[[Request], Any]:
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            try:
+                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+            except Exception:
+                return private(_store_unavailable())
+            if session is None:
+                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+            data: Any = {}
+            if kind in ("secret_put", "role"):
+                try:
+                    data = await request.json()
+                except ValueError:
+                    data = None
+                if not isinstance(data, dict):
+                    return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            try:
+                out = await run_in_threadpool(
+                    manage_connections, session, repo, kind, dict(request.path_params), data
+                )
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     def read_card(session: Any, repo: str, number: int) -> Outcome:
         assert auth is not None and db is not None
         role = auth.role_of(session, repo)
@@ -1108,10 +1433,10 @@ def create_app(
         repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
         if auth is None or db is None or repo not in repos:
             return _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return failure
         try:
-            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
-            if session is None:
-                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
             out = await run_in_threadpool(read_card, session, repo, request.path_params["n"])
         except Exception:
             return private(_store_unavailable())
@@ -1238,6 +1563,15 @@ def create_app(
             Route("/api/auth/me", auth_me, methods=["GET"]),
             Route(WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/api/projects", projects, methods=["GET"]),
+            Route("/api/push/key", push_key, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/pending", user_route(pending_view), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/push/subscription",
+                  user_route(subscribe, body=True), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/push/subscription",
+                  user_route(unsubscribe, body=True), methods=["DELETE"]),
+            Route("/api/projects/{owner}/{repo}/push/prefs", user_route(prefs_view), methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/push/prefs",
+                  user_route(prefs_save, body=True), methods=["PUT"]),
             Route("/api/projects/{owner}/{repo}/cards", action_route("create_card", "start_card"),
                   methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/start",
@@ -1246,6 +1580,9 @@ def create_app(
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
+                  methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
@@ -1266,6 +1603,14 @@ def create_app(
                   action_route("cancel_run", "approve_deploy"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/operations/post-deploy",
                   action_route("post_deploy", "approve_deploy"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/connections", connections_route("get"),
+                  methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/connections/secrets/{provider}",
+                  connections_route("secret_put"), methods=["PUT"]),
+            Route("/api/projects/{owner}/{repo}/connections/secrets/{provider}",
+                  connections_route("secret_delete"), methods=["DELETE"]),
+            Route("/api/projects/{owner}/{repo}/connections/roles/{role}",
+                  connections_route("role"), methods=["PUT"]),
             Route("/api/store/health", store_health, methods=["GET"]),
             Route("/api/store/repos/{path:path}", store_read, methods=["GET"]),
             Route("/api/healthz", healthz, methods=["GET"]),
