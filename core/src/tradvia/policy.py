@@ -13,6 +13,8 @@ from typing import Protocol
 
 import yaml
 
+from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
+
 POLICY_FILE = ".tradvia.yml"
 ROLES = ("read", "triage", "write", "maintain", "admin")
 
@@ -39,9 +41,33 @@ class Interactions:
 
 
 @dataclass(frozen=True)
+class RiskPolicy:
+    """Per risk level: 'free' (no approval) or the minimum role that must approve."""
+
+    read: str = "free"
+    reversible_write: str = "free"
+    destructive_external: str = "maintain"
+
+
+@dataclass(frozen=True)
 class Policy:
     view: str = "inherit"
     interactions: Interactions = Interactions()
+    risk: RiskPolicy = RiskPolicy()
+
+    def risk_requirement(self, level: str) -> str | None:
+        """None when `level` runs free, else the minimum approving role. Unknown levels fail closed."""
+        if level not in RISK_LEVELS:
+            level = DESTRUCTIVE_EXTERNAL
+        value = getattr(self.risk, level)
+        return None if value == "free" else value
+
+    def allows_risk(self, level: str, role: str | None) -> bool:
+        """True when `level` is free or `role` meets its minimum approving role."""
+        required = self.risk_requirement(level)
+        if required is None:
+            return True
+        return role is not None and role in ROLES and role_rank(role) >= role_rank(required)
 
     def allows(self, interaction: str, role: str | None) -> bool:
         """True when `role` meets the minimum role of `interaction`. No role never does."""
@@ -82,7 +108,7 @@ def parse_policy(text: str | None) -> Policy:
         return Policy()
     if not isinstance(data, dict):
         raise PolicyError("top level must be a mapping")
-    unknown = sorted(str(k) for k in data if k not in ("access", "interactions"))
+    unknown = sorted(str(k) for k in data if k not in ("access", "interactions", "risk"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -96,7 +122,10 @@ def parse_policy(text: str | None) -> Policy:
     names = tuple(f.name for f in fields(Interactions))
     raw = _section(data, "interactions", names)
     interactions = Interactions(**{k: _role(v, f"interactions.{k}") for k, v in raw.items()})
-    return Policy(view=view, interactions=interactions)
+    raw_risk = _section(data, "risk", RISK_LEVELS)
+    risk = RiskPolicy(**{k: v if v == "free" else _role(v, f"risk.{k}")
+                         for k, v in raw_risk.items()})
+    return Policy(view=view, interactions=interactions, risk=risk)
 
 
 def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:
