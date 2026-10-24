@@ -56,7 +56,14 @@ interactions:
   mention_assistant: write
   live_takeover: maintain
   budget_control: admin
+budget:                    # per-card execution limits (ADR 0006)
+  max_minutes: 30
+  max_steps: 40
+  max_usd: 5.0
 ```
+
+`.tradvia.yml` also has a `budget` section (execution budgets per card, ADR 0006).
+Invalid values fall back to the safe defaults instead of failing the file.
 
 ### 3. Safety invariants
 

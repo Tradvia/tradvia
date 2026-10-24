@@ -1,6 +1,7 @@
 # Dashboard KPIs, filters and token usage
 
 What each indicator in `dashboard/index.html` measures and where every number comes from.
+Capability status and a step-by-step guide are on the dashboard's Help page (`dashboard/docs.html`, Shipped).
 
 > **Costs are estimates, not an invoice.** The dollar figures are the API-equivalent cost
 > that `claude -p` reports (`total_cost_usd`) or that LiteLLM computes for the planner. They

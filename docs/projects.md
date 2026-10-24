@@ -97,3 +97,8 @@ transaction; every query filters by `project_id`.
 
 The header has a project selector fed by `/api/projects`. It keeps `?repo=` in the URL
 and is hidden when the API is not available.
+
+Signed in, a bell shows how many cards of your projects wait for you, with the list
+per project and optional Web Push notifications per user and project; the pending
+inbox follows each project's `.tradvia.yml` roles. See
+[notifications.md](notifications.md). `?card=N` opens that card on load.
