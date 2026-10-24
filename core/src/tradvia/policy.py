@@ -8,10 +8,12 @@ It fails closed: unknown keys or invalid roles raise PolicyError.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Protocol
 
 import yaml
+
+from .connections import ConnectionInputError, validate_assignment
 
 POLICY_FILE = ".tradvia.yml"
 ROLES = ("read", "triage", "write", "maintain", "admin")
@@ -36,12 +38,17 @@ class Interactions:
     update_branch: str = "maintain"
     # Also approving, rejecting and cancelling deploys, and the post-deploy operation.
     approve_deploy: str = "maintain"
+    # Providers, models and secrets of the project (ADR 0009). Locked to admin: .tradvia.yml
+    # may not lower it, because a secret is behind it.
+    manage_connections: str = "admin"
 
 
 @dataclass(frozen=True)
 class Policy:
     view: str = "inherit"
     interactions: Interactions = Interactions()
+    # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
+    providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def allows(self, interaction: str, role: str | None) -> bool:
         """True when `role` meets the minimum role of `interaction`. No role never does."""
@@ -82,7 +89,7 @@ def parse_policy(text: str | None) -> Policy:
         return Policy()
     if not isinstance(data, dict):
         raise PolicyError("top level must be a mapping")
-    unknown = sorted(str(k) for k in data if k not in ("access", "interactions"))
+    unknown = sorted(str(k) for k in data if k not in ("access", "interactions", "providers"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -96,7 +103,26 @@ def parse_policy(text: str | None) -> Policy:
     names = tuple(f.name for f in fields(Interactions))
     raw = _section(data, "interactions", names)
     interactions = Interactions(**{k: _role(v, f"interactions.{k}") for k, v in raw.items()})
-    return Policy(view=view, interactions=interactions)
+    if interactions.manage_connections != "admin":
+        raise PolicyError("interactions.manage_connections is fixed to admin and cannot be lowered")
+    return Policy(view=view, interactions=interactions, providers=_providers(data))
+
+
+def _providers(data: dict) -> dict[str, dict[str, str]]:
+    """The optional `providers` section: `role: {provider, model}`, validated like the rest."""
+    section = data.get("providers") or {}
+    if not isinstance(section, dict):
+        raise PolicyError("'providers' must be a mapping")
+    out: dict[str, dict[str, str]] = {}
+    for role, value in section.items():
+        if not isinstance(value, dict) or sorted(map(str, value)) != ["model", "provider"]:
+            raise PolicyError(f"providers.{role}: use exactly 'provider' and 'model'")
+        try:
+            _, provider, model = validate_assignment(role, value["provider"], value["model"])
+        except ConnectionInputError as e:
+            raise PolicyError(f"providers.{role}: {e}") from None
+        out[role] = {"provider": provider, "model": model}
+    return out
 
 
 def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:

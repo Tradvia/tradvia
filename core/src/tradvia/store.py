@@ -103,6 +103,27 @@ class Store(Protocol):
     ) -> dict[str, Any] | None:
         """Newest successful entry of this actor with this key at or after `since` (epoch)."""
 
+    # Project connections (connections.py, ADR 0009). Secrets are ciphertext only.
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None: ...
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        """`{role: {provider, model, updated_by, updated_at}}`, `updated_at` as ISO text."""
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        """Insert or replace; True when it replaced an existing secret."""
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        """The ciphertext, or None."""
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool: ...
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        """`{provider: {set_by, set_at}}` only: never the ciphertext."""
+
     # Sign in (auth.py). Not project scoped. Times are epoch seconds.
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -131,6 +152,10 @@ def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
 
 
+def _epoch_iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
 class MemoryStore:
     """Tables and deliveries are keyed by `(project_id, id)`, like the Postgres primary keys."""
 
@@ -143,6 +168,8 @@ class MemoryStore:
         }
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
         self.audit: list[dict[str, Any]] = []
+        self.connection_roles: dict[tuple[int, str], dict[str, Any]] = {}
+        self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self._clock = 0
@@ -331,6 +358,47 @@ class MemoryStore:
                 and r["created_at"] >= since
             ]
         return copy.deepcopy(max(hits, key=lambda r: r["created_at"])) if hits else None
+
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None:
+        with self._lock:
+            self.connection_roles[(project_id, role)] = {
+                "provider": provider, "model": model, "updated_by": actor, "updated_at": now,
+            }
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                role: {**row, "updated_at": _epoch_iso(row["updated_at"])}
+                for (pid, role), row in self.connection_roles.items() if pid == project_id
+            }
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        with self._lock:
+            replaced = (project_id, provider) in self.connection_secrets
+            self.connection_secrets[(project_id, provider)] = {
+                "ciphertext": ciphertext, "set_by": actor, "set_at": now,
+            }
+            return replaced
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        with self._lock:
+            row = self.connection_secrets.get((project_id, provider))
+            return row["ciphertext"] if row else None
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool:
+        with self._lock:
+            return self.connection_secrets.pop((project_id, provider), None) is not None
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                provider: {"set_by": row["set_by"], "set_at": _epoch_iso(row["set_at"])}
+                for (pid, provider), row in self.connection_secrets.items() if pid == project_id
+            }
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float
@@ -524,6 +592,35 @@ _RECENT_AUDIT_KEY_SQL = """
     WHERE project_id = %s AND actor_login = %s AND idempotency_key = %s
           AND result = 'ok' AND created_at >= to_timestamp(%s)
     ORDER BY created_at DESC, id DESC LIMIT 1
+"""
+_PUT_CONNECTION_ROLE_SQL = """
+    INSERT INTO project_connections (project_id, role, provider, model, updated_by, updated_at)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, role) DO UPDATE SET
+        provider = EXCLUDED.provider, model = EXCLUDED.model,
+        updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at
+"""
+_LIST_CONNECTION_ROLES_SQL = """
+    SELECT role, provider, model, updated_by, updated_at
+    FROM project_connections WHERE project_id = %s
+"""
+_PUT_CONNECTION_SECRET_SQL = """
+    INSERT INTO connection_secrets (project_id, provider, ciphertext, set_by, set_at)
+    VALUES (%s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, provider) DO UPDATE SET
+        ciphertext = EXCLUDED.ciphertext, set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at
+"""
+_HAS_CONNECTION_SECRET_SQL = (
+    "SELECT 1 FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_GET_CONNECTION_SECRET_SQL = (
+    "SELECT ciphertext FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_DELETE_CONNECTION_SECRET_SQL = (
+    "DELETE FROM connection_secrets WHERE project_id = %s AND provider = %s"
+)
+_LIST_CONNECTION_SECRETS_SQL = """
+    SELECT provider, set_by, set_at FROM connection_secrets WHERE project_id = %s
 """
 _PURGE_LOGIN_STATES_SQL = "DELETE FROM login_states WHERE expires_at <= to_timestamp(%s)"
 _PURGE_SESSIONS_SQL = "DELETE FROM sessions WHERE expires_at <= to_timestamp(%s)"
@@ -777,6 +874,50 @@ class PgStore:
             return None
         return {"actor_login": row[0], "action": row[1], "issue_number": row[2],
                 "result": row[3], "detail": row[4]}
+
+    def put_connection_role(
+        self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_PUT_CONNECTION_ROLE_SQL, (project_id, role, provider, model, actor, now))
+
+    def list_connection_roles(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_CONNECTION_ROLES_SQL, (project_id,)).fetchall()
+        return {
+            r[0]: {"provider": r[1], "model": r[2], "updated_by": r[3], "updated_at": _iso(r[4])}
+            for r in rows
+        }
+
+    def put_connection_secret(
+        self, project_id: int, provider: str, ciphertext: str, actor: str, now: float
+    ) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                replaced = conn.execute(
+                    _HAS_CONNECTION_SECRET_SQL, (project_id, provider)
+                ).fetchone() is not None
+                conn.execute(
+                    _PUT_CONNECTION_SECRET_SQL, (project_id, provider, ciphertext, actor, now)
+                )
+        return replaced
+
+    def get_connection_secret(self, project_id: int, provider: str) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_CONNECTION_SECRET_SQL, (project_id, provider)).fetchone()
+        return row[0] if row else None
+
+    def delete_connection_secret(self, project_id: int, provider: str) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_DELETE_CONNECTION_SECRET_SQL, (project_id, provider))
+        return cur.rowcount > 0
+
+    def list_connection_secrets(self, project_id: int) -> dict[str, dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_CONNECTION_SECRETS_SQL, (project_id,)).fetchall()
+        return {r[0]: {"set_by": r[1], "set_at": _iso(r[2])} for r in rows}
 
     def put_login_state(
         self, state: str, code_verifier: str, return_path: str, expires_at: float, now: float

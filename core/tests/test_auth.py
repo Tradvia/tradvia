@@ -181,9 +181,9 @@ def test_full_flow(client, gh):
     assert data["avatar_url"].endswith("/u/7")
     assert data["projects"] == [
         {"slug": "tradvia-tradvia", "external_id": A, "role": "admin",
-         "can_start": True, "can_approve": True},
+         "can_start": True, "can_approve": True, "can_manage_connections": True},
         {"slug": "acme-widgets", "external_id": B, "role": "read",
-         "can_start": False, "can_approve": False},
+         "can_start": False, "can_approve": False, "can_manage_connections": False},
     ]
 
     out = client.post("/api/auth/logout", headers=csrf_headers(client))

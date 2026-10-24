@@ -44,6 +44,12 @@ for them. Design: ADR 0008.
    - **Deployments**: Read and write. `GET` and
      `POST /actions/runs/{id}/pending_deployments` (approve or reject; the
      person must also be a required reviewer of the environment).
+   - **Secrets**: Read and write. Project connections (ADR 0009): Tradvia reads
+     the repository public key and writes or deletes the `ANTHROPIC_API_KEY`,
+     `GEMINI_API_KEY`, `OPENAI_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` Actions
+     secrets when an admin saves or removes a provider secret. Without it the
+     secret is still saved in Tradvia and the screen says it could not be written
+     to GitHub Actions.
    - **Checks**: Read-only. `GET /commits/{sha}/check-runs`: the `core-tests`,
      `license-boundary` and `cla` checks on the PR screen and before a merge.
    - **Metadata**: Read-only (mandatory)
@@ -73,7 +79,8 @@ for them. Design: ADR 0008.
    | `TRADVIA_SECRET_KEY` | the key from step 6 |
 
    Keep them out of the repository, chat and logs. Changing `TRADVIA_SECRET_KEY`
-   signs everyone out (stored tokens can no longer be decrypted).
+   signs everyone out (stored tokens can no longer be decrypted) and makes the
+   provider secrets saved on the Connections screen unreadable: set them again.
 8. Install the App on each registered project (`TRADVIA_PROJECTS`) so the
    permission lookups work.
 

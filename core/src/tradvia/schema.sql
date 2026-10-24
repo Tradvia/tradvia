@@ -186,3 +186,25 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
 CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
+
+-- Project connections (ADR 0009): which provider and model each flow role uses, and the
+-- provider secrets. Secrets are stored encrypted only (Fernet, key derived from
+-- TRADVIA_SECRET_KEY); the plain value is never kept and never returned.
+CREATE TABLE IF NOT EXISTS project_connections (
+    project_id  bigint NOT NULL REFERENCES projects (id),
+    role        text NOT NULL CHECK (role IN ('planner', 'executor', 'reviewer', 'orchestrator')),
+    provider    text NOT NULL,
+    model       text NOT NULL,
+    updated_by  text NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS connection_secrets (
+    project_id  bigint NOT NULL REFERENCES projects (id),
+    provider    text NOT NULL,
+    ciphertext  text NOT NULL,
+    set_by      text NOT NULL,
+    set_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, provider)
+);
