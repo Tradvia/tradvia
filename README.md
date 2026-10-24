@@ -102,6 +102,10 @@ The contract is in
   capacity projections, plus the `TrackerConnector` interface —
   [PR #2](https://github.com/tradvia/tradvia/pull/2).
 
+Cards can also be created and started from scripts or the `tradvia` CLI with API
+tokens (still through the planner and plan approval); quick tasks without a plan are
+**Planned**. See [docs/programmatic-api.md](docs/programmatic-api.md).
+
 ## Develop with us — and with Tradvia
 
 Open the dev workspace in Codespaces (badge above) or a local Dev Container and
