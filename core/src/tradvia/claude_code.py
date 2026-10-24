@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Callable
+from typing import Callable, Mapping
 
+from .connections import redact
 from .llm import _parse_json
 
 PLAN_TOOLS = "Read,Glob,Grep"
@@ -78,13 +79,20 @@ def exec_max_turns() -> int:
 
 
 def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
-               runner: Callable = subprocess.run, timeout: int | None = None) -> dict:
-    """Run `claude -p` headless and return its JSON result."""
+               runner: Callable = subprocess.run, timeout: int | None = None,
+               env: Mapping[str, str] | None = None) -> dict:
+    """Run `claude -p` headless and return its JSON result.
+
+    `env` (project connection secrets, ADR 0009) goes to the subprocess only, on top of
+    the current environment. Everything this function raises or returns is redacted.
+    """
     cmd = ["claude", "-p", prompt, "--output-format", "json",
            "--max-turns", str(max_turns), "--allowedTools", allowed_tools]
+    extra = {} if env is None else {"env": {**os.environ, **env}}
+    secrets = list((env or {}).values())
     try:
         proc = runner(cmd, cwd=cwd, capture_output=True, text=True,
-                      timeout=timeout or _timeout())
+                      timeout=timeout or _timeout(), **extra)
     except FileNotFoundError:
         raise RuntimeError("Claude Code CLI not found: install it "
                            "(npm i -g @anthropic-ai/claude-code) and put `claude` on PATH") from None
@@ -93,12 +101,13 @@ def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
     try:
         data = json.loads(proc.stdout)
     except (TypeError, ValueError):
+        output = redact((proc.stderr or proc.stdout or "")[:300], secrets)
         raise RuntimeError(f"Claude Code returned invalid JSON (exit {proc.returncode}): "
-                           f"{(proc.stderr or proc.stdout or '')[:300]}") from None
+                           f"{output}") from None
     if proc.returncode != 0 or data.get("is_error"):
         if data.get("subtype") == "error_max_turns":
             raise RuntimeError(f"Claude Code stopped at the turn limit ({max_turns} turns)")
-        detail = str(data.get("result") or data.get("subtype") or "")[:300]
+        detail = redact(str(data.get("result") or data.get("subtype") or "")[:300], secrets)
         raise RuntimeError(f"Claude Code failed: {detail}")
     return data
 
