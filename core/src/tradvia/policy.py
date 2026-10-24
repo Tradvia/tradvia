@@ -39,9 +39,15 @@ class Interactions:
 
 
 @dataclass(frozen=True)
+class Stagnation:
+    repeat_limit: int = 3
+
+
+@dataclass(frozen=True)
 class Policy:
     view: str = "inherit"
     interactions: Interactions = Interactions()
+    stagnation: Stagnation = Stagnation()
 
     def allows(self, interaction: str, role: str | None) -> bool:
         """True when `role` meets the minimum role of `interaction`. No role never does."""
@@ -82,7 +88,7 @@ def parse_policy(text: str | None) -> Policy:
         return Policy()
     if not isinstance(data, dict):
         raise PolicyError("top level must be a mapping")
-    unknown = sorted(str(k) for k in data if k not in ("access", "interactions"))
+    unknown = sorted(str(k) for k in data if k not in ("access", "interactions", "stagnation"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -96,7 +102,15 @@ def parse_policy(text: str | None) -> Policy:
     names = tuple(f.name for f in fields(Interactions))
     raw = _section(data, "interactions", names)
     interactions = Interactions(**{k: _role(v, f"interactions.{k}") for k, v in raw.items()})
-    return Policy(view=view, interactions=interactions)
+
+    stagnation = Stagnation()
+    raw_stagnation = _section(data, "stagnation", ("repeat_limit",))
+    if "repeat_limit" in raw_stagnation:
+        limit = raw_stagnation["repeat_limit"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 2:
+            raise PolicyError(f"stagnation.repeat_limit must be an integer >= 2, got {limit!r}")
+        stagnation = Stagnation(repeat_limit=limit)
+    return Policy(view=view, interactions=interactions, stagnation=stagnation)
 
 
 def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:
