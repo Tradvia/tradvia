@@ -47,6 +47,15 @@ always with their own GitHub token and an audit entry. Status: 🟦 Partial,
 tested offline; it works in production once the GitHub App has the new
 permissions ([docs/github-app.md](docs/github-app.md)).
 
+**Orchestrator conversation** (ADR 0007): each project has a chat in the
+dashboard where an orchestrator agent reads the backlog, cards, plans, pull
+requests, checks and deploys, creates and edits cards, orders the backlog,
+starts cards, answers plans with an adjustment and reviews pull requests
+(`make check` on the branch). It never approves a plan, merges or deploys:
+those become pending items with a button for the human. Per-message budget,
+cost record and an audit entry per tool. Status: 🟦 Partial, tested offline
+with a scripted model; see [docs/orchestrator.md](docs/orchestrator.md).
+
 ## Architecture
 
 ```mermaid
