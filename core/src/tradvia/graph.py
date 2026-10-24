@@ -17,11 +17,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .budget import Budget, check, format_usage, warning_notice
+from .checkpoints import make_checkpointer
 from .claude_code import StagnationError
 from .integrations import Chat, GitHub
 from .llm import architect_plan
@@ -402,4 +402,4 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_conditional_edges("risk_wait", route_risk_wait, ["risk_wait", "open_pr", END])
     g.add_edge("open_pr", END)
     g.add_edge("replan_limit", END)
-    return g.compile(checkpointer=checkpointer or MemorySaver())
+    return g.compile(checkpointer=checkpointer or make_checkpointer())
