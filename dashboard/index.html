@@ -95,6 +95,16 @@
   .col.BLOCKED h3 { color: var(--bad); }
   .col.IN_REVIEW_PR h3 { color: var(--info); }
   .col.DONE h3 { color: var(--ok); }
+  .conn { display: grid; gap: 10px; }
+  .conn .providers { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+  .conn .prov { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: grid; gap: 4px; font-size: 12px; }
+  .conn .prov h4 { margin: 0; font-size: 13px; }
+  .conn .prov .row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .conn .roles { display: grid; gap: 6px; }
+  .conn .role { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+  .conn .role b { min-width: 110px; }
+  .conn select, .conn input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font: inherit; font-size: 12px; }
+  .conn button { padding: 2px 8px; font-size: 12px; }
   .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
   table { width: 100%; border-collapse: collapse; background: var(--panel); }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -140,6 +150,10 @@
     <h2 data-i18n="runs"></h2>
     <label class="sub"><input type="checkbox" id="show-skipped"> <span data-i18n="showSkipped"></span></label>
     <div id="runs"></div>
+    <div id="connections-section" hidden>
+      <h2 data-i18n="connections"></h2>
+      <div class="conn" id="connections"></div>
+    </div>
   </div>
 </main>
 
@@ -1128,6 +1142,17 @@ const I18N = {
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
     planPlusExec: "planejamento + execução", chartCost: "Custo por dia (US$)", chartTokens: "Tokens por dia",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
+    connections: "Conexões", connRoles: "Provedor e modelo por papel", connProviders: "Provedores e segredos",
+    role_planner: "Planejador", role_executor: "Executor", role_reviewer: "Revisor", role_orchestrator: "Orquestrador",
+    srcYml: "padrão .tradvia.yml", srcTradvia: "Tradvia", srcUnset: "não definido",
+    connSave: "Salvar", connChoose: "escolher…", secretLabel: "Segredo (somente escrita)",
+    secretSet: "Salvar segredo", secretReplace: "Substituir", secretRemove: "Remover",
+    secretNone: "não configurado", secretAt: "configurado em", secretBy: "por",
+    secretNote: "O valor é criptografado no servidor e nunca volta para o navegador.",
+    ghActionsOk: "gravado como secret do GitHub Actions", ghActionsFailed: "salvo, mas não foi possível gravar no GitHub Actions (o App precisa da permissão Secrets: Read and write)",
+    connFailed: "Não foi possível salvar a conexão.", provKind_cli: "CLI", provKind_ai: "IA", provKind_repository: "Repositório",
+    act_secret_set: "configurou um segredo", act_secret_replace: "substituiu um segredo",
+    act_secret_remove: "removeu um segredo", act_set_connection: "alterou uma conexão",
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
@@ -1182,6 +1207,17 @@ const I18N = {
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
     planPlusExec: "planning + execution", chartCost: "Cost per day (US$)", chartTokens: "Tokens per day",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
+    connections: "Connections", connRoles: "Provider and model per role", connProviders: "Providers and secrets",
+    role_planner: "Planner", role_executor: "Executor", role_reviewer: "Reviewer", role_orchestrator: "Orchestrator",
+    srcYml: ".tradvia.yml default", srcTradvia: "Tradvia", srcUnset: "not set",
+    connSave: "Save", connChoose: "choose…", secretLabel: "Secret (write-only)",
+    secretSet: "Save secret", secretReplace: "Replace", secretRemove: "Remove",
+    secretNone: "not configured", secretAt: "configured at", secretBy: "by",
+    secretNote: "The value is encrypted on the server and never sent back to the browser.",
+    ghActionsOk: "written as a GitHub Actions secret", ghActionsFailed: "saved, but could not be written to GitHub Actions (the App needs the Secrets: Read and write permission)",
+    connFailed: "Could not save the connection.", provKind_cli: "CLI", provKind_ai: "AI", provKind_repository: "Repository",
+    act_secret_set: "set a secret", act_secret_replace: "replaced a secret",
+    act_secret_remove: "removed a secret", act_set_connection: "changed a connection",
   },
 };
 
@@ -1622,6 +1658,136 @@ function renderRuns(runs) {
   root.append(wrap);
 }
 
+// Project connections (ADR 0009), admin only. Secrets are write-only: the field is cleared
+// after saving and the server only ever answers "configured at ... by ...".
+let connState = null;
+let connRepo = null;
+
+async function connRequest(method, path, body) {
+  const headers = { Accept: "application/json" };
+  if (method !== "GET") Object.assign(headers, { "Content-Type": "application/json", "X-Tradvia-CSRF": authState.csrf });
+  try {
+    const r = await fetch("/api/projects/" + getRepo() + "/connections" + path, {
+      method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? { ok: true, data: j } : { ok: false, error: j.error || t("connFailed") };
+  } catch (e) {
+    return { ok: false, error: t("connFailed") };
+  }
+}
+
+function sourceLabel(role) {
+  return role.source === "tradvia.yml" ? t("srcYml") : role.source === "tradvia" ? t("srcTradvia") : t("srcUnset");
+}
+
+// Sends one change; on success redraws with the state the server answered.
+async function saveConnection(root, method, path, body) {
+  root.querySelectorAll(".action-error, .conn-note").forEach((n) => n.remove());
+  root.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  const res = await connRequest(method, path, body);
+  if (!res.ok) {
+    root.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+    root.append(el("div", res.error, "msg error action-error"));
+    return;
+  }
+  connState = res.data.connections;
+  drawConnections(root);
+  if (res.data.github_actions === "ok") root.append(el("div", t("ghActionsOk"), "note conn-note"));
+  if (res.data.github_actions === "failed") root.append(el("div", t("ghActionsFailed"), "msg error conn-note"));
+}
+
+function roleRow(root, name, role, providers) {
+  const row = el("div", null, "role");
+  const prov = el("select");
+  prov.setAttribute("aria-label", t("role_" + name));
+  const model = el("select");
+  const fillModels = () => {
+    model.replaceChildren();
+    const p = providers.find((x) => x.key === prov.value);
+    (p ? p.models : []).forEach((m) => model.append(new Option(m, m)));
+  };
+  prov.append(new Option(t("connChoose"), ""));
+  providers.forEach((p) => prov.append(new Option(p.name, p.key)));
+  prov.value = role.provider || "";
+  fillModels();
+  if (role.model) model.value = role.model;
+  prov.addEventListener("change", fillModels);
+  const save = el("button", t("connSave"));
+  save.type = "button";
+  save.addEventListener("click", () => {
+    if (!prov.value || !model.value) return;
+    saveConnection(root, "PUT", "/roles/" + name, { provider: prov.value, model: model.value });
+  });
+  const origin = sourceLabel(role) + (role.source === "tradvia" && role.updated_by ? " · @" + role.updated_by : "");
+  row.append(el("b", t("role_" + name)), prov, model, save, el("span", origin, "sub"));
+  return row;
+}
+
+function providerCard(root, p) {
+  const card = el("div", null, "prov");
+  card.append(el("h4", p.name), el("div", t("provKind_" + p.kind) + " · " + p.status, "sub"), el("div", p.note, "sub"));
+  if (!p.secret) return card;
+  const configured = p.secret.configured;
+  card.append(el("div", configured
+    ? t("secretAt") + " " + fmtTime(p.secret.set_at) + " " + t("secretBy") + " @" + p.secret.set_by
+    : t("secretNone"), configured ? "ok" : "neutral"));
+  const input = el("input");
+  input.type = "password";
+  input.autocomplete = "new-password";
+  input.placeholder = t("secretLabel");
+  input.setAttribute("aria-label", p.name + " · " + t("secretLabel"));
+  const send = el("button", configured ? t("secretReplace") : t("secretSet"));
+  send.type = "button";
+  send.addEventListener("click", async () => {
+    const value = input.value;
+    input.value = ""; // never kept in the page
+    if (!value.trim()) return;
+    await saveConnection(root, "PUT", "/secrets/" + p.key, { value });
+  });
+  const row = el("div", null, "row");
+  row.append(input, send);
+  if (configured) {
+    const del = el("button", t("secretRemove"));
+    del.type = "button";
+    del.addEventListener("click", () => saveConnection(root, "DELETE", "/secrets/" + p.key));
+    row.append(del);
+  }
+  card.append(row);
+  return card;
+}
+
+function drawConnections(root) {
+  root.replaceChildren();
+  const assignable = connState.providers.filter((p) => p.models.length);
+  root.append(el("h3", t("connRoles")));
+  const roles = el("div", null, "roles");
+  ["planner", "executor", "reviewer", "orchestrator"].forEach((name) =>
+    roles.append(roleRow(root, name, connState.roles[name], assignable)));
+  root.append(roles, el("h3", t("connProviders")), el("div", t("secretNote"), "note"));
+  const grid = el("div", null, "providers");
+  connState.providers.forEach((p) => grid.append(providerCard(root, p)));
+  root.append(grid);
+}
+
+async function renderConnections() {
+  const section = document.getElementById("connections-section");
+  const me = myRights();
+  section.hidden = !(me && me.can_manage_connections);
+  if (section.hidden) { connState = null; return; }
+  const root = document.getElementById("connections");
+  if (root.contains(document.activeElement)) return; // do not wipe what someone is typing
+  if (!connState || connRepo !== getRepo()) {
+    const repo = getRepo();
+    const res = await connRequest("GET", "");
+    if (!res.ok) { root.replaceChildren(el("div", res.error, "msg error")); return; }
+    if (repo !== getRepo()) return;
+    connState = res.data.connections;
+    connRepo = repo;
+  }
+  drawConnections(root);
+}
+
 function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
@@ -1648,6 +1814,7 @@ function render() {
     renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
     renderDeploys();
     renderRuns(visibleRuns(view.runs, showSkipped));
+    renderConnections();
   }
 }
 
@@ -1660,6 +1827,7 @@ async function refresh(quiet = false) {
   if (loading) { refreshAgain = true; return; }
   loading = true;
   timelineCache.clear();
+  if (!quiet) connState = null;
   if (!quiet) {
     recentToken++;
     recentState = { status: "idle", items: [] };
