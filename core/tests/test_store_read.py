@@ -126,6 +126,26 @@ def test_issues_format_and_order(client):
     assert body[0]["closed_at"] == "2026-02-01T00:00:00Z"
 
 
+def test_issues_carry_the_agent_last_marker(store):
+    # #87: the agent's own last word on a card, surfaced for the dashboard's board state,
+    # alongside (never instead of) the comment from another author on issue 1.
+    pid = store.ensure_project(REPO)
+    for op in payload_ops(
+        "issue_comment",
+        {
+            "issue": gh_issue(3),
+            "comment": {"id": 10, "user": {"login": "github-actions[bot]"},
+                        "body": "\U0001F534 planejamento falhou: limite semanal.",
+                        "updated_at": "2026-01-06T00:00:00Z"},
+        },
+    ):
+        getattr(store, {"issue": "upsert_issue", "comment": "upsert_comment"}[op[0]])(pid, op[1])
+    client = TestClient(create_app(store=store))
+    body = {i["number"]: i for i in client.get(f"{BASE}/issues?state=all").json()}
+    assert body[3]["tradvia_last_marker"] == "\U0001F534"
+    assert "tradvia_last_marker" not in body[1]  # issue 1's only comment is not the agent's
+
+
 def test_issues_filters(client):
     nums = lambda q: [i["number"] for i in client.get(f"{BASE}/issues?{q}").json()]  # noqa: E731
     assert nums("state=open&labels=agent:ready") == [1]

@@ -218,10 +218,21 @@ def per_page(value: str | None) -> int:
     return max(1, min(n, MAX_PER_PAGE))
 
 
-def github_issue(r: dict[str, Any], plans: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def github_issue(
+    r: dict[str, Any],
+    plans: list[dict[str, Any]] | None = None,
+    comments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     # "tradvia_plan_cost" is not a GitHub field: cost and tokens of each plan comment of the
     # agent on this card, only present when the store has any.
-    extra = {"tradvia_plan_cost": [plan_cost(p) for p in plans]} if plans else {}
+    extra: dict[str, Any] = {"tradvia_plan_cost": [plan_cost(p) for p in plans]} if plans else {}
+    # "tradvia_last_marker" is not a GitHub field either: the marker emoji (🛑🔴🟡🟠⛔🟢)
+    # leading the agent's last comment, so the dashboard can tell a card the agent gave up
+    # on (🔴, BLOCKED) from one still waiting on a human, however the CI run looks (#87).
+    if comments:
+        marker = pending.last_agent_marker({"state": r["state"], "comments": comments})
+        if marker:
+            extra["tradvia_last_marker"] = marker
     return {
         **extra,
         "number": r["number"],
@@ -602,7 +613,23 @@ def create_app(
             by_issue: dict[int, list[dict[str, Any]]] = {}
             for p in plans:
                 by_issue.setdefault(p["issue_number"], []).append(p)
-            return JSONResponse([github_issue(r, by_issue.get(r["number"])) for r in rows])
+            # Comments of exactly the issues this page returns: one bulk query (pending.py's
+            # own pattern), never one GitHub-style call per card.
+            try:
+                comments = await run_in_threadpool(
+                    db.list_comments, pid, sorted({r["number"] for r in rows})
+                )
+            except Exception:
+                comments = []
+            by_comment: dict[int, list[dict[str, Any]]] = {}
+            for c in comments:
+                by_comment.setdefault(c["issue_number"], []).append(c)
+            return JSONResponse(
+                [
+                    github_issue(r, by_issue.get(r["number"]), by_comment.get(r["number"]))
+                    for r in rows
+                ]
+            )
         if resource == "pulls":
             return JSONResponse([github_pull(r) for r in rows])
         return JSONResponse(

@@ -217,6 +217,28 @@ def test_a_cancelled_or_timed_out_run_is_also_blocked():
         assert _state(run_) == "BLOCKED"
 
 
+def test_a_successful_run_is_blocked_when_the_agents_own_last_marker_is_red():
+    # #87: the run reports "success" (it caught its own planning error and exited cleanly),
+    # but the agent posted no plan — its own marker says the card is actually stuck.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    assert js(
+        "deriveCardState(card, [], [run_])", card=card,
+        run_=run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"),
+    ) == "BLOCKED"
+
+
+def test_an_in_progress_run_still_waits_for_a_human_when_a_plan_is_already_posted():
+    # #87: the same job polls for the reply, so GitHub still shows "in_progress" even
+    # though the agent already left a plan for a human to approve, reject or adjust.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F7E1"  # 🟡
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-29T12:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "WAITING_HUMAN"
+
+
 def test_a_run_still_in_progress_is_agent_working_even_after_an_earlier_failure():
     in_progress = dict(
         run("agent.yml", "Card 99", "2026-03-29T12:00:00Z"), status="in_progress", conclusion=None

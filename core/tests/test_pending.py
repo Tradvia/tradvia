@@ -120,6 +120,28 @@ def test_cards_of_reads_the_store():
     assert pending.kinds_of(db, pid, {2}) == {2: "pr_opened"}
 
 
+# --- last_agent_marker (#87: the agent's own word beats the CI run's status) ----------------
+
+@pytest.mark.parametrize(
+    "c, marker",
+    [
+        (card(20, [(AGENT, "\U0001F534 planejamento falhou: limite semanal. Nenhum plano.")]),
+         "\U0001F534"),  # 🔴 planning failed: BLOCKED even if the run is "completed success"
+        (card(21, [(AGENT, PLAN)]), None),  # plain plan text carries no marker of its own
+        (card(22, [(AGENT, "\U0001F7E1 **card** plano pronto. " + PLAN)]), "\U0001F7E1"),  # 🟡
+        (card(23, [(AGENT, "\U0001F7E0 ação precisa de aprovação")]), "\U0001F7E0"),  # 🟠
+        (card(24, [(AGENT, "\U0001F6D1 orçamento esgotado")]), "\U0001F6D1"),  # 🛑
+        (card(25, [(AGENT, "⛔ @ana não pode aprovar")]), "⛔"),  # ⛔ non-terminal
+        (card(26, [(AGENT, "\U0001F7E2 PR aberto")]), "\U0001F7E2"),  # 🟢
+        (card(27, [(AGENT, "\U0001F534 falhou"), ("ana", "ok")]), None),  # a human replied
+        (card(28, [("ana", "oi")]), None),  # the agent never spoke
+        (card(29, [(AGENT, "\U0001F534 falhou")], state="closed"), None),
+    ],
+)
+def test_last_agent_marker(c, marker):
+    assert pending.last_agent_marker(c) == marker
+
+
 def test_affected_cards():
     ops = [
         ("issue", {"number": 1}),
