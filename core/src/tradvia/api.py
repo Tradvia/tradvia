@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 from collections import OrderedDict
@@ -62,6 +63,7 @@ from .auth import (
     load_config,
 )
 from .backlog import READY_LABEL, backlog_status
+from . import orchestrator
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -80,6 +82,7 @@ DEFAULT_PER_PAGE = 30
 MAX_DIFF = 200_000
 MAX_DEPLOY_RUNS = 20
 MAX_COMMENT = 500
+CHAT_HISTORY = 100
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -255,7 +258,12 @@ def create_app(
     store: Store | None = None,
     identity: GitHubIdentity | None = None,
     clock: Callable[[], float] = time.time,
+    chat_model: orchestrator.Model | None = None,
+    chat_runner: Callable[..., Any] | None = None,
+    spawn: Callable[[Callable[[], None]], None] | None = None,
 ) -> Starlette:
+    """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
+    background thread of the orchestrator conversation (tests inject fakes)."""
     fetch = fetch or default_fetch
     webhook_secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
     db: Store | None = store
@@ -924,6 +932,108 @@ def create_app(
             return Done(None, f"post-deploy backfill={backfill} backlog={backlog}", {})
         return work
 
+    # --- orchestrator conversation (orchestrator.py, ADR 0007) ------------------------------
+
+    chat_working: set[int] = set()
+    chat_lock = threading.Lock()
+
+    def start_thread(job: Callable[[], None]) -> None:
+        threading.Thread(target=job, name="orchestrator", daemon=True).start()
+
+    def work_chat(session: Any, repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            text, refs = orchestrator.parse_message(data)
+            pid = project_id_of(repo)
+            with chat_lock:
+                if pid in chat_working:
+                    raise Conflict("The orchestrator is still working on the previous message.")
+                chat_working.add(pid)
+            ctx = orchestrator.ToolContext(
+                store=db, project_id=pid, repo=repo, github=auth.github, token=token,
+                login=session.login, runner=chat_runner or subprocess.run,
+                cwd=orchestrator.runner_dir(repo), clock=clock,
+            )
+
+            def job() -> None:
+                try:
+                    orchestrator.run(ctx, chat_model)
+                except Exception:  # never leave the conversation silent
+                    try:
+                        db.append_message(pid, {"author": orchestrator.AUTHOR, "kind": "warning",
+                                                "text": "The orchestrator run failed."})
+                    except Exception:
+                        pass
+                finally:
+                    with chat_lock:
+                        chat_working.discard(pid)
+
+            try:
+                message = db.append_message(pid, {
+                    "author": session.login, "kind": "message", "text": text, "refs": refs})
+                (spawn or start_thread)(job)
+            except BaseException:
+                with chat_lock:
+                    chat_working.discard(pid)
+                raise
+            return Done(None, "message", {"message_id": message["id"]})
+        return work
+
+    async def chat_post(request: Request) -> Response:
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        try:
+            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+        except Exception:
+            return private(_store_unavailable())
+        if session is None:
+            return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+        key = request.headers.get(IDEMPOTENCY_HEADER)
+        if key is not None and not _KEY_RE.fullmatch(key):
+            return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+        try:
+            data = await request.json()
+        except ValueError:
+            data = {}
+        if not isinstance(data, dict):
+            return private(JSONResponse({"error": "invalid json"}, status_code=400))
+        try:
+            # The ADR 0004 interaction of starting a card: whoever may start work may talk to
+            # the agent that starts it.
+            out = await run_in_threadpool(
+                perform, session, repo, "chat", "start_card", None, key, work_chat(session, repo, data)
+            )
+        except Exception:
+            return private(_store_unavailable())
+        status = 202 if out.status == 200 and "message_id" in out.body else out.status
+        return private(JSONResponse(out.body, status_code=status))
+
+    def read_chat(session: Any, repo: str) -> Outcome:
+        assert auth is not None and db is not None
+        role = auth.role_of(session, repo)
+        if role is None:
+            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+        pid = project_id_of(repo)
+        return Outcome(200, {
+            "messages": db.list_messages(pid, CHAT_HISTORY),
+            "working": pid in chat_working,
+            "cost": db.project_cost(pid),
+            "can_chat": panel_rights(session, repo, role)["can_start"],
+        })
+
+    async def chat_history(request: Request) -> Response:
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        try:
+            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
+            if session is None:
+                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+            out = await run_in_threadpool(read_chat, session, repo)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
@@ -1137,6 +1247,8 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}/files/{path:path}/diff",
                   read_route("diff"), methods=["GET"]),
