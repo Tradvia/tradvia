@@ -14,6 +14,7 @@ import sys
 
 from langgraph.types import Command
 
+from .checkpoints import LOCAL_PROJECT_ID, fork, list_checkpoints, make_checkpointer, thread_config
 from .claude_code import ClaudeCodeExecutor, claude_code_plan
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
@@ -68,6 +69,41 @@ def make_executor(kind: str | None = None):
     sys.exit(f"Unknown TRADVIA_EXECUTOR {kind!r}: use claude-code or note")
 
 
+def project_id_of(repo: str) -> int:
+    """Project of the repository, as the API resolves it; a fixed local id without a database."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return LOCAL_PROJECT_ID
+    from .store import PgStore
+
+    return PgStore(url).ensure_project(repo)
+
+
+def _durable_command(argv: list[str], name: str) -> None:
+    parser = argparse.ArgumentParser(prog=f"tradvia {name}")
+    parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
+    if name == "fork":
+        parser.add_argument("--checkpoint", required=True, help="checkpoint id from `history`")
+    args = parser.parse_args(argv)
+    load_dotenv()
+
+    repo = env("TRADVIA_REPO")
+    project_id = project_id_of(repo)
+    config = thread_config(project_id, repo, args.issue)
+    app = build_graph(None, None, checkpointer=make_checkpointer())
+    try:
+        if name == "history":
+            print(f"thread {config['configurable']['thread_id']}")
+            for r in list_checkpoints(app, config, project_id):
+                print(f"{r['step']!s:>4}  {r['node'] or '-':<24} {r['status'] or '-':<14} "
+                      f"{r['created_at']}  {r['checkpoint_id']}")
+        else:
+            out = fork(app, config, args.checkpoint, project_id)
+            print(f"forked {out['thread_id']} from checkpoint {out['checkpoint_id']}")
+    except ValueError as e:
+        sys.exit(str(e))
+
+
 def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     github = GitHubREST(env("GITHUB_TOKEN"), env("TRADVIA_REPO"),
                         os.getenv("TRADVIA_BASE_BRANCH", "main"))
@@ -89,11 +125,22 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         return not_started
 
     chat = make_chat(chat_kind, issue, policy)
-    app = build_graph(github, chat, planner=make_planner(), executor=make_executor())
+    repo = env("TRADVIA_REPO")
+    app = build_graph(github, chat, planner=make_planner(), executor=make_executor(),
+                      checkpointer=make_checkpointer())
 
-    config = {"configurable": {"thread_id": card_id}}
-    result = app.invoke({"id": card_id, "status": "BACKLOG",
-                         "source": {"provider": "github", "issue_number": issue}}, config)
+    config = thread_config(project_id_of(repo), repo, issue)
+    snapshot = app.get_state(config)
+    pending = [i for t in snapshot.tasks for i in t.interrupts]
+    if snapshot.next and pending:
+        print(f"↻ {card_id} resumes from its last checkpoint (waiting for a human)", flush=True)
+        result = {**snapshot.values, "__interrupt__": pending}
+    elif snapshot.next:
+        print(f"↻ {card_id} resumes from its last checkpoint", flush=True)
+        result = app.invoke(None, config)
+    else:
+        result = app.invoke({"id": card_id, "status": "BACKLOG",
+                             "source": {"provider": "github", "issue_number": issue}}, config)
 
     while result.get("__interrupt__"):
         pending = result["__interrupt__"][0].value
@@ -120,6 +167,9 @@ def main() -> None:
 
         load_dotenv()
         backlog_main(argv=sys.argv[2:])
+        return
+    if sys.argv[1:2] in (["history"], ["fork"]):
+        _durable_command(sys.argv[2:], sys.argv[1])
         return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
