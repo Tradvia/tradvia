@@ -103,6 +103,9 @@ class Keys:
             return HKDF(hashes.SHA256(), 32, None, info).derive(secret_key.encode())
 
         self._fernet = Fernet(base64.urlsafe_b64encode(derive(b"tradvia-token-encryption")))
+        self._secrets_fernet = Fernet(
+            base64.urlsafe_b64encode(derive(b"tradvia-connection-secrets"))
+        )
         self._csrf_key = derive(b"tradvia-csrf")
 
     def encrypt(self, plain: str) -> str:
@@ -113,6 +116,19 @@ class Keys:
 
         try:
             return self._fernet.decrypt(cipher.encode()).decode()
+        except InvalidToken:
+            return None
+
+    # Project connection secrets (connections.py): a key of their own, so the ciphertext of
+    # one kind says nothing about the other.
+    def encrypt_secret(self, plain: str) -> str:
+        return self._secrets_fernet.encrypt(plain.encode()).decode()
+
+    def decrypt_secret(self, cipher: str) -> str | None:
+        from cryptography.fernet import InvalidToken
+
+        try:
+            return self._secrets_fernet.decrypt(cipher.encode()).decode()
         except InvalidToken:
             return None
 
@@ -359,6 +375,22 @@ class HttpGitHub:
             token, "PUT", f"/repos/{repo}/pulls/{number}/merge",
             json={"merge_method": "squash", "commit_title": title, "sha": sha},
         )
+
+    # Actions secrets of the repository (connections.py, ADR 0009).
+    def get_actions_public_key(self, token: str, repo: str) -> tuple[str, str]:
+        data = self._call(token, "GET", f"/repos/{repo}/actions/secrets/public-key")
+        return data["key_id"], data["key"]
+
+    def put_actions_secret(
+        self, token: str, repo: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        self._call(
+            token, "PUT", f"/repos/{repo}/actions/secrets/{name}",
+            json={"encrypted_value": encrypted_value, "key_id": key_id},
+        )
+
+    def delete_actions_secret(self, token: str, repo: str, name: str) -> None:
+        self._call(token, "DELETE", f"/repos/{repo}/actions/secrets/{name}")
 
     def delete_branch(self, token: str, repo: str, branch: str) -> None:
         self._call(token, "DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}")
