@@ -47,6 +47,13 @@ always with their own GitHub token and an audit entry. Status: 🟦 Partial,
 tested offline; it works in production once the GitHub App has the new
 permissions ([docs/github-app.md](docs/github-app.md)).
 
+**Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
+the panel lists, per project, the cards waiting for you by role (plan ready, agent
+question, PR opened, budget or adjustment limit) with a counter in the header, and can
+send a browser or phone notification (VAPID, no paid service) that carries only the
+project, the card number and the kind of event. Status: ✅ Shipped, tested offline;
+Web Push needs the two VAPID keys on the server. Slack, WhatsApp and e-mail: 🗓️ Planned.
+
 ## Architecture
 
 ```mermaid
