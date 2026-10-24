@@ -65,6 +65,27 @@ def test_allows_needs_a_role_at_least_the_minimum():
     assert p.allows("start_card", "triage") and not p.allows("start_card", "read")
 
 
+def test_stagnation_default_and_override():
+    assert Policy().stagnation.repeat_limit == 3
+    assert parse_policy("access:\n  view: write\n").stagnation.repeat_limit == 3
+    assert parse_policy("stagnation:\n  repeat_limit: 5\n").stagnation.repeat_limit == 5
+    assert parse_policy("stagnation:\n  repeat_limit: 2\n").stagnation.repeat_limit == 2
+
+
+@pytest.mark.parametrize("text", [
+    "stagnation:\n  repeat_limit: 0\n",
+    "stagnation:\n  repeat_limit: 1\n",
+    "stagnation:\n  repeat_limit: three\n",
+    "stagnation:\n  repeat_limit: true\n",
+    "stagnation:\n  repeat_limit: 2.5\n",
+    "stagnation:\n  max: 3\n",
+    "stagnation: [3]\n",
+])
+def test_invalid_stagnation_fails_closed(text):
+    with pytest.raises(PolicyError):
+        parse_policy(text)
+
+
 class FakeGH:
     def __init__(self, file=None, roles=None, base="main"):
         self.file, self.roles, self.base = file, roles or {}, base
@@ -186,3 +207,26 @@ def test_pull_and_deploy_interactions_default_to_maintain_and_can_be_changed():
     assert p.allows("approve_deploy", "maintain") and not p.allows("approve_deploy", None)
     custom = parse_policy("interactions:\n  merge_pr: write\n  approve_deploy: admin\n")
     assert custom.allows("merge_pr", "write") and not custom.allows("approve_deploy", "maintain")
+
+
+def test_risk_defaults_and_parsing():
+    p = Policy()
+    assert (p.risk.read, p.risk.reversible_write, p.risk.destructive_external) == (
+        "free", "free", "maintain")
+    custom = parse_policy("risk:\n  reversible_write: write\n  destructive_external: admin\n")
+    assert custom.risk_requirement("reversible_write") == "write"
+    assert custom.risk_requirement("destructive_external") == "admin"
+    assert custom.risk_requirement("read") is None
+    with pytest.raises(PolicyError):
+        parse_policy("risk:\n  destructive_external: nobody\n")
+
+
+def test_budget_section_is_parsed_and_invalid_values_fall_back():
+    from tradvia.budget import Budget
+
+    assert parse_policy("access: {}\n").budget == Budget()
+    policy = parse_policy("budget:\n  max_minutes: 10\n  max_steps: -3\n  max_usd: abc\n")
+    assert policy.budget == Budget(max_minutes=10.0)
+    assert parse_policy("budget: nope\n").budget == Budget()
+    with pytest.raises(PolicyError):
+        parse_policy("budget: {}\nother: 1\n")

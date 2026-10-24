@@ -20,10 +20,14 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from .budget import Budget, check, format_usage, warning_notice
 from .checkpoints import make_checkpointer
+from .claude_code import StagnationError
 from .integrations import Chat, GitHub
 from .llm import architect_plan
-from .state import Card, transition
+from .policy import Policy, role_of
+from .risk import classify
+from .state import Card, add_usage, transition
 
 MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
 _CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
@@ -103,7 +107,27 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
-                checkpointer=None, executor=None, cwd: str = "."):
+                checkpointer=None, executor=None, cwd: str = ".",
+                policy: Policy | None = None, budget: Budget | None = None):
+    policy = policy or Policy()
+    budget = budget or Budget()
+
+    def step_usage(steps: int, cost: dict) -> dict:
+        return {"steps": steps, "minutes": (cost.get("duration_s") or 0) / 60,
+                "usd": cost.get("usd") or 0.0}
+
+    def stop_budget(card: Card, by: str) -> dict:
+        """100% of a limit: comment the consumption on the issue and wait for a human."""
+        number = card["source"]["issue_number"]
+        text = (f"🛑 **{card['id']}** — execution budget exhausted; the agent was stopped. "
+                f"{format_usage(card.get('usage'), budget)}. Raise `budget` in `.tradvia.yml` "
+                "or split the card, then restart it (remove and add the `agent:ready` label).")
+        if _chat_is_issue_thread(chat, github, number):
+            chat.post(text)
+        else:
+            github.comment(number, text)
+        return transition(card["status"], "WAITING_HUMAN", by, "Budget exhausted")
+
     def start_work(card: Card) -> dict:
         number = card["source"]["issue_number"]
         issue = github.get_issue(number)
@@ -126,6 +150,11 @@ def build_graph(github: GitHub, chat: Chat,
         feedback = [a["comment"] for a in card.get("approvals", []) if a["decision"] == "feedback"]
         if feedback:
             body += "\n\nHuman feedback to address:\n" + "\n".join(f"- {f}" for f in feedback)
+        level = check(card.get("usage"), budget)
+        if level == "stop":
+            return {"plan_error": "Budget exhausted", **stop_budget(card, "@Agent-Architect")}
+        if level == "warn":
+            body += "\n\n" + warning_notice(card.get("usage"), budget)
         try:
             p = planner(card["title"], body, card["source"]["issue_number"])
         except (RuntimeError, ValueError) as e:
@@ -146,6 +175,7 @@ def build_graph(github: GitHub, chat: Chat,
                                  "summary": p.get("summary", "")},
             "cost": p.get("_cost", {}),
             "plan_cost": p.get("_cost", {}),
+            "usage": step_usage(1 + int(p.get("_tool_calls") or 0), p.get("_cost") or {}),
         }
 
     def ask_human(card: Card) -> dict:
@@ -183,7 +213,7 @@ def build_graph(github: GitHub, chat: Chat,
     def route_after_reply(card: Card) -> str:
         last = card["approvals"][-1]["decision"]
         if last == "approved":
-            return "open_pr"
+            return "risk_gate"
         if last == "feedback":
             if sum(a["decision"] == "feedback" for a in card["approvals"]) < max_replans():
                 return "plan"
@@ -201,11 +231,69 @@ def build_graph(github: GitHub, chat: Chat,
             github.comment(number, text)
         return transition(card["status"], "WAITING_HUMAN", "@Agent-Architect", "Replan limit reached")
 
+    def _describe_action(card: Card, action: str) -> str:
+        if action == "open_pull_request":
+            number = card["source"]["issue_number"]
+            target = f" com o arquivo `{card['file_path']}`" if card.get("file_path") else ""
+            return f"criar a branch `tradvia/issue-{number}`{target} e abrir um pull request."
+        return f"executar `{action}` no card {card['id']}."
+
+    def risk_gate(card: Card) -> dict:
+        """Pass straight through when the policy says free; else announce and suspend."""
+        action = card.get("pending_action") or "open_pull_request"
+        level = classify(action)
+        required = policy.risk_requirement(level)
+        if required is None:
+            return {"risk": {"action": action, "level": level, "state": "approved"}}
+        # The gate state is keyed by the card thread and carries the project (repo) id.
+        project = getattr(github, "repo", None)
+        chat.post(f"🟠 **{card['id']}** — ação `{action}` (risco `{level}`) precisa de aprovação "
+                  f"de quem tem o papel `{required}` ou superior. Responda **Aprovado** ou "
+                  f"**Rejeitado**.\nSerá feito: {_describe_action(card, action)}")
+        return {"risk": {"project_id": project, "action": action, "level": level,
+                         "required_role": required, "state": "pending"},
+                **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                             f"Risk gate: {action} ({level}) needs {required}")}
+
+    def risk_wait(card: Card) -> dict:
+        # Separate from risk_gate so the announcement is not posted again on resume.
+        risk = card["risk"]
+        reply = interrupt({"card_id": card["id"], "project_id": risk.get("project_id"),
+                           "action": risk["action"], "required_role": risk["required_role"]})
+        by = reply.get("by", "human")
+        decision = classify_reply(reply["text"])
+        if decision == "feedback":
+            return {}  # not a decision: keep waiting
+        role = role_of(github, by)
+        if not policy.allows_risk(risk["level"], role):
+            chat.post(f"⛔ **{card['id']}** — @{by} não pode aprovar `{risk['action']}`: "
+                      f"é preciso o papel `{risk['required_role']}` ou superior. "
+                      "A ação continua suspensa.")
+            return {}
+        entry = {"by": by, "decision": decision, "comment": reply["text"],
+                 "action": risk["action"], "role": role}
+        if decision == "rejected":
+            chat.post(f"🔴 **{card['id']}** — `{risk['action']}` rejeitada por @{by}. "
+                      "Nada foi executado.")
+            return {"approvals": [entry], "risk": {**risk, "state": "rejected"},
+                    **transition(card["status"], "BACKLOG", by, "Risk gate: action rejected")}
+        return {"approvals": [entry], "risk": {**risk, "state": "approved"},
+                **transition(card["status"], "AGENT_WORKING", by, "Risk gate: action approved")}
+
+    def route_risk_gate(card: Card) -> str:
+        return "risk_wait" if card["risk"]["state"] == "pending" else "open_pr"
+
+    def route_risk_wait(card: Card) -> str:
+        return {"approved": "open_pr", "rejected": END}.get(card["risk"]["state"], "risk_wait")
+
     def open_pr(card: Card) -> dict:
         number = card["source"]["issue_number"]
         branch = f"tradvia/issue-{number}"
         files = {card["file_path"]: card["file_content"]} if card.get("file_path") else {}
-        extra, cost = "", {}
+        extra, cost, used = "", {}, {}
+        level = check(card.get("usage"), budget) if executor else "ok"
+        if level == "stop":
+            return stop_budget(card, "@Agent-Coder")
         if not executor and not files:
             why = ("o plano não trouxe `file_path` e nenhum executor está configurado "
                    "(use `TRADVIA_EXECUTOR=claude-code` com `TRADVIA_PLANNER=claude-code`)")
@@ -213,7 +301,17 @@ def build_graph(github: GitHub, chat: Chat,
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
             try:
-                run = executor.execute(card, cwd)
+                run = (executor.execute(card, cwd, budget_notice=warning_notice(card.get("usage"),
+                                                                                 budget))
+                       if level == "warn" else executor.execute(card, cwd))
+            except StagnationError as e:
+                why = (f"o agente repetiu `{e.tool}` {e.count} vezes seguidas e a nova tentativa "
+                       "com a mensagem reflexiva também falhou")
+                chat.post(f"🟡 **{card['id']}** — estagnação detectada: {why}. Nenhum PR foi "
+                          "aberto; revise o card e responda com um ajuste.")
+                return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                                  f"Stagnation: {e.tool} repeated {e.count} times, "
+                                  "reflective retry also failed")
             except RuntimeError as e:
                 why = str(e)[:300]
                 chat.post(f"🔴 **{card['id']}** — a implementação falhou: {why}. Nenhum PR foi "
@@ -231,6 +329,7 @@ def build_graph(github: GitHub, chat: Chat,
                 except ValueError:
                     blocked.append(f)
             cost = {"usd": run["cost_usd"], "duration_s": run["duration_s"]}
+            used = step_usage(1 + int(run.get("tool_calls") or 0), cost)
             if blocked or not changed:
                 if blocked:
                     why = f"alterou arquivos protegidos: {', '.join('`' + b + '`' for b in blocked)}"
@@ -241,7 +340,7 @@ def build_graph(github: GitHub, chat: Chat,
                     why = "não alterou nenhum arquivo"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto; "
                           "revise o working tree e responda com um ajuste.")
-                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
+                return {"cost": cost, "usage": used, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             files, skipped = {}, []
             for f in changed:
@@ -254,8 +353,9 @@ def build_graph(github: GitHub, chat: Chat,
             if not files:
                 why = "só alterou arquivos binários ou removidos, que não vão para o PR"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto.")
-                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
-                                                   "@Agent-Coder", f"Executor {why}")}
+                return {"cost": cost, "usage": used,
+                        **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                                     f"Executor {why}")}
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
                      f"{tokens_line(run)}")
@@ -272,13 +372,14 @@ def build_graph(github: GitHub, chat: Chat,
         body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
                 f"Card `{card['id']}` · estimated cost so far (API-equivalent): "
-                f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}{extra}")
+                f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}\n"
+                f"{format_usage(add_usage(card.get('usage'), used), budget)}{extra}")
         url = github.open_pull_request(branch, _conventional_title(card["title"]), body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
             github.comment(number, f"🤖 Pull request opened: {url}")
         chat.post(f"🟢 PR aberto para **{card['id']}**: {url}")
-        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "pull_request_url": url,
+        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "usage": used, "pull_request_url": url,
                 "plan": [{**s, "done": True} for s in card["plan"]],
                 **transition(card["status"], "IN_REVIEW_PR", "@Agent-Coder", "Pull request opened")}
 
@@ -287,6 +388,8 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_node("plan", plan)
     g.add_node("ask_human", ask_human)
     g.add_node("wait_human", wait_human)
+    g.add_node("risk_gate", risk_gate)
+    g.add_node("risk_wait", risk_wait)
     g.add_node("open_pr", open_pr)
     g.add_node("replan_limit", replan_limit)
     g.add_edge(START, "start_work")
@@ -294,7 +397,9 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_conditional_edges("plan", lambda c: END if c.get("plan_error") else "ask_human",
                             ["ask_human", END])
     g.add_edge("ask_human", "wait_human")
-    g.add_conditional_edges("wait_human", route_after_reply, ["open_pr", "plan", "replan_limit", END])
+    g.add_conditional_edges("wait_human", route_after_reply, ["risk_gate", "plan", "replan_limit", END])
+    g.add_conditional_edges("risk_gate", route_risk_gate, ["risk_wait", "open_pr"])
+    g.add_conditional_edges("risk_wait", route_risk_wait, ["risk_wait", "open_pr", END])
     g.add_edge("open_pr", END)
     g.add_edge("replan_limit", END)
     return g.compile(checkpointer=checkpointer or make_checkpointer())

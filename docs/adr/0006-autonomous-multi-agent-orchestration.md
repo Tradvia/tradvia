@@ -47,6 +47,19 @@ webhook, the backfill, `/api/store/...` and `GET /api/projects` are scoped by
 `project_id` (see `docs/projects.md`). Visibility by role depends on login
 (ADR 0004): for now every registered project is public.
 
+Phase 1 status: stagnation detection = **Shipped**; execution budgets and
+checkpointing = **Partial**; risk levels and the permission gateway = **Planned**.
+The threshold is configurable per project in `.tradvia.yml` (default 3, minimum 2;
+an invalid value fails closed like the rest of the policy):
+
+```yaml
+stagnation:
+  repeat_limit: 3
+```
+
+The monitor lives for one executor run and carries the `project_id`; nothing it
+records is shared across projects.
+
 Tradvia evolves into an event-driven orchestrator with shared state and dynamic
 discovery of capabilities, organised in four areas. Each item has a real status
 (CLAUDE.md rule 5) and is delivered as small cards through the normal flow.
@@ -83,11 +96,22 @@ Tradvia supports several topologies and picks one per task type:
 
 | Capability | What Tradvia does | Status |
 |---|---|---|
-| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Partial (workflow timeout, replan limit, cost per card) |
-| Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row stop the loop, inject a reflective error or route to a reviewer agent. | Planned |
+| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Shipped: per-card `budget` in `.tradvia.yml` (`max_minutes`, `max_steps`, `max_usd`; safe defaults 30 min, 40 steps, $5). At 80% of any limit the next prompt carries a system notice requiring a synthesis or a request for help; at 100% the agent is not called again, the issue gets a comment with the consumption and the card stays in `WAITING_HUMAN`. Usage lives on the card state and in the PR body, and is scoped by `project_id`: it never crosses projects. Invalid values fall back to the defaults (fail closed). |
+| Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row (same tool and parameters after normalization) interrupt the run and inject a reflective error; if the agent repeats again, Tradvia stops and returns the card to `WAITING_HUMAN` with the reason on the issue. Routing to a reviewer agent is not part of this delivery. | Shipped |
 | Durable execution and checkpointing | Every state change is persisted (LangGraph checkpointer on Postgres). A failure at step 14 of 15 resumes at 14; a developer can fork the state at step 10 to try another skill. | Shipped ([durable execution](../durable-execution.md)) |
-| Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Partial (plan approval gate + role policy) |
+| Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Shipped |
 | Execution sandboxing | Code and file skills run in ephemeral isolated environments per agent session (containers now, microVMs later), so autonomy never compromises the host. | Partial (GitHub runners / self-hosted runner with limits) |
+
+Risk gateway notes (`core/src/tradvia/risk.py`, `policy.py`, `graph.py`): levels are `read`,
+`reversible_write` and `destructive_external`. The default map puts reading issues/repositories at
+`read`; branches, commits, pull requests and comments at `reversible_write`; merge, delete,
+publish, deploy and external messages at `destructive_external`. The `risk:` block of
+`.tradvia.yml` sets, per level, `free` or the minimum GitHub role that approves (defaults: `read`
+and `reversible_write` free, `destructive_external` needs `maintain`). An action with no declared
+level fails closed and is treated as `destructive_external`. Before such an action the card is
+checkpointed, the chat is told what will happen, and it resumes only on approval from a person
+with the required role; rejection ends the action. Gate state is keyed by the card thread and
+carries the project id.
 
 ## Delivery order
 
@@ -95,8 +119,9 @@ Tradvia supports several topologies and picks one per task type:
    stored record, API and dashboard scoped by project, migration of today's
    single-repository data. Everything else builds on it.
 1. **Governance foundation** (makes autonomy safe, builds on what exists):
-   durable checkpointing on Postgres (shipped) → execution budgets with the 80% notice →
-   stagnation detection → risk levels on skills and the permission gateway.
+   durable checkpointing on Postgres (shipped) → execution budgets with the 80% notice
+   (shipped) → stagnation detection (shipped) → risk levels on skills and the
+   permission gateway (shipped).
 2. **Skills and context**: registry and manifests → lazy loading → compiled
    context payloads and context GC → semantic router.
 3. **Topologies**: blackboard on the Kanban (atomic claims) → event bus with

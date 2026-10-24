@@ -60,10 +60,11 @@ def make_planner(kind: str | None = None):
     sys.exit(f"Unknown TRADVIA_PLANNER {kind!r}: use claude-code, litellm or offline")
 
 
-def make_executor(kind: str | None = None):
+def make_executor(kind: str | None = None, repeat_limit: int = 3,
+                  project_id: int | str | None = None):
     kind = kind or os.getenv("TRADVIA_EXECUTOR", "")
     if kind == "claude-code":
-        return ClaudeCodeExecutor()
+        return ClaudeCodeExecutor(repeat_limit=repeat_limit, project_id=project_id)
     if kind in ("", "note"):
         return None
     sys.exit(f"Unknown TRADVIA_EXECUTOR {kind!r}: use claude-code or note")
@@ -126,9 +127,11 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
 
     chat = make_chat(chat_kind, issue, policy)
     repo = env("TRADVIA_REPO")
-    app = build_graph(github, chat, planner=make_planner(), executor=make_executor(),
-                      checkpointer=make_checkpointer())
+    app = build_graph(github, chat, planner=make_planner(), executor=make_executor(
+        repeat_limit=policy.stagnation.repeat_limit, project_id=github.repo),
+                      checkpointer=make_checkpointer(), policy=policy, budget=policy.budget)
 
+    # Checkpoints and usage are keyed by project (repository) and never cross projects.
     config = thread_config(project_id_of(repo), repo, issue)
     snapshot = app.get_state(config)
     pending = [i for t in snapshot.tasks for i in t.interrupts]
@@ -139,7 +142,7 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         print(f"↻ {card_id} resumes from its last checkpoint", flush=True)
         result = app.invoke(None, config)
     else:
-        result = app.invoke({"id": card_id, "status": "BACKLOG",
+        result = app.invoke({"id": card_id, "project_id": github.repo, "status": "BACKLOG",
                              "source": {"provider": "github", "issue_number": issue}}, config)
 
     while result.get("__interrupt__"):
@@ -170,6 +173,12 @@ def main() -> None:
         return
     if sys.argv[1:2] in (["history"], ["fork"]):
         _durable_command(sys.argv[2:], sys.argv[1])
+        return
+    if sys.argv[1:2] in (["token"], ["card"]) or sys.argv[1:2] == ["--url"]:
+        from .remote import main as remote_main
+
+        load_dotenv()
+        remote_main(argv=sys.argv[1:])
         return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
