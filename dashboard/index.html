@@ -2391,7 +2391,11 @@ document.getElementById("project").addEventListener("change", (e) => {
   history.replaceState(null, "", url);
   refresh();
 });
-document.getElementById("lang").addEventListener("change", (e) => { setPref("lang", e.target.value); });
+document.getElementById("lang").addEventListener("change", (e) => {
+  setPref("lang", e.target.value);
+  // Mirrors the choice under the plain key docs.html (a separate page) reads.
+  try { localStorage.setItem("tradvia.lang", e.target.value); } catch (err) { /* ignore */ }
+});
 window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
 detectApi().then(() => { loadAuth(); return refresh(); });
