@@ -51,6 +51,7 @@ from .actions import (
     required_checks,
 )
 from .auth import (
+    API_TOKEN_DEFAULT_DAYS,
     CSRF_HEADER,
     SESSION_COOKIE,
     STATE_COOKIE,
@@ -80,6 +81,9 @@ DEFAULT_PER_PAGE = 30
 MAX_DIFF = 200_000
 MAX_DEPLOY_RUNS = 20
 MAX_COMMENT = 500
+VIA_API_TOKEN = "api_token"
+# What a bearer API token may do (ADR 0009); everything else needs a signed-in session.
+TOKEN_ACTIONS = ("create_card", "start_card")
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -690,14 +694,14 @@ def create_app(
 
     def record_audit(
         pid: int, login: str, action: str, number: int | None, result: str, detail: str,
-        key: str | None,
+        key: str | None, via: str | None = None,
     ) -> None:
         assert db is not None
         try:
             db.append_audit(pid, {
                 "actor_login": login, "action": action, "issue_number": number,
                 "result": result, "detail": detail[:200], "idempotency_key": key,
-                "created_at": clock(),
+                "created_at": clock(), "via": via,
             })
         except Exception:  # the action already ran (or was refused): never turn that into a 500
             pass
@@ -709,9 +713,10 @@ def create_app(
         assert auth is not None and db is not None
         pid = project_id_of(repo)
         login = session.login
+        via = VIA_API_TOKEN if session.rec.get("api_token") else None
 
         def log(result: str, detail: str = "", n: int | None = number) -> None:
-            record_audit(pid, login, action, n, result, detail, key)
+            record_audit(pid, login, action, n, result, detail, key, via)
 
         try:
             access = auth.can(session, repo, interaction)
@@ -924,17 +929,90 @@ def create_app(
             return Done(None, f"post-deploy backfill={backfill} backlog={backlog}", {})
         return work
 
+    async def caller(request: Request, bearer_ok: bool) -> tuple[Any, Response | None]:
+        """Who is calling: the session cookie or, without one, `Authorization: Bearer <token>`.
+
+        Returns `(session, None)` or `(None, error response)`. A bearer token is never a
+        fallback for a bad cookie, and it is refused where `bearer_ok` is False.
+        """
+        assert auth is not None
+        cookie = request.cookies.get(SESSION_COOKIE)
+        scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
+        use_token = cookie is None and scheme.lower() == "bearer"
+        try:
+            if use_token:
+                session = await run_in_threadpool(auth.api_session, bearer.strip())
+            else:
+                session = await run_in_threadpool(auth.session_from, cookie)
+        except Exception:
+            return None, private(_store_unavailable())
+        if session is None:
+            message = (
+                "Invalid, expired or revoked API token." if use_token else "Sign in with GitHub first."
+            )
+            return None, private(JSONResponse({"error": message}, status_code=401))
+        if use_token and not bearer_ok:
+            return None, private(JSONResponse(
+                {"error": "This action is not available with an API token."}, status_code=403))
+        return session, None
+
+    def token_route(revoke: bool) -> Callable[[Request], Any]:
+        """Create or revoke an API token: only with a signed-in session (cookie + CSRF)."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            try:
+                data = {} if revoke else await request.json()
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
+            role = data.get("role", "triage")
+            if isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str):
+                return private(JSONResponse(
+                    {"error": "role must be text and expires_in_days a number"}, status_code=400))
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                try:
+                    if revoke:
+                        number = request.path_params["token_id"]
+                        if not auth.revoke_api_token(session, repo, number):
+                            return Outcome(404, {"error": "Token not found."})
+                        record_audit(pid, session.login, "revoke_token", None, "ok",
+                                     f"token={number}", None)
+                        return Outcome(200, {"ok": True})
+                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days)
+                except AuthError as e:
+                    record_audit(pid, session.login, "create_token", None, "denied", str(e), None)
+                    return Outcome(e.status, {"error": str(e)})
+                record_audit(pid, session.login, "create_token", None, "ok",
+                             f"token={token_id} role={role} days={days}", None)
+                return Outcome(201, {
+                    "id": token_id, "token": raw, "role": role, "expires_at": expires_at,
+                    "login": session.login, "project": repo,
+                })
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
             if auth is None or db is None or repo not in repos:
                 return _not_found()
-            try:
-                session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
-            except Exception:
-                return private(_store_unavailable())
+            session, failure = await caller(request, action in TOKEN_ACTIONS)
             if session is None:
-                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+                return failure
             key = request.headers.get(IDEMPOTENCY_HEADER)
             if key is not None and not _KEY_RE.fullmatch(key):
                 return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
@@ -998,10 +1076,10 @@ def create_app(
         repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
         if auth is None or db is None or repo not in repos:
             return _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return failure
         try:
-            session = await run_in_threadpool(auth.session_from, request.cookies.get(SESSION_COOKIE))
-            if session is None:
-                return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
             out = await run_in_threadpool(read_card, session, repo, request.path_params["n"])
         except Exception:
             return private(_store_unavailable())
@@ -1136,6 +1214,9 @@ def create_app(
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
+                  methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}/files/{path:path}/diff",

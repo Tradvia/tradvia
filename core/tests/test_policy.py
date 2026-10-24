@@ -203,3 +203,26 @@ def test_pull_and_deploy_interactions_default_to_maintain_and_can_be_changed():
     assert p.allows("approve_deploy", "maintain") and not p.allows("approve_deploy", None)
     custom = parse_policy("interactions:\n  merge_pr: write\n  approve_deploy: admin\n")
     assert custom.allows("merge_pr", "write") and not custom.allows("approve_deploy", "maintain")
+
+
+def test_risk_defaults_and_parsing():
+    p = Policy()
+    assert (p.risk.read, p.risk.reversible_write, p.risk.destructive_external) == (
+        "free", "free", "maintain")
+    custom = parse_policy("risk:\n  reversible_write: write\n  destructive_external: admin\n")
+    assert custom.risk_requirement("reversible_write") == "write"
+    assert custom.risk_requirement("destructive_external") == "admin"
+    assert custom.risk_requirement("read") is None
+    with pytest.raises(PolicyError):
+        parse_policy("risk:\n  destructive_external: nobody\n")
+
+
+def test_budget_section_is_parsed_and_invalid_values_fall_back():
+    from tradvia.budget import Budget
+
+    assert parse_policy("access: {}\n").budget == Budget()
+    policy = parse_policy("budget:\n  max_minutes: 10\n  max_steps: -3\n  max_usd: abc\n")
+    assert policy.budget == Budget(max_minutes=10.0)
+    assert parse_policy("budget: nope\n").budget == Budget()
+    with pytest.raises(PolicyError):
+        parse_policy("budget: {}\nother: 1\n")

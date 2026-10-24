@@ -123,9 +123,13 @@ def _cost(data: dict) -> dict:
 
 
 def claude_code_plan(title: str, body: str, number: int, runner: Callable = subprocess.run,
-                     cwd: str = ".") -> dict:
-    """Same signature and return shape as `architect_plan`, minus the single-file fields."""
-    data = run_claude(PLAN_PROMPT.format(number=number, title=title, body=body), cwd,
+                     cwd: str = ".", notice: str = "") -> dict:
+    """Same signature and return shape as `architect_plan`, minus the single-file fields.
+
+    `notice` is an optional system notice (budget warning) appended to the prompt.
+    """
+    prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
+    data = run_claude(prompt + (f"\n\n{notice}" if notice else ""), cwd,
                       PLAN_TOOLS, max_turns=plan_max_turns(), runner=runner)
     try:
         plan = _parse_json(data.get("result", ""))
@@ -138,6 +142,7 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
         raise ValueError("Claude Code plan is missing 'question'")
     plan.setdefault("summary", "")
     plan["_cost"] = _cost(data)
+    plan["_tool_calls"] = _count(data, "num_turns")
     return plan
 
 
@@ -299,10 +304,12 @@ class ClaudeCodeExecutor:
         self.runner, self.max_turns = runner, max_turns
         self.repeat_limit, self.project_id = repeat_limit, project_id
 
-    def execute(self, card: dict, cwd: str = ".") -> dict:
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
         prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
+        if budget_notice:
+            prompt += f"\n\n{budget_notice}"
         # One monitor per run: nothing is shared between cards or projects.
         monitor = StagnationMonitor(self.repeat_limit, card.get("project_id", self.project_id))
         turns = self.max_turns or exec_max_turns()
@@ -317,4 +324,5 @@ class ClaudeCodeExecutor:
         return {"changed_files": changed_files(cwd, self.runner),
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
                 "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
-                "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"], "summary": str(data.get("result", "")).strip()}
+                "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"],
+                "tool_calls": _count(data, "num_turns"), "summary": str(data.get("result", "")).strip()}
