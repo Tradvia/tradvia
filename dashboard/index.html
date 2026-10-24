@@ -23,6 +23,7 @@
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
   .controls { display: flex; gap: 8px; align-items: center; }
+  #help-link { border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
   button, select {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
@@ -113,6 +114,7 @@
   <div class="controls">
     <span id="auth" class="auth" hidden></span>
     <select id="project" aria-label="Project" hidden></select>
+    <a id="help-link" href="docs.html" data-i18n="help"></a>
     <select id="lang" aria-label="Language">
       <option value="pt">PT-BR</option>
       <option value="en">EN</option>
@@ -1077,7 +1079,7 @@ async function loadData(repo) {
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
-    title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
+    help: "Ajuda", title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
     error: "Não foi possível carregar os dados do GitHub.",
@@ -1131,7 +1133,7 @@ const I18N = {
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
-    title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
+    help: "Help", title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
     error: "Could not load data from GitHub.",
@@ -1188,6 +1190,7 @@ const I18N = {
 /* ---------- Rendering ---------- */
 
 let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
+try { const saved = localStorage.getItem("tradvia.lang"); if (saved === "pt" || saved === "en") lang = saved; } catch (err) { /* ignore */ }
 let showSkipped = false;
 let data = null;
 // auto-refresh (pure)
@@ -1727,7 +1730,11 @@ document.getElementById("project").addEventListener("change", (e) => {
   history.replaceState(null, "", url);
   refresh();
 });
-document.getElementById("lang").addEventListener("change", (e) => { lang = e.target.value; render(); });
+document.getElementById("lang").addEventListener("change", (e) => {
+  lang = e.target.value;
+  try { localStorage.setItem("tradvia.lang", lang); } catch (err) { /* ignore */ }
+  render();
+});
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
 detectApi().then(() => { loadAuth(); return refresh(); });
 </script>
