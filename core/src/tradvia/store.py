@@ -92,7 +92,8 @@ class Store(Protocol):
         """Replace the project's whole backlog in one transaction; position is the list index."""
 
     # Audit log of panel actions (api.py). `rec`: actor_login, action, issue_number | None,
-    # result ("ok", "denied" or "failed"), detail, idempotency_key | None, created_at (epoch).
+    # result ("ok", "denied" or "failed"), detail, idempotency_key | None, created_at (epoch),
+    # via (optional: "api_token" when an API token acted).
     def append_audit(self, project_id: int, rec: dict[str, Any]) -> None: ...
 
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
@@ -126,6 +127,17 @@ class Store(Protocol):
 
     def delete_session(self, session_id: str) -> None: ...
 
+    # API tokens (ADR 0009). Only the hash of the token is stored. Times are epoch seconds.
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        """`rec`: login, project_id, role, token_hash, token_enc, created_at, expires_at.
+        Returns the id."""
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        """`rec` plus `id` and `revoked_at` (None while valid), or None if unknown."""
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        """Revoke a token of this login and project. False if there is none (or already revoked)."""
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
@@ -144,6 +156,7 @@ class MemoryStore:
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
         self.audit: list[dict[str, Any]] = []
         self.sessions: dict[str, dict[str, Any]] = {}
+        self.api_tokens: dict[int, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self._clock = 0
 
@@ -314,7 +327,7 @@ class MemoryStore:
             {
                 "actor_login": r["actor_login"], "action": r["action"],
                 "issue_number": r["issue_number"], "result": r["result"],
-                "detail": r["detail"],
+                "detail": r["detail"], "via": r.get("via"),
                 "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
             }
             for r in rows
@@ -372,6 +385,28 @@ class MemoryStore:
     def delete_session(self, session_id: str) -> None:
         with self._lock:
             self.sessions.pop(session_id, None)
+
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        with self._lock:
+            token_id = len(self.api_tokens) + 1
+            self.api_tokens[token_id] = {**copy.deepcopy(rec), "id": token_id, "revoked_at": None}
+            return token_id
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        with self._lock:
+            for rec in self.api_tokens.values():
+                if rec["token_hash"] == token_hash:
+                    return copy.deepcopy(rec)
+        return None
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        with self._lock:
+            rec = self.api_tokens.get(token_id)
+            if (rec is None or rec["login"] != login or rec["project_id"] != project_id
+                    or rec["revoked_at"] is not None):
+                return False
+            rec["revoked_at"] = now
+            return True
 
 
 _INSERT_DELIVERY = (
@@ -510,11 +545,11 @@ _INSERT_BACKLOG_SQL = """
 """
 _INSERT_AUDIT_SQL = """
     INSERT INTO audit_log (project_id, actor_login, action, issue_number, result, detail,
-                           idempotency_key, created_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s))
+                           idempotency_key, created_at, via)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s)
 """
 _LIST_AUDIT_SQL = """
-    SELECT actor_login, action, issue_number, result, detail, created_at
+    SELECT actor_login, action, issue_number, result, detail, created_at, via
     FROM audit_log WHERE project_id = %s AND issue_number = %s
     ORDER BY created_at, id
 """
@@ -558,6 +593,25 @@ _UPDATE_SESSION_ROLES_SQL = """
     WHERE id = %s
 """
 _DELETE_SESSION_SQL = "DELETE FROM sessions WHERE id = %s"
+_CREATE_API_TOKEN_SQL = """
+    INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+    RETURNING id
+"""
+_GET_API_TOKEN_SQL = """
+    SELECT id, login, project_id, role, token_hash, token_enc,
+           extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from revoked_at)::float8
+    FROM api_tokens WHERE token_hash = %s
+"""
+_REVOKE_API_TOKEN_SQL = """
+    UPDATE api_tokens SET revoked_at = to_timestamp(%s)
+    WHERE id = %s AND login = %s AND project_id = %s AND revoked_at IS NULL
+"""
+_API_TOKEN_FIELDS = (
+    "id", "login", "project_id", "role", "token_hash", "token_enc",
+    "created_at", "expires_at", "revoked_at",
+)
 _SESSION_FIELDS = (
     "id", "user_id", "login", "avatar_url", "token_enc",
     "created_at", "expires_at", "absolute_expires_at", "last_used_at", "role_cache",
@@ -754,7 +808,8 @@ class PgStore:
                 conn.execute(
                     _INSERT_AUDIT_SQL,
                     (project_id, rec["actor_login"], rec["action"], rec["issue_number"],
-                     rec["result"], rec["detail"], rec.get("idempotency_key"), rec["created_at"]),
+                     rec["result"], rec["detail"], rec.get("idempotency_key"), rec["created_at"],
+                     rec.get("via")),
                 )
 
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
@@ -762,7 +817,7 @@ class PgStore:
             rows = conn.execute(_LIST_AUDIT_SQL, (project_id, issue_number)).fetchall()
         return [
             {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
-             "detail": r[4], "created_at": _iso(r[5])}
+             "detail": r[4], "via": r[6], "created_at": _iso(r[5])}
             for r in rows
         ]
 
@@ -830,3 +885,24 @@ class PgStore:
         with self._conn() as conn:
             with conn.transaction():
                 conn.execute(_DELETE_SESSION_SQL, (session_id,))
+
+    def create_api_token(self, rec: dict[str, Any]) -> int:
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(
+                    _CREATE_API_TOKEN_SQL,
+                    (rec["login"], rec["project_id"], rec["role"], rec["token_hash"],
+                     rec["token_enc"], rec["created_at"], rec["expires_at"]),
+                ).fetchone()
+        return row[0]
+
+    def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_API_TOKEN_SQL, (token_hash,)).fetchone()
+        return dict(zip(_API_TOKEN_FIELDS, row)) if row else None
+
+    def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_REVOKE_API_TOKEN_SQL, (now, token_id, login, project_id))
+                return cur.rowcount == 1
