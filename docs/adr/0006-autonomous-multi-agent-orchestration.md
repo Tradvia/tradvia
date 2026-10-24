@@ -47,6 +47,19 @@ webhook, the backfill, `/api/store/...` and `GET /api/projects` are scoped by
 `project_id` (see `docs/projects.md`). Visibility by role depends on login
 (ADR 0004): for now every registered project is public.
 
+Phase 1 status: stagnation detection = **Shipped**; execution budgets and
+checkpointing = **Partial**; risk levels and the permission gateway = **Planned**.
+The threshold is configurable per project in `.tradvia.yml` (default 3, minimum 2;
+an invalid value fails closed like the rest of the policy):
+
+```yaml
+stagnation:
+  repeat_limit: 3
+```
+
+The monitor lives for one executor run and carries the `project_id`; nothing it
+records is shared across projects.
+
 Tradvia evolves into an event-driven orchestrator with shared state and dynamic
 discovery of capabilities, organised in four areas. Each item has a real status
 (CLAUDE.md rule 5) and is delivered as small cards through the normal flow.
@@ -84,7 +97,7 @@ Tradvia supports several topologies and picks one per task type:
 | Capability | What Tradvia does | Status |
 |---|---|---|
 | Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Partial (workflow timeout, replan limit, cost per card) |
-| Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row stop the loop, inject a reflective error or route to a reviewer agent. | Planned |
+| Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row (same tool and parameters after normalization) interrupt the run and inject a reflective error; if the agent repeats again, Tradvia stops and returns the card to `WAITING_HUMAN` with the reason on the issue. Routing to a reviewer agent is not part of this delivery. | Shipped |
 | Durable execution and checkpointing | Every state change is persisted (LangGraph checkpointer on Postgres). A failure at step 14 of 15 resumes at 14; a developer can fork the state at step 10 to try another skill. | Partial (in-memory checkpointer) |
 | Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Partial (plan approval gate + role policy) |
 | Execution sandboxing | Code and file skills run in ephemeral isolated environments per agent session (containers now, microVMs later), so autonomy never compromises the host. | Partial (GitHub runners / self-hosted runner with limits) |
