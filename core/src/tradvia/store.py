@@ -104,6 +104,16 @@ class Store(Protocol):
     ) -> dict[str, Any] | None:
         """Newest successful entry of this actor with this key at or after `since` (epoch)."""
 
+    # Orchestrator conversation (orchestrator.py). `rec`: author, kind, text, refs, and for a
+    # run's last message cost_usd, tokens_in, tokens_out. Every query filters by project.
+    def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
+        """Store a message; returns it with its `id` and `created_at` (ISO string)."""
+
+    def list_messages(self, project_id: int, limit: int) -> list[dict[str, Any]]:
+        """The newest `limit` messages, oldest first."""
+
+    def project_cost(self, project_id: int) -> dict[str, Any]:
+        """`{usd, tokens_in, tokens_out, runs}` summed over the project's recorded runs."""
     # Project connections (connections.py, ADR 0009). Secrets are ciphertext only.
     def put_connection_role(
         self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
@@ -207,6 +217,7 @@ class MemoryStore:
         }
         self.backlogs: dict[int, list[dict[str, Any]]] = {}
         self.audit: list[dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = []
         self.connection_roles: dict[tuple[int, str], dict[str, Any]] = {}
         self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
@@ -401,6 +412,27 @@ class MemoryStore:
             ]
         return copy.deepcopy(max(hits, key=lambda r: r["created_at"])) if hits else None
 
+    def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            row = _message_row(
+                {**copy.deepcopy(rec), "id": len(self.messages) + 1, "project_id": project_id,
+                 "created_at": _iso(datetime.now(timezone.utc))}
+            )
+            self.messages.append(row)
+            return public_message(row)
+
+    def list_messages(self, project_id: int, limit: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [r for r in self.messages if r["project_id"] == project_id]
+        return [public_message(r) for r in rows[-limit:]] if limit > 0 else []
+
+    def project_cost(self, project_id: int) -> dict[str, Any]:
+        with self._lock:
+            rows = [r for r in self.messages
+                    if r["project_id"] == project_id and r["cost_usd"] is not None]
+        return {"usd": sum(r["cost_usd"] for r in rows),
+                "tokens_in": sum(r["tokens_in"] or 0 for r in rows),
+                "tokens_out": sum(r["tokens_out"] or 0 for r in rows), "runs": len(rows)}
     def put_connection_role(
         self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
     ) -> None:
@@ -721,6 +753,22 @@ _RECENT_AUDIT_KEY_SQL = """
           AND result = 'ok' AND created_at >= to_timestamp(%s)
     ORDER BY created_at DESC, id DESC LIMIT 1
 """
+_INSERT_MESSAGE_SQL = """
+    INSERT INTO chat_messages (project_id, author, kind, text, refs, cost_usd, tokens_in,
+                               tokens_out)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING id, created_at
+"""
+_LIST_MESSAGES_SQL = """
+    SELECT id, author, kind, text, refs, cost_usd, tokens_in, tokens_out, created_at FROM (
+        SELECT * FROM chat_messages WHERE project_id = %s ORDER BY id DESC LIMIT %s
+    ) newest ORDER BY id
+"""
+_PROJECT_COST_SQL = """
+    SELECT coalesce(sum(cost_usd), 0), coalesce(sum(tokens_in), 0),
+           coalesce(sum(tokens_out), 0), count(cost_usd)
+    FROM chat_messages WHERE project_id = %s AND cost_usd IS NOT NULL
+"""
 _PUT_CONNECTION_ROLE_SQL = """
     INSERT INTO project_connections (project_id, role, provider, model, updated_by, updated_at)
     VALUES (%s, %s, %s, %s, %s, to_timestamp(%s))
@@ -860,6 +908,24 @@ def _iso(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return value
+
+
+def _message_row(rec: dict[str, Any]) -> dict[str, Any]:
+    """A message as stored: every field present, cost fields None outside a run's last message."""
+    cost = rec.get("cost_usd")
+    return {
+        "id": rec["id"], "project_id": rec.get("project_id"), "author": rec["author"],
+        "kind": rec.get("kind") or "message", "text": rec["text"],
+        "refs": list(rec.get("refs") or []),
+        "cost_usd": float(cost) if cost is not None else None,
+        "tokens_in": rec.get("tokens_in"), "tokens_out": rec.get("tokens_out"),
+        "created_at": rec["created_at"],
+    }
+
+
+def public_message(row: dict[str, Any]) -> dict[str, Any]:
+    """What the API shows of a stored message (no project id)."""
+    return {k: copy.deepcopy(v) for k, v in row.items() if k != "project_id"}
 
 
 def load_schema() -> str:
@@ -1059,6 +1125,38 @@ class PgStore:
         return {"actor_login": row[0], "action": row[1], "issue_number": row[2],
                 "result": row[3], "detail": row[4]}
 
+    def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(
+                    _INSERT_MESSAGE_SQL,
+                    (project_id, rec["author"], rec.get("kind") or "message", rec["text"],
+                     Jsonb(list(rec.get("refs") or [])), rec.get("cost_usd"),
+                     rec.get("tokens_in"), rec.get("tokens_out")),
+                ).fetchone()
+        return public_message(_message_row({**rec, "id": row[0], "created_at": _iso(row[1])}))
+
+    def list_messages(self, project_id: int, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_MESSAGES_SQL, (project_id, limit)).fetchall()
+        return [
+            public_message(_message_row({
+                "id": r[0], "author": r[1], "kind": r[2], "text": r[3], "refs": r[4],
+                "cost_usd": r[5], "tokens_in": r[6], "tokens_out": r[7],
+                "created_at": _iso(r[8]),
+            }))
+            for r in rows
+        ]
+
+    def project_cost(self, project_id: int) -> dict[str, Any]:
+        with self._conn() as conn:
+            row = conn.execute(_PROJECT_COST_SQL, (project_id,)).fetchone()
+        return {"usd": float(row[0]), "tokens_in": int(row[1]), "tokens_out": int(row[2]),
+                "runs": int(row[3])}
     def put_connection_role(
         self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
     ) -> None:

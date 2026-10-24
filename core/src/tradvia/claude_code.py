@@ -82,15 +82,21 @@ def exec_max_turns() -> int:
 
 def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
                runner: Callable = subprocess.run, timeout: int | None = None,
-               env: Mapping[str, str] | None = None) -> dict:
+               env: Mapping[str, str] | None = None, disallowed_tools: str | None = None) -> dict:
     """Run `claude -p` headless and return its JSON result.
 
-    `env` (project connection secrets, ADR 0009) goes to the subprocess only, on top of
-    the current environment. Everything this function raises or returns is redacted.
+    `env` replaces the child's environment and `disallowed_tools` adds `--disallowedTools`;
+    both are only passed when given. `env` is used both for the orchestrator's restricted
+    environment (orchestrator.py; a full replacement so a popped key like
+    CLAUDE_CODE_OAUTH_TOKEN really is absent) and for project connection secrets (ADR 0009),
+    where the caller merges them on top of `os.environ` before passing them in. Everything
+    this function raises or returns is redacted.
     """
     cmd = ["claude", "-p", prompt, "--output-format", "json",
            "--max-turns", str(max_turns), "--allowedTools", allowed_tools]
-    extra = {} if env is None else {"env": {**os.environ, **env}}
+    if disallowed_tools:
+        cmd += ["--disallowedTools", disallowed_tools]
+    extra = {"env": env} if env is not None else {}
     secrets = list((env or {}).values())
     try:
         proc = runner(cmd, cwd=cwd, capture_output=True, text=True,

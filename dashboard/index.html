@@ -146,6 +146,19 @@
   .deploys input[type=text] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; }
   .deploys { display: grid; gap: 6px; }
   .deploys .op { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chat { display: grid; gap: 8px; }
+  .chat .log { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; max-height: 360px; overflow-y: auto; display: grid; gap: 6px; }
+  .chat .m { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 13px; overflow-wrap: anywhere; }
+  .chat .m.reply { border-color: var(--info); }
+  .chat .m.pending { border-color: var(--warn); }
+  .chat .m.warning { border-color: var(--bad); }
+  .chat .m .who { color: var(--muted); font-size: 11px; }
+  .chat .m .txt { white-space: pre-wrap; }
+  .chat .refs, .chat .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 12px; }
+  .chat .working { color: var(--info); font-size: 12px; }
+  .chat form { display: grid; gap: 4px; }
+  .chat textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; padding: 6px; }
+  .chat button { padding: 2px 8px; font-size: 12px; justify-self: start; }
   .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
   .activity li, .recent li { padding: 3px 0; }
   .when { color: var(--muted); }
@@ -214,6 +227,19 @@
     <div class="note" data-i18n="costNote"></div>
     <h2 data-i18n="board"></h2>
     <div class="board" id="board"></div>
+    <div id="chat-section" hidden>
+      <h2 data-i18n="chat"></h2>
+      <div class="chat">
+        <div class="log" id="chat-log" aria-live="polite"></div>
+        <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
+        <div class="sub" id="chat-cost"></div>
+        <form id="chat-form" hidden>
+          <textarea id="chat-input" rows="2" maxlength="2000" data-i18n-placeholder="chatHint"></textarea>
+          <button type="submit" id="chat-send" data-i18n="chatSend"></button>
+        </form>
+        <div id="chat-error" class="msg error action-error" hidden></div>
+      </div>
+    </div>
     <div id="deploys-section" hidden>
       <h2 data-i18n="deploys"></h2>
       <div class="deploys" id="deploys"></div>
@@ -1121,6 +1147,106 @@ async function renderDeploys() {
   box.append(op);
 }
 
+// Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
+// only). The agent never approves, merges or deploys: those arrive as "pending" messages with
+// a button that calls the same panel action, so the server checks the role again.
+let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+let chatToken = 0;
+const CHAT_POLL_MS = 3000;
+const CHAT_IDLE_MS = 20000;
+
+function refUrl(r) {
+  return safeGithubUrl("https://github.com/" + getRepo() + (r.type === "pr" ? "/pull/" : "/issues/") + r.number);
+}
+
+function pendingButtons(host, r) {
+  const n = r.number;
+  if (r.action === "approve_plan") {
+    return [actionButton(host, t("chatApprovePlan"), "/cards/" + n + "/reply", { decision: "approve" }),
+            actionButton(host, t("chatRejectPlan"), "/cards/" + n + "/reply", { decision: "reject" })];
+  }
+  if (r.action === "merge_pr") return [actionButton(host, t("chatMerge"), "/pulls/" + n + "/merge", {})];
+  if (r.action === "approve_deploy") return [actionButton(host, t("chatApproveDeploy"), "/deployments/" + n + "/approve", {})];
+  return [];
+}
+
+function chatMessage(m, canAct) {
+  const box = el("div", null, "m " + (m.kind === "message" ? "" : m.kind));
+  box.append(el("div", "@" + m.author + " · " + fmtTime(m.created_at), "who"));
+  box.append(el("div", m.kind === "pending" ? t("chatPendingKind") + ": " + m.text : m.text, "txt"));
+  const refs = el("div", null, "refs");
+  const acts = el("div", null, "acts");
+  (m.refs || []).forEach((r) => {
+    const href = r.type === "deploy" ? null : refUrl(r);
+    const label = t("chat_" + r.type) + " #" + r.number;
+    if (href) {
+      const a = el("a", label);
+      a.href = href; a.target = "_blank"; a.rel = "noopener";
+      refs.append(a);
+    } else refs.append(el("span", label, "sub"));
+    if (m.kind === "pending" && canAct) pendingButtons(box, r).forEach((b) => acts.append(b));
+  });
+  if (refs.children.length) box.append(refs);
+  if (acts.children.length) box.append(acts);
+  return box;
+}
+
+function renderChat() {
+  const section = document.getElementById("chat-section");
+  const mine = myRights();
+  section.hidden = !mine;
+  if (!mine) return;
+  const log = document.getElementById("chat-log");
+  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.replaceChildren();
+  if (!chatState.messages.length) log.append(el("div", t("chatEmpty"), "sub"));
+  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canChat)));
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  document.getElementById("chat-working").hidden = !chatState.working;
+  document.getElementById("chat-form").hidden = !chatState.canChat;
+  document.getElementById("chat-send").disabled = chatState.working;
+  const c = chatState.cost;
+  document.getElementById("chat-cost").textContent =
+    c && c.runs ? t("chatCost") + ": $" + Number(c.usd).toFixed(4) + " · " + c.runs : "";
+}
+
+async function loadChat() {
+  if (!myRights()) return;
+  const mineToken = ++chatToken;
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/chat");
+  if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
+  chatState = { repo, messages: res.data.messages, working: !!res.data.working,
+                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+  renderChat();
+}
+
+async function sendChat(e) {
+  e.preventDefault();
+  const input = document.getElementById("chat-input");
+  const error = document.getElementById("chat-error");
+  const text = input.value.trim();
+  if (!text) return;
+  error.hidden = true;
+  document.getElementById("chat-send").disabled = true;
+  const res = await panelRequest("POST", "/chat", { text });
+  if (res.ok) {
+    input.value = "";
+    chatState.working = true;
+  } else {
+    error.textContent = res.error || t("chatFailed");
+    error.hidden = false;
+  }
+  await loadChat();
+}
+
+document.getElementById("chat-form").addEventListener("submit", sendChat);
+setInterval(() => {
+  if (document.hidden || !myRights()) return;
+  const due = chatState.working ? CHAT_POLL_MS : CHAT_IDLE_MS;
+  if (chatState.repo !== getRepo() || Date.now() - chatState.at >= due) loadChat();
+}, CHAT_POLL_MS);
+
 // Dashboard reads: from the store when available; any failed call is retried through GH_API.
 async function getData(repo, path) {
   if (STORE_API) {
@@ -1387,6 +1513,13 @@ const I18N = {
     act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR",
     act_approve_deploy: "aprovou o deploy", act_reject_deploy: "rejeitou o deploy",
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
+    chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
+    chatHint: "Peça ao orquestrador: criar um card, revisar um PR, ajustar um plano…", chatSend: "Enviar",
+    chatEmpty: "Nenhuma mensagem ainda.", chatCost: "Custo do orquestrador neste projeto",
+    chatApprovePlan: "Aprovar plano", chatRejectPlan: "Rejeitar plano", chatMerge: "Fazer merge",
+    chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
+    chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pendência para você",
+    act_chat: "conversou com o orquestrador",
     deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído",
     cancelRun: "Cancelar", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
     pullRequest: "Pull request", pr_open: "aberto", pr_closed: "fechado", pr_merged: "mesclado",
@@ -1474,6 +1607,13 @@ const I18N = {
     act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch",
     act_approve_deploy: "approved the deploy", act_reject_deploy: "rejected the deploy",
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
+    chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
+    chatHint: "Ask the orchestrator: create a card, review a PR, adjust a plan…", chatSend: "Send",
+    chatEmpty: "No messages yet.", chatCost: "Orchestrator cost in this project",
+    chatApprovePlan: "Approve plan", chatRejectPlan: "Reject plan", chatMerge: "Merge",
+    chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
+    chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pending for you",
+    act_chat: "talked to the orchestrator",
     deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced",
     cancelRun: "Cancel", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
     pullRequest: "Pull request", pr_open: "open", pr_closed: "closed", pr_merged: "merged",
@@ -2302,6 +2442,8 @@ function renderView() {
 function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
+  document.getElementById("lang").value = lang;
   renderAuth();
   renderView();
   document.getElementById("meta").textContent =
@@ -2324,6 +2466,8 @@ function render() {
     // Card states are derived from every PR and run, not only the filtered ones.
     renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
     renderDeploys();
+    renderChat();
+    loadChat();
     renderRuns(visibleRuns(view.runs, showSkipped));
     openRequestedCard();
     renderConnections();
