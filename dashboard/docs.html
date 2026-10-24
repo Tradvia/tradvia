@@ -1,0 +1,188 @@
+<!-- SPDX-License-Identifier: FSL-1.1-ALv2 -->
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tradvia · Docs</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d37; --text: #e6e9ee;
+    --muted: #8b95a3; --ok: #3fb68b; --bad: #e5605a; --warn: #d9a441; --info: #5b9bf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--info); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header, main { max-width: 960px; margin: 0 auto; padding: 12px 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; margin: 28px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  h3 { font-size: 15px; margin: 12px 0 6px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 4px 0 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .card, ol.steps li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h3 { margin-top: 0; }
+  .card p, ol.steps li p { margin: 6px 0 0; }
+  ol.steps { padding: 0; display: grid; gap: 10px; list-style-position: inside; }
+  code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); }
+  .badge.shipped { color: var(--ok); border-color: var(--ok); }
+  .badge.in-progress { color: var(--info); border-color: var(--info); }
+  .badge.partial { color: var(--warn); border-color: var(--warn); }
+  .badge.planned { color: var(--muted); }
+  html[lang="pt-BR"] .en, html[lang="en"] .pt { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Tradvia · <span data-i18n="title"></span></h1>
+    <a id="back-link" href="./" data-i18n="back"></a>
+  </div>
+  <select id="lang" aria-label="Language">
+    <option value="pt">PT-BR</option>
+    <option value="en">EN</option>
+  </select>
+</header>
+<main>
+  <nav>
+    <a href="#capabilities" data-i18n="navCapabilities"></a>
+    <a href="#guide" data-i18n="guideTitle"></a>
+    <a href="#technical" data-i18n="navTechnical"></a>
+  </nav>
+  <p class="sub"><span class="pt">Status reais, espelhando a ADR 0007 e o README. Só o que está Shipped está disponível; In progress, Partial e Planned não são descritos como disponíveis.</span><span class="en">Real status, mirroring ADR 0007 and the README. Only Shipped means available; In progress, Partial and Planned are never described as available.</span></p>
+
+  <section id="capabilities">
+    <h2 data-i18n="navCapabilities"></h2>
+    <div class="grid">
+      <article class="card" data-capability="cards">
+        <h3><span class="pt">Cards</span><span class="en">Cards</span> <span class="badge in-progress">In progress</span></h3>
+        <p><span class="pt">Cada card é uma máquina de estados durável (contrato <code>card-state.v1.json</code>). O painel mostra o quadro a partir do store. Retomada durável de esperas (#40) é Planned.</span><span class="en">Every card is a durable state machine (<code>card-state.v1.json</code> contract). The dashboard shows the board from the store. Durable waiting and resume (#40) is Planned.</span></p>
+      </article>
+      <article class="card" data-capability="plans">
+        <h3><span class="pt">Planos</span><span class="en">Plans</span> <span class="badge in-progress">In progress</span></h3>
+        <p><span class="pt">O @Agent-Architect posta o plano na issue e pede aprovação no chat (Discord). Aprovar, rejeitar ou pedir ajuste retoma a execução.</span><span class="en">@Agent-Architect posts the plan on the issue and asks for approval in chat (Discord). Approving, rejecting or asking for changes resumes the run.</span></p>
+      </article>
+      <article class="card" data-capability="prs" data-ref="56">
+        <h3><span class="pt">Pull requests</span><span class="en">Pull requests</span> <span class="badge partial">Partial</span> <span class="sub">#56</span></h3>
+        <p><span class="pt">O card mostra o PR, os checks e o diff por arquivo; um mantenedor pode fazer squash-merge com o próprio token GitHub. Testado offline; em produção exige as permissões do GitHub App.</span><span class="en">The card shows the PR, its checks and the per-file diff; a maintainer can squash-merge with their own GitHub token. Tested offline; production needs the GitHub App permissions.</span></p>
+      </article>
+      <article class="card" data-capability="deploys" data-ref="56">
+        <h3><span class="pt">Deploys</span><span class="en">Deploys</span> <span class="badge partial">Partial</span> <span class="sub">#56</span></h3>
+        <p><span class="pt">Aprovar ou rejeitar deploys pendentes de <code>production</code>, cancelar os substituídos e rodar a operação pós-deploy, com trilha de auditoria. Mesmo status do PR: exige as permissões do GitHub App.</span><span class="en">Approve or reject pending <code>production</code> deploys, cancel replaced ones and run the post-deploy operation, with an audit entry. Same status as PRs: needs the GitHub App permissions.</span></p>
+      </article>
+      <article class="card" data-capability="backlog">
+        <h3><span class="pt">Backlog</span><span class="en">Backlog</span> <span class="badge shipped">Shipped</span> <span class="sub">#50</span></h3>
+        <p><span class="pt">Backlog por projeto, lido do store do Tradvia.</span><span class="en">Per-project backlog read from the Tradvia store.</span></p>
+      </article>
+      <article class="card" data-capability="kpis">
+        <h3><span class="pt">KPIs</span><span class="en">KPIs</span> <span class="badge shipped">Shipped</span> <span class="sub">#36</span></h3>
+        <p><span class="pt">Taxa de sucesso, duração mediana, PRs mesclados e custo por card, lidos do store. Veja <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Custos são estimativas, não fatura.</span><span class="en">Success rate, median duration, merged PRs and cost per card, read from the store. See <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Costs are estimates, not an invoice.</span></p>
+      </article>
+      <article class="card" data-capability="connections" data-ref="58">
+        <h3><span class="pt">Conexões</span><span class="en">Connections</span> <span class="badge planned">Planned</span> <span class="sub">#58</span></h3>
+        <p><span class="pt">Conexões de projeto com provedores de IA e de repositório. Planejado: ainda não disponível.</span><span class="en">Project connections for AI and repository providers. Planned: not available yet.</span></p>
+      </article>
+      <article class="card" data-capability="signin" data-ref="45">
+        <h3><span class="pt">Login</span><span class="en">Sign-in</span> <span class="badge planned">Planned</span> <span class="sub">#45</span></h3>
+        <p><span class="pt">Entrar com GitHub, sessões e papéis por projeto. Planejado: ainda não disponível.</span><span class="en">Sign in with GitHub, sessions and per-project roles. Planned: not available yet.</span></p>
+      </article>
+      <article class="card" data-capability="create" data-ref="46">
+        <h3><span class="pt">Criar cards no Tradvia</span><span class="en">Create cards in Tradvia</span> <span class="badge planned">Planned</span> <span class="sub">#46</span></h3>
+        <p><span class="pt">Criar, iniciar, ordenar e responder cards no painel. Planejado: hoje o card nasce de uma issue do GitHub.</span><span class="en">Create, start, order and answer cards in the dashboard. Planned: today a card starts from a GitHub issue.</span></p>
+      </article>
+    </div>
+  </section>
+
+  <section id="guide">
+    <h2 data-i18n="guideTitle"></h2>
+    <ol class="steps">
+      <li data-step="create" data-ref="46">
+        <strong><span class="pt">Criar o card</span><span class="en">Create the card</span></strong> <span class="badge planned">Planned</span>
+        <p><span class="pt">Ainda não disponível no Tradvia. Alternativa atual: abra uma issue no GitHub e mencione <code>@claude</code> ou aplique os labels descritos em <a href="https://github.com/Tradvia/tradvia/blob/main/docs/hello-world.md">hello-world.md</a>.</span><span class="en">Not available in Tradvia yet. Current alternative: open a GitHub issue and mention <code>@claude</code> or apply the labels described in <a href="https://github.com/Tradvia/tradvia/blob/main/docs/hello-world.md">hello-world.md</a>.</span></p>
+      </li>
+      <li data-step="plan">
+        <strong><span class="pt">Aprovar o plano</span><span class="en">Approve the plan</span></strong> <span class="badge in-progress">In progress</span>
+        <p><span class="pt">O @Agent-Architect pergunta no Discord. Responda “Aprovado”, “Rejeitado” ou descreva o ajuste; a execução retoma de onde parou. A aprovação no painel ainda não existe.</span><span class="en">@Agent-Architect asks in Discord. Reply “Aprovado”, “Rejeitado” or describe the change; the run resumes where it stopped. Approval in the dashboard does not exist yet.</span></p>
+      </li>
+      <li data-step="run">
+        <strong><span class="pt">Acompanhar a execução</span><span class="en">Follow the run</span></strong> <span class="badge shipped">Shipped</span>
+        <p><span class="pt">Abra o painel: quadro de cards, atividade recente, execuções e KPIs, lidos do store e atualizados sozinhos.</span><span class="en">Open the dashboard: card board, recent activity, runs and KPIs, read from the store and refreshed automatically.</span></p>
+      </li>
+      <li data-step="pr" data-ref="56">
+        <strong><span class="pt">Revisar e mesclar o PR</span><span class="en">Review and merge the PR</span></strong> <span class="badge partial">Partial</span>
+        <p><span class="pt">No card, veja o resumo do executor, os arquivos e os checks <code>core-tests</code>, <code>license-boundary</code> e <code>cla</code>; depois faça o squash-merge. Requer o login com GitHub (Planned, #45) e as permissões do GitHub App; até lá, mescle no GitHub.</span><span class="en">On the card, see the executor summary, files and the <code>core-tests</code>, <code>license-boundary</code> and <code>cla</code> checks; then squash-merge. Requires GitHub sign-in (Planned, #45) and the GitHub App permissions; until then, merge on GitHub.</span></p>
+      </li>
+      <li data-step="deploy" data-ref="56">
+        <strong><span class="pt">Aprovar o deploy</span><span class="en">Approve the deploy</span></strong> <span class="badge partial">Partial</span>
+        <p><span class="pt">Deploys pendentes em <code>production</code> aparecem no painel para aprovar ou rejeitar. Mesmas condições do passo anterior.</span><span class="en">Pending <code>production</code> deploys appear in the dashboard to approve or reject. Same conditions as the previous step.</span></p>
+      </li>
+    </ol>
+  </section>
+
+  <section id="technical">
+    <h2 data-i18n="navTechnical"></h2>
+    <p><span class="pt"><code>core/</code> (FSL-1.1-ALv2) nunca importa de <code>ee/</code> (licença comercial); <code>make boundary</code> verifica. A API fica em <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) e este painel estático em <code>/runs/</code>. O estado dos cards segue <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. As interações por projeto são configuradas em <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">exemplo</a>).</span><span class="en"><code>core/</code> (FSL-1.1-ALv2) never imports from <code>ee/</code> (commercial license); <code>make boundary</code> checks it. The API lives under <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) and this static dashboard under <code>/runs/</code>. Card state follows <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. Per-project interactions are configured in <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">example</a>).</span></p>
+    <h3>API</h3>
+    <ul>
+      <li><code>GET /api/healthz</code>, <code>GET /api/store/health</code>, <code>GET /api/store/repos/…</code></li>
+      <li><code>GET /api/auth/login</code>, <code>/api/auth/callback</code>, <code>/api/auth/me</code>; <code>POST /api/auth/logout</code></li>
+      <li><code>GET /api/projects</code></li>
+      <li><code>/api/projects/{owner}/{repo}/cards</code>, <code>…/cards/{n}/start</code>, <code>…/cards/{n}/reply</code>, <code>…/backlog</code>, <code>…/cards/{n}/audit</code></li>
+      <li><code>/api/projects/{owner}/{repo}/pulls/{n}</code>, <code>…/pulls/{n}/merge</code>, <code>…/pulls/{n}/update-branch</code></li>
+      <li><code>/api/projects/{owner}/{repo}/deployments/pending</code>, <code>…/deployments/{run_id}/approve|reject|cancel</code>, <code>…/operations/post-deploy</code></li>
+    </ul>
+    <p class="sub"><span class="pt">Os endpoints existem no código; isso não torna a funcionalidade Shipped (veja os status acima).</span><span class="en">The endpoints exist in the code; that does not make the capability Shipped (see the statuses above).</span></p>
+    <h3>ADRs</h3>
+    <ul>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0001-open-core-licensing.md">ADR 0001 · Open-core licensing</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0002-positioning-multi-view-orchestration.md">ADR 0002 · Positioning, multi-view orchestration</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0003-agentops-hybrid-execution-control-plane.md">ADR 0003 · AgentOps hybrid execution control plane</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0004-access-follows-project-configurable-interactions.md">ADR 0004 · Access follows project, configurable interactions</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0005-hosting-on-oci-always-free.md">ADR 0005 · Hosting on OCI Always Free</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0006-autonomous-multi-agent-orchestration.md">ADR 0006 · Autonomous multi-agent orchestration</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0007-tradvia-as-the-single-interaction-surface.md">ADR 0007 · Tradvia as the single interaction surface</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0008-sessions-csrf-and-project-roles.md">ADR 0008 · Sessions, CSRF and project roles</a></li>
+    </ul>
+    <h3><span class="pt">Mais documentação</span><span class="en">More documentation</span></h3>
+    <ul>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/github-app.md">GitHub App</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/deploy-oci.md">Deploy on OCI</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/projects.md">Projects</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/CONTRIBUTING.md">CONTRIBUTING</a></li>
+      <li><code>make check</code>: <span class="pt">testes offline e fronteira de licença</span><span class="en">offline tests and license boundary</span></li>
+    </ul>
+  </section>
+</main>
+<script>
+const I18N = {
+  pt: { title: "Documentação", back: "← Voltar ao painel", navCapabilities: "Funcionalidades e status",
+    guideTitle: "Como executar uma tarefa no Tradvia", navTechnical: "Documentação técnica" },
+  en: { title: "Documentation", back: "← Back to the dashboard", navCapabilities: "Capabilities and status",
+    guideTitle: "How to run a task in Tradvia", navTechnical: "Technical docs" },
+};
+let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
+try { const saved = localStorage.getItem("tradvia.lang"); if (saved === "pt" || saved === "en") lang = saved; } catch (err) { /* ignore */ }
+function render() {
+  document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
+  document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = I18N[lang][n.dataset.i18n]; });
+  document.getElementById("lang").value = lang;
+}
+document.getElementById("lang").addEventListener("change", (e) => {
+  lang = e.target.value;
+  try { localStorage.setItem("tradvia.lang", lang); } catch (err) { /* ignore */ }
+  render();
+});
+render();
+</script>
+</body>
+</html>
