@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 import base64
+import types
 
 import pytest
 
@@ -158,6 +159,9 @@ def test_start_card_allowed_runs_graph(run_env, monkeypatch):
     ran = []
 
     class App:
+        def get_state(self, config):  # no checkpoint yet: a fresh card
+            return types.SimpleNamespace(next=(), tasks=(), values={})
+
         def invoke(self, state, config):
             ran.append(state["id"])
             return {"id": state["id"], "status": "WAITING_HUMAN"}

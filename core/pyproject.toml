@@ -18,8 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # cryptography encrypts the GitHub user token at rest (auth.py, ADR 0008)
-dev = ["pytest>=8", "starlette>=0.37", "httpx>=0.27", "psycopg[binary]>=3.1", "psycopg-pool>=3.2", "cryptography>=42"]
-api = ["starlette>=0.37", "uvicorn>=0.30", "psycopg[binary]>=3.1", "psycopg-pool>=3.2", "cryptography>=42"]
+dev = ["pytest>=8", "starlette>=0.37", "httpx>=0.27", "psycopg[binary]>=3.1", "psycopg-pool>=3.2", "cryptography>=42", "langgraph-checkpoint-postgres>=2"]
+api = ["starlette>=0.37", "uvicorn>=0.30", "psycopg[binary]>=3.1", "psycopg-pool>=3.2", "cryptography>=42", "langgraph-checkpoint-postgres>=2"]
 
 [project.scripts]
 tradvia = "tradvia.cli:main"
