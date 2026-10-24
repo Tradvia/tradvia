@@ -194,3 +194,14 @@ def test_risk_defaults_and_parsing():
     assert custom.risk_requirement("read") is None
     with pytest.raises(PolicyError):
         parse_policy("risk:\n  destructive_external: nobody\n")
+
+
+def test_budget_section_is_parsed_and_invalid_values_fall_back():
+    from tradvia.budget import Budget
+
+    assert parse_policy("access: {}\n").budget == Budget()
+    policy = parse_policy("budget:\n  max_minutes: 10\n  max_steps: -3\n  max_usd: abc\n")
+    assert policy.budget == Budget(max_minutes=10.0)
+    assert parse_policy("budget: nope\n").budget == Budget()
+    with pytest.raises(PolicyError):
+        parse_policy("budget: {}\nother: 1\n")

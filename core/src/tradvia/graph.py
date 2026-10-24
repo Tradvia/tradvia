@@ -21,11 +21,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from .budget import Budget, check, format_usage, warning_notice
 from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .policy import Policy, role_of
 from .risk import classify
-from .state import Card, transition
+from .state import Card, add_usage, transition
 
 MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
 _CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
@@ -106,8 +107,25 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
                 checkpointer=None, executor=None, cwd: str = ".",
-                policy: Policy | None = None):
+                policy: Policy | None = None, budget: Budget | None = None):
     policy = policy or Policy()
+    budget = budget or Budget()
+
+    def step_usage(steps: int, cost: dict) -> dict:
+        return {"steps": steps, "minutes": (cost.get("duration_s") or 0) / 60,
+                "usd": cost.get("usd") or 0.0}
+
+    def stop_budget(card: Card, by: str) -> dict:
+        """100% of a limit: comment the consumption on the issue and wait for a human."""
+        number = card["source"]["issue_number"]
+        text = (f"🛑 **{card['id']}** — execution budget exhausted; the agent was stopped. "
+                f"{format_usage(card.get('usage'), budget)}. Raise `budget` in `.tradvia.yml` "
+                "or split the card, then restart it (remove and add the `agent:ready` label).")
+        if _chat_is_issue_thread(chat, github, number):
+            chat.post(text)
+        else:
+            github.comment(number, text)
+        return transition(card["status"], "WAITING_HUMAN", by, "Budget exhausted")
 
     def start_work(card: Card) -> dict:
         number = card["source"]["issue_number"]
@@ -131,6 +149,11 @@ def build_graph(github: GitHub, chat: Chat,
         feedback = [a["comment"] for a in card.get("approvals", []) if a["decision"] == "feedback"]
         if feedback:
             body += "\n\nHuman feedback to address:\n" + "\n".join(f"- {f}" for f in feedback)
+        level = check(card.get("usage"), budget)
+        if level == "stop":
+            return {"plan_error": "Budget exhausted", **stop_budget(card, "@Agent-Architect")}
+        if level == "warn":
+            body += "\n\n" + warning_notice(card.get("usage"), budget)
         try:
             p = planner(card["title"], body, card["source"]["issue_number"])
         except (RuntimeError, ValueError) as e:
@@ -151,6 +174,7 @@ def build_graph(github: GitHub, chat: Chat,
                                  "summary": p.get("summary", "")},
             "cost": p.get("_cost", {}),
             "plan_cost": p.get("_cost", {}),
+            "usage": step_usage(1 + int(p.get("_tool_calls") or 0), p.get("_cost") or {}),
         }
 
     def ask_human(card: Card) -> dict:
@@ -265,7 +289,10 @@ def build_graph(github: GitHub, chat: Chat,
         number = card["source"]["issue_number"]
         branch = f"tradvia/issue-{number}"
         files = {card["file_path"]: card["file_content"]} if card.get("file_path") else {}
-        extra, cost = "", {}
+        extra, cost, used = "", {}, {}
+        level = check(card.get("usage"), budget) if executor else "ok"
+        if level == "stop":
+            return stop_budget(card, "@Agent-Coder")
         if not executor and not files:
             why = ("o plano não trouxe `file_path` e nenhum executor está configurado "
                    "(use `TRADVIA_EXECUTOR=claude-code` com `TRADVIA_PLANNER=claude-code`)")
@@ -273,7 +300,9 @@ def build_graph(github: GitHub, chat: Chat,
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
             try:
-                run = executor.execute(card, cwd)
+                run = (executor.execute(card, cwd, budget_notice=warning_notice(card.get("usage"),
+                                                                                 budget))
+                       if level == "warn" else executor.execute(card, cwd))
             except RuntimeError as e:
                 why = str(e)[:300]
                 chat.post(f"🔴 **{card['id']}** — a implementação falhou: {why}. Nenhum PR foi "
@@ -291,6 +320,7 @@ def build_graph(github: GitHub, chat: Chat,
                 except ValueError:
                     blocked.append(f)
             cost = {"usd": run["cost_usd"], "duration_s": run["duration_s"]}
+            used = step_usage(1 + int(run.get("tool_calls") or 0), cost)
             if blocked or not changed:
                 if blocked:
                     why = f"alterou arquivos protegidos: {', '.join('`' + b + '`' for b in blocked)}"
@@ -301,7 +331,7 @@ def build_graph(github: GitHub, chat: Chat,
                     why = "não alterou nenhum arquivo"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto; "
                           "revise o working tree e responda com um ajuste.")
-                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
+                return {"cost": cost, "usage": used, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             files, skipped = {}, []
             for f in changed:
@@ -314,8 +344,9 @@ def build_graph(github: GitHub, chat: Chat,
             if not files:
                 why = "só alterou arquivos binários ou removidos, que não vão para o PR"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto.")
-                return {"cost": cost, **transition(card["status"], "WAITING_HUMAN",
-                                                   "@Agent-Coder", f"Executor {why}")}
+                return {"cost": cost, "usage": used,
+                        **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                                     f"Executor {why}")}
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
                      f"{tokens_line(run)}")
@@ -332,13 +363,14 @@ def build_graph(github: GitHub, chat: Chat,
         body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
                 f"Card `{card['id']}` · estimated cost so far (API-equivalent): "
-                f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}{extra}")
+                f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}\n"
+                f"{format_usage(add_usage(card.get('usage'), used), budget)}{extra}")
         url = github.open_pull_request(branch, _conventional_title(card["title"]), body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
             github.comment(number, f"🤖 Pull request opened: {url}")
         chat.post(f"🟢 PR aberto para **{card['id']}**: {url}")
-        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "pull_request_url": url,
+        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "usage": used, "pull_request_url": url,
                 "plan": [{**s, "done": True} for s in card["plan"]],
                 **transition(card["status"], "IN_REVIEW_PR", "@Agent-Coder", "Pull request opened")}
 

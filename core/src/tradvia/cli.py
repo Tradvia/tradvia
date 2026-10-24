@@ -90,10 +90,11 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
 
     chat = make_chat(chat_kind, issue, policy)
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor(),
-                      policy=policy)
+                      policy=policy, budget=policy.budget)
 
-    config = {"configurable": {"thread_id": card_id}}
-    result = app.invoke({"id": card_id, "status": "BACKLOG",
+    # Checkpoints and usage are keyed by project (repository) and never cross projects.
+    config = {"configurable": {"thread_id": f"{github.repo}#{card_id}"}}
+    result = app.invoke({"id": card_id, "project_id": github.repo, "status": "BACKLOG",
                          "source": {"provider": "github", "issue_number": issue}}, config)
 
     while result.get("__interrupt__"):
@@ -121,6 +122,12 @@ def main() -> None:
 
         load_dotenv()
         backlog_main(argv=sys.argv[2:])
+        return
+    if sys.argv[1:2] in (["token"], ["card"]) or sys.argv[1:2] == ["--url"]:
+        from .remote import main as remote_main
+
+        load_dotenv()
+        remote_main(argv=sys.argv[1:])
         return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")

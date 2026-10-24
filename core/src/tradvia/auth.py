@@ -24,7 +24,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import requests
 
 from .actions import GitHubError
-from .policy import Policy, load_policy, role_from_github, role_of
+from .policy import ROLES, Policy, load_policy, role_from_github, role_of, role_rank
 from .store import Store
 
 SESSION_COOKIE = "__Host-tradvia_session"
@@ -46,6 +46,10 @@ GITHUB_API = "https://api.github.com"
 UPSTREAM_TIMEOUT = 10
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
+API_TOKEN_PREFIX = "tvt_"
+API_TOKEN_DEFAULT_DAYS = 30
+API_TOKEN_MAX_DAYS = 90
+_API_TOKEN_RE = re.compile(API_TOKEN_PREFIX + r"[A-Za-z0-9_-]{43}")
 
 
 class AuthError(Exception):
@@ -541,8 +545,70 @@ class Auth:
     def origin_ok(self, origin: str | None, referer: str | None) -> bool:
         return origin_ok(origin, referer, self.config.origin)
 
+    # API tokens (ADR 0009)
+    def create_api_token(
+        self, session: Session, repo: str, role: str, ttl_days: int
+    ) -> tuple[int, str, float]:
+        """New token for the signed-in user in one project. Returns `(id, token, expires_at)`.
+
+        The token is shown once; only its hash is stored. It can never exceed the role the
+        user has in `repo` right now.
+        """
+        if role not in ROLES:
+            raise AuthError(f"role must be one of {', '.join(ROLES)}")
+        if not 1 <= ttl_days <= API_TOKEN_MAX_DAYS:
+            raise AuthError(f"expires_in_days must be between 1 and {API_TOKEN_MAX_DAYS}")
+        own = self.role_of(session, repo)
+        if own is None:
+            raise AuthError(f"You have no access to {repo}.", 403)
+        if role_rank(role) > role_rank(own):
+            raise AuthError(f"Your role in {repo} is '{own}': a token cannot have '{role}'.", 403)
+        now = self.now()
+        raw = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        expires_at = now + ttl_days * 86400
+        token_id = self.store.create_api_token({
+            "login": session.login, "project_id": self.store.ensure_project(repo), "role": role,
+            "token_hash": hash_token(raw), "token_enc": session.rec["token_enc"],
+            "created_at": now, "expires_at": expires_at,
+        })
+        return token_id, raw, expires_at
+
+    def revoke_api_token(self, session: Session, repo: str, token_id: int) -> bool:
+        pid = self.store.ensure_project(repo)
+        return self.store.revoke_api_token(token_id, session.login, pid, self.now())
+
+    def api_session(self, raw: str | None) -> Session | None:
+        """The caller for a bearer token; unknown, expired or revoked means None.
+
+        It behaves like a session of the token's owner, limited to one project and one role.
+        """
+        if not raw or not _API_TOKEN_RE.fullmatch(raw):
+            return None
+        rec = self.store.get_api_token(hash_token(raw))
+        if rec is None or rec["revoked_at"] is not None or rec["expires_at"] <= self.now():
+            return None
+        if self.keys.decrypt(rec["token_enc"]) is None:  # secret key changed
+            return None
+        now = self.now()
+        session_rec = {
+            "id": f"api-token:{rec['id']}", "login": rec["login"], "token_enc": rec["token_enc"],
+            "role_cache": {}, "expires_at": rec["expires_at"], "last_used_at": now,
+            "api_token": {"project_id": rec["project_id"], "role": rec["role"]},
+        }
+        return Session(raw, session_rec, max(1, int(rec["expires_at"] - now)))
+
     # roles
     def role_of(self, session: Session, repo: str) -> str | None:
+        """Role of the caller in `repo`; an API token gets the lower of its own and its owner's."""
+        role = self._github_role(session, repo)
+        scope = session.rec.get("api_token")
+        if scope is None or role is None:
+            return role
+        if scope["project_id"] != self.store.ensure_project(repo):
+            return None
+        return min(role, scope["role"], key=role_rank)
+
+    def _github_role(self, session: Session, repo: str) -> str | None:
         """Role of the signed-in user in `repo`, cached for ROLE_TTL per session."""
         now = self.now()
         cache = session.rec["role_cache"]

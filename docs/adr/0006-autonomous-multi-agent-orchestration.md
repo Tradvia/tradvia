@@ -83,7 +83,7 @@ Tradvia supports several topologies and picks one per task type:
 
 | Capability | What Tradvia does | Status |
 |---|---|---|
-| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Partial (workflow timeout, replan limit, cost per card) |
+| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Shipped: per-card `budget` in `.tradvia.yml` (`max_minutes`, `max_steps`, `max_usd`; safe defaults 30 min, 40 steps, $5). At 80% of any limit the next prompt carries a system notice requiring a synthesis or a request for help; at 100% the agent is not called again, the issue gets a comment with the consumption and the card stays in `WAITING_HUMAN`. Usage lives on the card state and in the PR body, and is scoped by `project_id`: it never crosses projects. Invalid values fall back to the defaults (fail closed). |
 | Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row stop the loop, inject a reflective error or route to a reviewer agent. | Planned |
 | Durable execution and checkpointing | Every state change is persisted (LangGraph checkpointer on Postgres). A failure at step 14 of 15 resumes at 14; a developer can fork the state at step 10 to try another skill. | Partial (in-memory checkpointer) |
 | Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Shipped |
@@ -106,7 +106,7 @@ carries the project id.
    stored record, API and dashboard scoped by project, migration of today's
    single-repository data. Everything else builds on it.
 1. **Governance foundation** (makes autonomy safe, builds on what exists):
-   durable checkpointing on Postgres → execution budgets with the 80% notice →
+   durable checkpointing on Postgres → execution budgets with the 80% notice (shipped) →
    stagnation detection → risk levels on skills and the permission gateway.
 2. **Skills and context**: registry and manifests → lazy loading → compiled
    context payloads and context GC → semantic router.

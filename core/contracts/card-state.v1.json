@@ -37,6 +37,8 @@
     "approvals": "array<object> — { by, decision: 'approved' | 'rejected', comment, at }",
     "run_id": "string | null — orchestrator thread id, used to resume after WAITING_HUMAN",
     "cost": "object — { usd: number, tokens_in: number, tokens_out: number, by_model: object }",
+    "project_id": "string (optional) — repository the card belongs to; usage and checkpoints never cross projects",
+    "usage": "object (optional) — budget consumption { steps: number, minutes: number, usd: number }",
     "history": "array<object> — every transition: { from, to, by, reason, at }",
     "updated_at": "ISO 8601 timestamp"
   },

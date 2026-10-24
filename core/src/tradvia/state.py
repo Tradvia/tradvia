@@ -47,8 +47,19 @@ def add_cost(a: dict | None, b: dict | None) -> dict:
     }
 
 
+def add_usage(a: dict | None, b: dict | None) -> dict:
+    """Budget consumption (ADR 0006): steps, minutes and estimated usd, summed."""
+    a, b = a or {}, b or {}
+    return {
+        "steps": a.get("steps", 0) + b.get("steps", 0),
+        "minutes": round(a.get("minutes", 0.0) + b.get("minutes", 0.0), 4),
+        "usd": round(a.get("usd", 0.0) + b.get("usd", 0.0), 6),
+    }
+
+
 class Card(TypedDict, total=False):
     id: str
+    project_id: str  # repository; everything the card stores or reads stays under it
     title: str
     description: str
     source: dict
@@ -65,6 +76,7 @@ class Card(TypedDict, total=False):
     risk: dict  # risk gate state: project_id, action, level, required_role, state
     approvals: Annotated[list[dict], operator.add]
     cost: Annotated[dict, add_cost]
+    usage: Annotated[dict, add_usage]  # budget consumption: steps, minutes, usd
     plan_cost: dict  # cost of the latest plan only: the plan comment reports this one
     history: Annotated[list[dict], operator.add]
     updated_at: str

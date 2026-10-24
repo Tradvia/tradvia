@@ -13,6 +13,7 @@ from typing import Protocol
 
 import yaml
 
+from .budget import Budget, parse_budget
 from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
 
 POLICY_FILE = ".tradvia.yml"
@@ -54,6 +55,7 @@ class Policy:
     view: str = "inherit"
     interactions: Interactions = Interactions()
     risk: RiskPolicy = RiskPolicy()
+    budget: Budget = Budget()
 
     def risk_requirement(self, level: str) -> str | None:
         """None when `level` runs free, else the minimum approving role. Unknown levels fail closed."""
@@ -108,7 +110,8 @@ def parse_policy(text: str | None) -> Policy:
         return Policy()
     if not isinstance(data, dict):
         raise PolicyError("top level must be a mapping")
-    unknown = sorted(str(k) for k in data if k not in ("access", "interactions", "risk"))
+    unknown = sorted(str(k) for k in data
+                     if k not in ("access", "interactions", "risk", "budget"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -125,7 +128,9 @@ def parse_policy(text: str | None) -> Policy:
     raw_risk = _section(data, "risk", RISK_LEVELS)
     risk = RiskPolicy(**{k: v if v == "free" else _role(v, f"risk.{k}")
                          for k, v in raw_risk.items()})
-    return Policy(view=view, interactions=interactions, risk=risk)
+    # Never raises: invalid budget values fall back to the safe defaults.
+    return Policy(view=view, interactions=interactions, risk=risk,
+                  budget=parse_budget(data.get("budget")))
 
 
 def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:
