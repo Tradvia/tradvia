@@ -186,3 +186,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
 CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
+
+-- Web Push (ADR 0009). `endpoint` is the push service's address for one browser. A user keeps
+-- one subscription per project; the same browser may serve several projects.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    login      text NOT NULL,
+    project_id bigint NOT NULL REFERENCES projects (id),
+    endpoint   text NOT NULL,
+    p256dh     text NOT NULL,
+    auth       text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_project_idx ON push_subscriptions (project_id);
+
+-- Which events to notify, per user and project (a map of event kind to true/false).
+CREATE TABLE IF NOT EXISTS notify_prefs (
+    login      text NOT NULL,
+    project_id bigint NOT NULL REFERENCES projects (id),
+    kinds      jsonb NOT NULL DEFAULT '{}',
+    PRIMARY KEY (login, project_id)
+);
