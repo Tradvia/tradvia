@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from typing import Callable
 
 from .llm import _parse_json
+from .stagnation import DEFAULT_REPEAT_LIMIT, StagnationMonitor, reflective_message
 
 PLAN_TOOLS = "Read,Glob,Grep"
 EXEC_TOOLS = "Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test)"
@@ -171,9 +173,136 @@ def untracked_files(cwd: str, runner: Callable = subprocess.run) -> list[str]:
     return [path for status, path in _status_entries(cwd, runner) if status == "??"]
 
 
+class StagnationError(RuntimeError):
+    """The agent kept repeating the same call even after the reflective message."""
+
+    def __init__(self, tool: str, count: int):
+        self.tool, self.count = tool, count
+        super().__init__(f"Stagnation: {tool} repeated {count} times, "
+                         "also after the reflective retry")
+
+
+def _text_of(content: object) -> str:
+    """Plain text of a tool_result `content` (a string or a list of text blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    return ""
+
+
+def _feed(event: dict, monitor: StagnationMonitor) -> tuple[str, str]:
+    """Feed one stream-json event to the monitor; return (signal, tool).
+
+    `assistant` events carry `tool_use` blocks (name + input); `user` events carry the
+    `tool_result` blocks, the intermediate outputs.
+    """
+    message = event.get("message")
+    blocks = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(blocks, list):
+        return "ok", ""
+    signal, tool = "ok", ""
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if event.get("type") == "assistant" and block.get("type") == "tool_use":
+            name = str(block.get("name", ""))
+            result = monitor.record_call(name, block.get("input"))
+            if result != "ok":
+                return result, name
+        elif event.get("type") == "user" and block.get("type") == "tool_result":
+            monitor.record_output(_text_of(block.get("content")))
+    return signal, tool
+
+
+def _popen_lines(cmd: list[str], cwd: str, timeout: int, tail: list[str]):
+    """Yield stdout lines of a live process; kill it when the generator is closed."""
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    try:
+        yield from proc.stdout
+        proc.wait()
+        tail.append(str(proc.returncode))
+        if not timer.is_alive():
+            tail.append("timeout")
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def run_claude_stream(prompt: str, cwd: str, allowed_tools: str, max_turns: int,
+                      monitor: StagnationMonitor, runner: Callable = subprocess.run,
+                      timeout: int | None = None) -> tuple[dict | None, str, str]:
+    """Run `claude -p --output-format stream-json --verbose`, feeding the monitor live.
+
+    Returns (result, signal, tool): `result` is the final JSON object, or None when the
+    run was interrupted by a 'warn'/'stop' signal. With the default runner the process
+    is streamed and killed on interruption; an injected runner returns the whole output.
+    """
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+           "--max-turns", str(max_turns), "--allowedTools", allowed_tools]
+    limit = timeout or _timeout()
+    tail: list[str] = []
+    try:
+        if runner is subprocess.run:
+            lines = _popen_lines(cmd, cwd, limit, tail)
+        else:
+            proc = runner(cmd, cwd=cwd, capture_output=True, text=True, timeout=limit)
+            lines = iter((proc.stdout or "").splitlines())
+            tail.append(str(proc.returncode))
+            if proc.returncode and proc.stderr:
+                tail.append(str(proc.stderr))
+        raw: list[str] = []
+        final = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                raw.append(line)
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "result" or (event.get("type") is None
+                                                 and "message" not in event):
+                final = event
+                continue
+            signal, tool = _feed(event, monitor)
+            if signal != "ok":
+                if hasattr(lines, "close"):
+                    lines.close()
+                return None, signal, tool
+    except FileNotFoundError:
+        raise RuntimeError("Claude Code CLI not found: install it "
+                           "(npm i -g @anthropic-ai/claude-code) and put `claude` on PATH") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Claude Code timed out after {limit}s") from None
+    if "timeout" in tail:
+        raise RuntimeError(f"Claude Code timed out after {limit}s")
+    if final is None:
+        raise RuntimeError("Claude Code returned invalid JSON "
+                           f"(exit {tail[0] if tail else '?'}): {' '.join(raw)[:300]}")
+    returncode = tail[0] if tail else "0"
+    if returncode != "0" or final.get("is_error"):
+        if final.get("subtype") == "error_max_turns":
+            raise RuntimeError(f"Claude Code stopped at the turn limit ({max_turns} turns)")
+        detail = str(final.get("result") or final.get("subtype") or "")[:300]
+        raise RuntimeError(f"Claude Code failed: {detail}")
+    return final, "ok", ""
+
+
 class ClaudeCodeExecutor:
-    def __init__(self, runner: Callable = subprocess.run, max_turns: int | None = None):
+    def __init__(self, runner: Callable = subprocess.run, max_turns: int | None = None,
+                 repeat_limit: int = DEFAULT_REPEAT_LIMIT, project_id: int | str | None = None):
         self.runner, self.max_turns = runner, max_turns
+        self.repeat_limit, self.project_id = repeat_limit, project_id
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
@@ -181,7 +310,16 @@ class ClaudeCodeExecutor:
                                     body=card.get("description", ""), plan=steps)
         if budget_notice:
             prompt += f"\n\n{budget_notice}"
-        data = run_claude(prompt, cwd, EXEC_TOOLS, self.max_turns or exec_max_turns(), self.runner)
+        # One monitor per run: nothing is shared between cards or projects.
+        monitor = StagnationMonitor(self.repeat_limit, card.get("project_id", self.project_id))
+        turns = self.max_turns or exec_max_turns()
+        data, signal, tool = run_claude_stream(prompt, cwd, EXEC_TOOLS, turns, monitor, self.runner)
+        if data is None:  # first time at the limit: restart once with the reflective message
+            note = reflective_message(tool, monitor.repeat_count)
+            data, signal, tool = run_claude_stream(f"{prompt}\n\n{note}", cwd, EXEC_TOOLS, turns,
+                                                   monitor, self.runner)
+            if data is None:
+                raise StagnationError(tool, monitor.repeat_count)
         cost = _cost(data)
         return {"changed_files": changed_files(cwd, self.runner),
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],

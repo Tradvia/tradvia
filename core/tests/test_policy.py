@@ -64,6 +64,27 @@ def test_allows_needs_a_role_at_least_the_minimum():
     assert p.allows("start_card", "triage") and not p.allows("start_card", "read")
 
 
+def test_stagnation_default_and_override():
+    assert Policy().stagnation.repeat_limit == 3
+    assert parse_policy("access:\n  view: write\n").stagnation.repeat_limit == 3
+    assert parse_policy("stagnation:\n  repeat_limit: 5\n").stagnation.repeat_limit == 5
+    assert parse_policy("stagnation:\n  repeat_limit: 2\n").stagnation.repeat_limit == 2
+
+
+@pytest.mark.parametrize("text", [
+    "stagnation:\n  repeat_limit: 0\n",
+    "stagnation:\n  repeat_limit: 1\n",
+    "stagnation:\n  repeat_limit: three\n",
+    "stagnation:\n  repeat_limit: true\n",
+    "stagnation:\n  repeat_limit: 2.5\n",
+    "stagnation:\n  max: 3\n",
+    "stagnation: [3]\n",
+])
+def test_invalid_stagnation_fails_closed(text):
+    with pytest.raises(PolicyError):
+        parse_policy(text)
+
+
 class FakeGH:
     def __init__(self, file=None, roles=None, base="main"):
         self.file, self.roles, self.base = file, roles or {}, base

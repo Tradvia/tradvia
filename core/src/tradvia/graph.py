@@ -22,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .budget import Budget, check, format_usage, warning_notice
+from .claude_code import StagnationError
 from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .policy import Policy, role_of
@@ -303,6 +304,14 @@ def build_graph(github: GitHub, chat: Chat,
                 run = (executor.execute(card, cwd, budget_notice=warning_notice(card.get("usage"),
                                                                                  budget))
                        if level == "warn" else executor.execute(card, cwd))
+            except StagnationError as e:
+                why = (f"o agente repetiu `{e.tool}` {e.count} vezes seguidas e a nova tentativa "
+                       "com a mensagem reflexiva também falhou")
+                chat.post(f"🟡 **{card['id']}** — estagnação detectada: {why}. Nenhum PR foi "
+                          "aberto; revise o card e responda com um ajuste.")
+                return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                                  f"Stagnation: {e.tool} repeated {e.count} times, "
+                                  "reflective retry also failed")
             except RuntimeError as e:
                 why = str(e)[:300]
                 chat.post(f"🔴 **{card['id']}** — a implementação falhou: {why}. Nenhum PR foi "
