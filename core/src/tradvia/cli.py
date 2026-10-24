@@ -59,10 +59,11 @@ def make_planner(kind: str | None = None):
     sys.exit(f"Unknown TRADVIA_PLANNER {kind!r}: use claude-code, litellm or offline")
 
 
-def make_executor(kind: str | None = None):
+def make_executor(kind: str | None = None, repeat_limit: int = 3,
+                  project_id: int | str | None = None):
     kind = kind or os.getenv("TRADVIA_EXECUTOR", "")
     if kind == "claude-code":
-        return ClaudeCodeExecutor()
+        return ClaudeCodeExecutor(repeat_limit=repeat_limit, project_id=project_id)
     if kind in ("", "note"):
         return None
     sys.exit(f"Unknown TRADVIA_EXECUTOR {kind!r}: use claude-code or note")
@@ -89,7 +90,8 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         return not_started
 
     chat = make_chat(chat_kind, issue, policy)
-    app = build_graph(github, chat, planner=make_planner(), executor=make_executor())
+    app = build_graph(github, chat, planner=make_planner(), executor=make_executor(
+        repeat_limit=policy.stagnation.repeat_limit, project_id=github.repo))
 
     config = {"configurable": {"thread_id": card_id}}
     result = app.invoke({"id": card_id, "status": "BACKLOG",
