@@ -25,7 +25,7 @@ without losing context.
 | # | Pillar | What it means | Status |
 |---|---|---|---|
 | 1 | **Dual-runtime execution** | Stateless LLM APIs (OpenAI, Anthropic, Gemini, Ollama) side by side with stateful **session workers**: containers running authenticated CLI tools or browser sessions (Playwright/CDP), guarded by session mutex locks and persistent auth contexts. | 🟦 Partial — APIs via LiteLLM |
-| 2 | **Multi-account pool & Token FinOps** | Pool accounts across vendors, spread load **within each account's RPM/TPM quota**, fall back across vendors when one is saturated or down, and record exact cost per token or per compute second on the card, with budget circuit breakers. | 🟦 Partial — cost per card |
+| 2 | **Multi-account pool & Token FinOps** | Pool accounts across vendors, spread load **within each account's RPM/TPM quota**, fall back across vendors when one is saturated or down, and record exact cost per token or per compute second on the card, with budget circuit breakers. | 🟦 Partial — cost per card, per-card execution budgets |
 | 3 | **Executable hybrid Kanban & Live Session Takeover** | Every card is a durable state machine. On a blocker (2FA, CAPTCHA, complex UI, architecture decision) Tradvia freezes the session, alerts a human on Slack/WhatsApp and streams the terminal or browser (WebRTC/VNC) so they can resolve it and hand control back. | 🔨 In progress — state machine + approval in chat |
 | 4 | **Zero-trust sandbox** | Ephemeral Firecracker MicroVMs per execution and session, PostgreSQL Row-Level Security, encrypted credential and session vaults. | 🗓️ Planned |
 | 5 | **Native MCP & AST GraphRAG** | Plug-and-play MCP tools; AST-based code indexing with episodic knowledge distillation to cut token cost over time. | 🗓️ Planned |
@@ -117,6 +117,10 @@ The contract is in
 - A neutral work model with Kanban, Gantt, Burndown, WBS, calendar and
   capacity projections, plus the `TrackerConnector` interface —
   [PR #2](https://github.com/tradvia/tradvia/pull/2).
+
+Cards can also be created and started from scripts or the `tradvia` CLI with API
+tokens (still through the planner and plan approval); quick tasks without a plan are
+**Planned**. See [docs/programmatic-api.md](docs/programmatic-api.md).
 
 ## Develop with us — and with Tradvia
 
