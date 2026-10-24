@@ -35,6 +35,15 @@ _ADJUST_LIMIT_RE = re.compile(r"Limite de \d+ ajustes atingido", re.I)
 _BUDGET_LIMIT_RE = re.compile(r"Limite de or[çc]amento|budget limit", re.I)
 _ISSUE_IN_BRANCH = re.compile(r"^(?:tradvia/issue-(\d+)|claude/issue-(\d+)-)")
 
+# The marker emoji graph.py leads its own comments with (budget, plan-failed, plan-ready,
+# risk-approval, wrong-role-denial, pr-opened; docs/adr/0006). 🔴 is the only one that means
+# the agent gave up without leaving anything for a human to act on (dashboard board state).
+MARKER_BLOCKED = "\U0001F534"  # 🔴
+AGENT_MARKERS_RE = re.compile(
+    "[" + "".join(("\U0001F6D1", "\U0001F534", "\U0001F7E1", "\U0001F7E0", "⛔", "\U0001F7E2"))
+    + "]"  # 🛑 🔴 🟡 🟠 ⛔ 🟢
+)
+
 
 def issue_of_branch(branch: str | None) -> int | None:
     """Card number of an agent branch (`tradvia/issue-N` or `claude/issue-N-...`)."""
@@ -44,6 +53,31 @@ def issue_of_branch(branch: str | None) -> int | None:
 
 def _by(comment: dict[str, Any], login: str) -> bool:
     return (comment.get("author") or "").lower() == login.lower()
+
+
+def _last_agent_comment(comments: list[dict[str, Any]], login: str) -> dict[str, Any] | None:
+    """The agent's own last word on a card (comments oldest first), or None when it never
+    spoke, or a human already replied after it (the window to act on it is closed)."""
+    last = max((i for i, c in enumerate(comments) if _by(c, login)), default=None)
+    if last is None or any(not _by(c, login) for c in comments[last + 1:]):
+        return None
+    return comments[last]
+
+
+def last_agent_marker(card: dict[str, Any], agent: str | None = None) -> str | None:
+    """The marker emoji (🛑🔴🟡🟠⛔🟢) leading the agent's last comment on an open card, or
+    None when it never spoke, a human already replied, or that comment carries none.
+
+    Used by the dashboard to tell BLOCKED (🔴) apart from the other markers, which all mean
+    the card still waits on a human even when the underlying CI run looks "successful" or
+    is still "in_progress" (card #87): the agent's own word is more current than the run's."""
+    if card.get("state") == "closed":
+        return None
+    comment = _last_agent_comment(card.get("comments") or [], agent or agent_login())
+    if comment is None:
+        return None
+    m = AGENT_MARKERS_RE.search(comment.get("body") or "")
+    return m.group(0) if m else None
 
 
 def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
@@ -57,11 +91,10 @@ def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
         for p in card.get("pulls") or []
     ):
         return PR_OPENED
-    comments = card.get("comments") or []
-    last = max((i for i, c in enumerate(comments) if _by(c, login)), default=None)
-    if last is None or any(not _by(c, login) for c in comments[last + 1:]):
+    comment = _last_agent_comment(card.get("comments") or [], login)
+    if comment is None:
         return None  # the agent never spoke, or a human already answered
-    body = comments[last].get("body") or ""
+    body = comment.get("body") or ""
     if _ADJUST_LIMIT_RE.search(body):
         return ADJUST_LIMIT
     if _BUDGET_LIMIT_RE.search(body):

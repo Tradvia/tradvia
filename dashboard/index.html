@@ -285,6 +285,15 @@ function deriveCardState(issue, prs, agentRuns) {
     (p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number)
   );
   if (hasOpenPr) return "IN_REVIEW_PR";
+  // tradvia_last_marker (store-backed mode only, #87) is the agent's own last word on the
+  // card: more current than the CI run, which can look "successful" even though the agent
+  // caught an internal error and posted no plan, or still be "in_progress" because the same
+  // job is polling for the human's reply. 🔴 means it gave up with nothing to act on
+  // (BLOCKED); any other marker means something is waiting on a human right now, whatever
+  // the run status says.
+  if (issue.tradvia_last_marker) {
+    return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+  }
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
   // agentRuns keeps GitHub's own newest-first order, so the first completed
