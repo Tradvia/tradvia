@@ -121,6 +121,12 @@ def main() -> None:
         load_dotenv()
         backlog_main(argv=sys.argv[2:])
         return
+    if sys.argv[1:2] in (["token"], ["card"]) or sys.argv[1:2] == ["--url"]:
+        from .remote import main as remote_main
+
+        load_dotenv()
+        remote_main(argv=sys.argv[1:])
+        return
     parser = argparse.ArgumentParser(description="Tradvia v0.1 hello world")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
     parser.add_argument("--wait", type=int, default=1800, help="seconds to wait for a human reply")
