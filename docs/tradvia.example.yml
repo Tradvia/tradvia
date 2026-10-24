@@ -13,3 +13,7 @@ interactions:
   merge_pr: maintain       # enforced: squash-merge a pull request from the panel
   update_branch: maintain  # enforced: bring a pull request branch up to date with main
   approve_deploy: maintain # enforced: approve/reject/cancel deploys, run the post-deploy operation
+risk:                      # enforced: risk-based permission gateway (ADR 0006)
+  read: free               # free | read | triage | write | maintain | admin
+  reversible_write: free   # create branch, commit, open PR, comment
+  destructive_external: maintain # merge, delete, publish, deploy, external messages; undeclared actions count as this
