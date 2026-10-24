@@ -126,6 +126,34 @@ class Store(Protocol):
 
     def delete_session(self, session_id: str) -> None: ...
 
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        """The newest live session of a person (same fields as `get_session`), or None."""
+
+    # Comments of open cards, for the pending inbox.
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        """`[{issue_number, author, body}]` of these cards, oldest first."""
+
+    # Web Push (push.py). A user keeps one subscription per project.
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        """Upsert by project and endpoint; any other subscription of this user and project is
+        replaced."""
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        """Remove by endpoint (every project); with `login`, only that person's rows, and
+        with `project_id` only that project's."""
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        """`[{login, endpoint, p256dh, auth}]` of the project."""
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        """The saved map of event kind to enabled, or None when the person never chose."""
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None: ...
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
@@ -145,6 +173,8 @@ class MemoryStore:
         self.audit: list[dict[str, Any]] = []
         self.sessions: dict[str, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
+        self.subscriptions: dict[tuple[int, str], dict[str, Any]] = {}
+        self.prefs: dict[tuple[int, str], dict[str, bool]] = {}
         self._clock = 0
 
     def ensure_project(self, external_id: str) -> int:
@@ -373,6 +403,71 @@ class MemoryStore:
         with self._lock:
             self.sessions.pop(session_id, None)
 
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        with self._lock:
+            live = [
+                r for r in self.sessions.values()
+                if r["login"] == login and r["expires_at"] > now and r["absolute_expires_at"] > now
+            ]
+            best = max(live, key=lambda r: r["last_used_at"], default=None)
+            return copy.deepcopy(best) if best else None
+
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        wanted = set(issue_numbers)
+        with self._lock:
+            rows = [
+                r for (pid, _), r in self.tables["comments"].items()
+                if pid == project_id and r["issue_number"] in wanted
+            ]
+        rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]))
+        return [
+            {"issue_number": r["issue_number"], "author": r.get("author"), "body": r.get("body") or ""}
+            for r in rows
+        ]
+
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        with self._lock:
+            self.subscriptions = {
+                k: r for k, r in self.subscriptions.items()
+                if not (r["project_id"] == project_id and r["login"] == login)
+            }
+            self.subscriptions[(project_id, endpoint)] = {
+                "project_id": project_id, "login": login, "endpoint": endpoint,
+                "p256dh": p256dh, "auth": auth,
+            }
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        with self._lock:
+            self.subscriptions = {
+                k: r for k, r in self.subscriptions.items()
+                if not (
+                    r["endpoint"] == endpoint
+                    and (login is None or (
+                        r["login"] == login and (project_id is None or r["project_id"] == project_id)
+                    ))
+                )
+            }
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {k: r[k] for k in ("login", "endpoint", "p256dh", "auth")}
+                for r in self.subscriptions.values() if r["project_id"] == project_id
+            ]
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        with self._lock:
+            prefs = self.prefs.get((project_id, login))
+            return dict(prefs) if prefs is not None else None
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
+        with self._lock:
+            self.prefs[(project_id, login)] = dict(kinds)
+
 
 _INSERT_DELIVERY = (
     "INSERT INTO deliveries (project_id, id, event) VALUES (%s, %s, %s) "
@@ -558,6 +653,42 @@ _UPDATE_SESSION_ROLES_SQL = """
     WHERE id = %s
 """
 _DELETE_SESSION_SQL = "DELETE FROM sessions WHERE id = %s"
+_SESSION_FOR_LOGIN_SQL = """
+    SELECT id, user_id, login, avatar_url, token_enc,
+           extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from absolute_expires_at)::float8,
+           extract(epoch from last_used_at)::float8, role_cache
+    FROM sessions
+    WHERE login = %s AND expires_at > to_timestamp(%s) AND absolute_expires_at > to_timestamp(%s)
+    ORDER BY last_used_at DESC LIMIT 1
+"""
+_LIST_COMMENTS_SQL = """
+    SELECT issue_number, author, body FROM comments
+    WHERE project_id = %s AND issue_number = ANY(%s)
+    ORDER BY created_at, id
+"""
+_DELETE_USER_SUBSCRIPTIONS_SQL = """
+    DELETE FROM push_subscriptions WHERE project_id = %s AND login = %s AND endpoint <> %s
+"""
+_UPSERT_SUBSCRIPTION_SQL = """
+    INSERT INTO push_subscriptions (login, project_id, endpoint, p256dh, auth)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (project_id, endpoint) DO UPDATE SET
+        login = excluded.login, p256dh = excluded.p256dh, auth = excluded.auth
+"""
+_DELETE_SUBSCRIPTION_SQL = "DELETE FROM push_subscriptions WHERE endpoint = %s"
+_DELETE_OWN_SUBSCRIPTION_SQL = """
+    DELETE FROM push_subscriptions
+    WHERE endpoint = %s AND login = %s AND (%s::bigint IS NULL OR project_id = %s)
+"""
+_LIST_SUBSCRIPTIONS_SQL = """
+    SELECT login, endpoint, p256dh, auth FROM push_subscriptions WHERE project_id = %s
+"""
+_GET_PREFS_SQL = "SELECT kinds FROM notify_prefs WHERE project_id = %s AND login = %s"
+_SET_PREFS_SQL = """
+    INSERT INTO notify_prefs (login, project_id, kinds) VALUES (%s, %s, %s)
+    ON CONFLICT (login, project_id) DO UPDATE SET kinds = excluded.kinds
+"""
 _SESSION_FIELDS = (
     "id", "user_id", "login", "avatar_url", "token_enc",
     "created_at", "expires_at", "absolute_expires_at", "last_used_at", "role_cache",
@@ -830,3 +961,50 @@ class PgStore:
         with self._conn() as conn:
             with conn.transaction():
                 conn.execute(_DELETE_SESSION_SQL, (session_id,))
+
+    def session_for_login(self, login: str, now: float) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_SESSION_FOR_LOGIN_SQL, (login, now, now)).fetchone()
+        return dict(zip(_SESSION_FIELDS, row)) if row else None
+
+    def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_COMMENTS_SQL, (project_id, issue_numbers)).fetchall()
+        return [{"issue_number": r[0], "author": r[1], "body": r[2]} for r in rows]
+
+    def save_subscription(
+        self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_DELETE_USER_SUBSCRIPTIONS_SQL, (project_id, login, endpoint))
+                conn.execute(_UPSERT_SUBSCRIPTION_SQL, (login, project_id, endpoint, p256dh, auth))
+
+    def delete_subscription(
+        self, endpoint: str, login: str | None = None, project_id: int | None = None
+    ) -> None:
+        with self._conn() as conn:
+            with conn.transaction():
+                if login is None:
+                    conn.execute(_DELETE_SUBSCRIPTION_SQL, (endpoint,))
+                else:
+                    conn.execute(
+                        _DELETE_OWN_SUBSCRIPTION_SQL, (endpoint, login, project_id, project_id)
+                    )
+
+    def list_subscriptions(self, project_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_SUBSCRIPTIONS_SQL, (project_id,)).fetchall()
+        return [{"login": r[0], "endpoint": r[1], "p256dh": r[2], "auth": r[3]} for r in rows]
+
+    def get_prefs(self, project_id: int, login: str) -> dict[str, bool] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_PREFS_SQL, (project_id, login)).fetchone()
+        return dict(row[0]) if row else None
+
+    def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_SET_PREFS_SQL, (login, project_id, Jsonb(kinds)))
