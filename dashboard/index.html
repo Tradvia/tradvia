@@ -1192,10 +1192,18 @@ let showSkipped = false;
 let data = null;
 // auto-refresh (pure)
 // The panel reloads by itself while the tab is visible, but never while someone is typing
-// or another load is running. Reads from the store are cheap (no GitHub rate limit), so it
-// can poll more often there than through the GitHub proxy.
+// or another load is running. A focused field always pauses it; an unfocused draft (a forgotten
+// "Novo card" form or half-written comment) only pauses it until AUTO_REFRESH_IDLE_MS passes
+// without edits, so an abandoned field cannot freeze the panel forever. Reads from the store
+// are cheap (no GitHub rate limit), so it can poll more often there than through the GitHub proxy.
 const AUTO_REFRESH_STORE_MS = 30000;
 const AUTO_REFRESH_PROXY_MS = 60000;
+const AUTO_REFRESH_IDLE_MS = 180000;
+function editingActive(s) {
+  if (s.focused) return true;
+  if (!s.draft || s.lastEditAt == null) return false;
+  return s.now - s.lastEditAt < AUTO_REFRESH_IDLE_MS;
+}
 function autoRefreshDue(s) {
   if (!s.enabled || s.hidden || s.editing || s.busy) return false;
   const interval = s.store ? AUTO_REFRESH_STORE_MS : AUTO_REFRESH_PROXY_MS;
@@ -1510,7 +1518,7 @@ function renderNewCard() {
   const row = el("div", null, "acts");
   row.append(create, cancel);
   form.append(title, desc, row);
-  open.addEventListener("click", () => { form.hidden = false; open.hidden = true; title.focus(); });
+  open.addEventListener("click", () => { form.hidden = false; open.hidden = true; lastEditAt = Date.now(); title.focus(); });
   cancel.addEventListener("click", () => { form.hidden = true; open.hidden = false; });
   box.append(open, form);
   return box;
@@ -1688,13 +1696,25 @@ async function refresh(quiet = false) {
   if (refreshAgain) { refreshAgain = false; refresh(true); }
 }
 
+// Time of the last edit/focus in a form field. Global because each render replaces the DOM.
+let lastEditAt = null;
+function noteEdit(e) {
+  const x = e.target;
+  if (!x || !x.closest || !x.closest("#content")) return;
+  if (x.tagName === "TEXTAREA" || x.tagName === "SELECT" ||
+      (x.tagName === "INPUT" && x.type !== "checkbox" && x.type !== "button")) lastEditAt = Date.now();
+}
+document.addEventListener("input", noteEdit);
+document.addEventListener("focusin", noteEdit);
+
 function isEditing() {
   const a = document.activeElement;
-  if (a && (a.tagName === "TEXTAREA" || a.tagName === "SELECT" ||
-            (a.tagName === "INPUT" && a.type !== "checkbox" && a.type !== "button"))) return true;
-  if (document.querySelector(".newcard:not([hidden])")) return true;
-  return [...document.querySelectorAll("#content textarea, #content input[type=text]")]
-    .some((x) => x.value.trim() !== "");
+  const focused = !!a && (a.tagName === "TEXTAREA" || a.tagName === "SELECT" ||
+    (a.tagName === "INPUT" && a.type !== "checkbox" && a.type !== "button"));
+  const draft = !!document.querySelector(".newcard:not([hidden])") ||
+    [...document.querySelectorAll("#content textarea, #content input[type=text]")]
+      .some((x) => x.value.trim() !== "");
+  return editingActive({ focused, draft, lastEditAt, now: Date.now() });
 }
 
 function autoRefreshEnabled() {
