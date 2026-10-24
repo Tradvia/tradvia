@@ -47,6 +47,22 @@ always with their own GitHub token and an audit entry. Status: 🟦 Partial,
 tested offline; it works in production once the GitHub App has the new
 permissions ([docs/github-app.md](docs/github-app.md)).
 
+**Connections per project** (ADR 0009): an admin picks the provider and model of
+the planner, executor, reviewer and orchestrator on the "Connections" screen and
+stores the provider secrets there. Secrets are encrypted in Postgres with a key
+derived from `TRADVIA_SECRET_KEY`, never sent back to the browser, and written as
+GitHub Actions repository secrets when saved. The optional `providers` section of
+`.tradvia.yml` is the default; what is set in Tradvia overrides it, and the screen
+shows the origin of each value. Status: 🟦 Partial, tested offline. Per provider:
+
+| Provider | Status |
+|---|---|
+| GitHub | ✅ Shipped (sign in and actions); Actions secrets need the *Secrets* permission |
+| Anthropic / Claude Code | 🟦 Partial (the planner and `claude.yml` use it; the per-role choice is not read by the workflows yet) |
+| Google Gemini | 🔨 In progress (secret and model stored and delivered; no executor uses them yet) |
+| OpenAI | 🔨 In progress (same as Gemini) |
+| GitLab | 🗓️ Planned ([#60](https://github.com/tradvia/tradvia/issues/60)) |
+
 ## Architecture
 
 ```mermaid

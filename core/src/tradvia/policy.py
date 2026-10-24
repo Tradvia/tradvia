@@ -8,12 +8,13 @@ It fails closed: unknown keys or invalid roles raise PolicyError.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Protocol
 
 import yaml
 
 from .budget import Budget, parse_budget
+from .connections import ConnectionInputError, validate_assignment
 from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
 
 POLICY_FILE = ".tradvia.yml"
@@ -39,6 +40,9 @@ class Interactions:
     update_branch: str = "maintain"
     # Also approving, rejecting and cancelling deploys, and the post-deploy operation.
     approve_deploy: str = "maintain"
+    # Providers, models and secrets of the project (ADR 0009). Locked to admin: .tradvia.yml
+    # may not lower it, because a secret is behind it.
+    manage_connections: str = "admin"
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,8 @@ class Policy:
     stagnation: Stagnation = Stagnation()
     risk: RiskPolicy = RiskPolicy()
     budget: Budget = Budget()
+    # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
+    providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def risk_requirement(self, level: str) -> str | None:
         """None when `level` runs free, else the minimum approving role. Unknown levels fail closed."""
@@ -117,7 +123,8 @@ def parse_policy(text: str | None) -> Policy:
     if not isinstance(data, dict):
         raise PolicyError("top level must be a mapping")
     unknown = sorted(str(k) for k in data
-                     if k not in ("access", "interactions", "stagnation", "risk", "budget"))
+                     if k not in ("access", "interactions", "stagnation", "risk", "budget",
+                                  "providers"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -131,6 +138,8 @@ def parse_policy(text: str | None) -> Policy:
     names = tuple(f.name for f in fields(Interactions))
     raw = _section(data, "interactions", names)
     interactions = Interactions(**{k: _role(v, f"interactions.{k}") for k, v in raw.items()})
+    if interactions.manage_connections != "admin":
+        raise PolicyError("interactions.manage_connections is fixed to admin and cannot be lowered")
 
     stagnation = Stagnation()
     raw_stagnation = _section(data, "stagnation", ("repeat_limit",))
@@ -145,7 +154,24 @@ def parse_policy(text: str | None) -> Policy:
                          for k, v in raw_risk.items()})
     # Never raises: invalid budget values fall back to the safe defaults.
     return Policy(view=view, interactions=interactions, stagnation=stagnation, risk=risk,
-                  budget=parse_budget(data.get("budget")))
+                  budget=parse_budget(data.get("budget")), providers=_providers(data))
+
+
+def _providers(data: dict) -> dict[str, dict[str, str]]:
+    """The optional `providers` section: `role: {provider, model}`, validated like the rest."""
+    section = data.get("providers") or {}
+    if not isinstance(section, dict):
+        raise PolicyError("'providers' must be a mapping")
+    out: dict[str, dict[str, str]] = {}
+    for role, value in section.items():
+        if not isinstance(value, dict) or sorted(map(str, value)) != ["model", "provider"]:
+            raise PolicyError(f"providers.{role}: use exactly 'provider' and 'model'")
+        try:
+            _, provider, model = validate_assignment(role, value["provider"], value["model"])
+        except ConnectionInputError as e:
+            raise PolicyError(f"providers.{role}: {e}") from None
+        out[role] = {"provider": provider, "model": model}
+    return out
 
 
 def role_from_github(permission: str | None, role_name: str | None = None) -> str | None:
