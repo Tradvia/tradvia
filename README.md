@@ -47,6 +47,10 @@ always with their own GitHub token and an audit entry. Status: 🟦 Partial,
 tested offline; it works in production once the GitHub App has the new
 permissions ([docs/github-app.md](docs/github-app.md)).
 
+**Documentation in the dashboard:** capability status, a step-by-step guide and
+technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the
+"Help" link in the header. Status: ✅ Shipped.
+
 **Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
 the panel lists, per project, the cards waiting for you by role (plan ready, agent
 question, PR opened, budget or adjustment limit) with a counter in the header, and can
