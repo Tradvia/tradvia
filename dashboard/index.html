@@ -50,8 +50,8 @@
   .chart svg { width: 100%; height: 90px; display: block; }
   .chart rect { fill: var(--info); }
   .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
-  .board { display: grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
-  .board.with-backlog { grid-template-columns: repeat(6, minmax(180px, 1fr)); }
+  .board { display: grid; grid-template-columns: repeat(6, minmax(180px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+  .board.with-backlog { grid-template-columns: repeat(7, minmax(180px, 1fr)); }
   .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
   .badge.pronto, .badge.concluido { color: var(--ok); }
   .badge.bloqueado { color: var(--bad); }
@@ -92,6 +92,7 @@
   .card .n { color: var(--muted); font-size: 12px; }
   .col.AGENT_WORKING h3 { color: var(--info); }
   .col.WAITING_HUMAN h3 { color: var(--warn); }
+  .col.BLOCKED h3 { color: var(--bad); }
   .col.IN_REVIEW_PR h3 { color: var(--info); }
   .col.DONE h3 { color: var(--ok); }
   .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
@@ -147,7 +148,11 @@
 
 /* ---------- Pure logic (no DOM) ---------- */
 
-const STATES = ["BACKLOG", "AGENT_WORKING", "WAITING_HUMAN", "IN_REVIEW_PR", "DONE"];
+const STATES = ["BACKLOG", "AGENT_WORKING", "WAITING_HUMAN", "BLOCKED", "IN_REVIEW_PR", "DONE"];
+// Run conclusions that mean the run ended without producing anything for a
+// human to act on (no plan posted, no PR opened): the card is stuck, not
+// waiting for a decision.
+const FAILED_CONCLUSIONS = ["failure", "timed_out", "cancelled", "action_required", "startup_failure"];
 const EXECUTORS = { "agent.yml": "Tradvia agent", "claude.yml": "Claude Code" };
 
 function isAgentBranch(ref) {
@@ -168,7 +173,10 @@ function deriveCardState(issue, prs, agentRuns) {
   if (hasOpenPr) return "IN_REVIEW_PR";
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
-  if (mine.some((r) => r.status === "completed")) return "WAITING_HUMAN";
+  // agentRuns keeps GitHub's own newest-first order, so the first completed
+  // run found here is the most recent one for this card.
+  const latest = mine.find((r) => r.status === "completed");
+  if (latest) return FAILED_CONCLUSIONS.includes(latest.conclusion) ? "BLOCKED" : "WAITING_HUMAN";
   return "BACKLOG";
 }
 
@@ -1107,12 +1115,13 @@ const I18N = {
     check_passed: "passou", check_failed: "falhou", check_pending: "em andamento", check_missing: "ausente",
     ignoreCla: "ignorar o CLA", merge: "Merge (squash)", updateBranch: "Atualizar branch",
     COL_BACKLOG: "Backlog", COL_AGENT_WORKING: "Agente trabalhando", COL_WAITING_HUMAN: "Aguardando humano",
-    COL_IN_REVIEW_PR: "Em revisão (PR)", COL_DONE: "Concluído",
+    COL_BLOCKED: "Bloqueado", COL_IN_REVIEW_PR: "Em revisão (PR)", COL_DONE: "Concluído",
     fPeriod: "Período", fAll: "tudo", f7d: "7 dias", f30d: "30 dias", f90d: "90 dias", fCustom: "personalizado",
     fFrom: "de", fTo: "até", fExecutor: "Executor", fAgent: "Agente Tradvia (agent.yml)",
     fClaude: "Claude Code (claude.yml)", fCard: "Card", fStatus: "Situação", fAllM: "todos",
     fAllF: "todas", ST_BACKLOG: "backlog", ST_AGENT_WORKING: "em andamento",
-    ST_WAITING_HUMAN: "aguardando humano", ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
+    ST_WAITING_HUMAN: "aguardando humano", ST_BLOCKED: "bloqueado",
+    ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
     noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
     costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
@@ -1160,12 +1169,13 @@ const I18N = {
     check_passed: "passed", check_failed: "failed", check_pending: "in progress", check_missing: "missing",
     ignoreCla: "ignore the CLA", merge: "Merge (squash)", updateBranch: "Update branch",
     COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
-    COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+    COL_BLOCKED: "BLOCKED", COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
     fPeriod: "Period", fAll: "all", f7d: "7 days", f30d: "30 days", f90d: "90 days", fCustom: "custom",
     fFrom: "from", fTo: "to", fExecutor: "Executor", fAgent: "Tradvia agent (agent.yml)",
     fClaude: "Claude Code (claude.yml)", fCard: "Card", fStatus: "Status", fAllM: "all",
     fAllF: "all", ST_BACKLOG: "backlog", ST_AGENT_WORKING: "in progress",
-    ST_WAITING_HUMAN: "waiting for human", ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
+    ST_WAITING_HUMAN: "waiting for human", ST_BLOCKED: "blocked",
+    ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
     noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
     costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
