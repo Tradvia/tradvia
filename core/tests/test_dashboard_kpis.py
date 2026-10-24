@@ -191,6 +191,45 @@ def test_filters_combine():
     assert numbers(view["issues"]) == [2] and numbers(view["prs"]) == [12]
 
 
+# --- board state (deriveCardState) -----------------------------------------------------------
+
+
+def _state(run_):
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    return js("deriveCardState(card, [], [run_])", card=card, run_=run_)
+
+
+def test_a_successful_completed_run_waits_for_a_human():
+    # The planner posted a plan and is waiting for an approve/reject/adjust reply.
+    assert _state(run("agent.yml", "Card 99", "2026-03-29T11:00:00Z")) == "WAITING_HUMAN"
+
+
+def test_a_failed_completed_run_is_blocked_not_waiting_for_a_human():
+    # Planning failed (e.g. hit the weekly usage limit): nothing was posted for a
+    # human to act on, so this must not be shown as WAITING_HUMAN.
+    failed = dict(run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"), conclusion="failure")
+    assert _state(failed) == "BLOCKED"
+
+
+def test_a_cancelled_or_timed_out_run_is_also_blocked():
+    for conclusion in ("timed_out", "cancelled"):
+        run_ = dict(run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"), conclusion=conclusion)
+        assert _state(run_) == "BLOCKED"
+
+
+def test_a_run_still_in_progress_is_agent_working_even_after_an_earlier_failure():
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-29T12:00:00Z"), status="in_progress", conclusion=None
+    )
+    older_failure = dict(
+        run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"), conclusion="failure"
+    )
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    assert js(
+        "deriveCardState(card, [], [a, b])", card=card, a=in_progress, b=older_failure
+    ) == "AGENT_WORKING"
+
+
 # --- cost per card --------------------------------------------------------------------------
 
 def test_card_cost_sums_every_plan_plus_the_executor():
