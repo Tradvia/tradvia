@@ -90,7 +90,7 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
 
     chat = make_chat(chat_kind, issue, policy)
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor(),
-                      budget=policy.budget)
+                      policy=policy, budget=policy.budget)
 
     # Checkpoints and usage are keyed by project (repository) and never cross projects.
     config = {"configurable": {"thread_id": f"{github.repo}#{card_id}"}}

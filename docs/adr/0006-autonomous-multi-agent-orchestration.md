@@ -86,8 +86,19 @@ Tradvia supports several topologies and picks one per task type:
 | Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Shipped: per-card `budget` in `.tradvia.yml` (`max_minutes`, `max_steps`, `max_usd`; safe defaults 30 min, 40 steps, $5). At 80% of any limit the next prompt carries a system notice requiring a synthesis or a request for help; at 100% the agent is not called again, the issue gets a comment with the consumption and the card stays in `WAITING_HUMAN`. Usage lives on the card state and in the PR body, and is scoped by `project_id`: it never crosses projects. Invalid values fall back to the defaults (fail closed). |
 | Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row stop the loop, inject a reflective error or route to a reviewer agent. | Planned |
 | Durable execution and checkpointing | Every state change is persisted (LangGraph checkpointer on Postgres). A failure at step 14 of 15 resumes at 14; a developer can fork the state at step 10 to try another skill. | Partial (in-memory checkpointer) |
-| Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Partial (plan approval gate + role policy) |
+| Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Shipped |
 | Execution sandboxing | Code and file skills run in ephemeral isolated environments per agent session (containers now, microVMs later), so autonomy never compromises the host. | Partial (GitHub runners / self-hosted runner with limits) |
+
+Risk gateway notes (`core/src/tradvia/risk.py`, `policy.py`, `graph.py`): levels are `read`,
+`reversible_write` and `destructive_external`. The default map puts reading issues/repositories at
+`read`; branches, commits, pull requests and comments at `reversible_write`; merge, delete,
+publish, deploy and external messages at `destructive_external`. The `risk:` block of
+`.tradvia.yml` sets, per level, `free` or the minimum GitHub role that approves (defaults: `read`
+and `reversible_write` free, `destructive_external` needs `maintain`). An action with no declared
+level fails closed and is treated as `destructive_external`. Before such an action the card is
+checkpointed, the chat is told what will happen, and it resumes only on approval from a person
+with the required role; rejection ends the action. Gate state is keyed by the card thread and
+carries the project id.
 
 ## Delivery order
 

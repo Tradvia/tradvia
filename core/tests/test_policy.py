@@ -184,6 +184,18 @@ def test_pull_and_deploy_interactions_default_to_maintain_and_can_be_changed():
     assert custom.allows("merge_pr", "write") and not custom.allows("approve_deploy", "maintain")
 
 
+def test_risk_defaults_and_parsing():
+    p = Policy()
+    assert (p.risk.read, p.risk.reversible_write, p.risk.destructive_external) == (
+        "free", "free", "maintain")
+    custom = parse_policy("risk:\n  reversible_write: write\n  destructive_external: admin\n")
+    assert custom.risk_requirement("reversible_write") == "write"
+    assert custom.risk_requirement("destructive_external") == "admin"
+    assert custom.risk_requirement("read") is None
+    with pytest.raises(PolicyError):
+        parse_policy("risk:\n  destructive_external: nobody\n")
+
+
 def test_budget_section_is_parsed_and_invalid_values_fall_back():
     from tradvia.budget import Budget
 
