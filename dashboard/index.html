@@ -117,8 +117,8 @@
   .badge.pronto, .badge.concluido { color: var(--ok); }
   .badge.bloqueado { color: var(--bad); }
   .badge.andamento { color: var(--info); }
-  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s2); min-height: 80px; }
-  .col h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s2); min-height: 80px; max-height: 70vh; overflow-y: auto; }
+  .col h3 { position: sticky; top: 0; background: var(--panel); margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; }
   .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
   .card:focus-visible { outline: 2px solid var(--info); }
   .card .cost { color: var(--muted); font-size: 12px; }
@@ -1374,6 +1374,7 @@ const I18N = {
     activityError: "Não foi possível carregar a atividade.",
     executor: "Executor", runTitle: "Título", event: "Evento", status: "Status",
     duration: "Duração", started: "Início", link: "Run", open: "abrir",
+    prev: "Anterior", next: "Próxima", pageOf: "página {page} de {pages} ({total} execuções)",
     inProgress: "em andamento", showSkipped: "mostrar puladas", updated: "Atualizado em", dataFrom: "dados",
     backlog: "Backlog do projeto", position: "Posição", dependsOn: "Depende de",
     st_pronto: "pronto", st_bloqueado: "bloqueado", st_andamento: "em andamento", st_concluido: "concluído",
@@ -1460,6 +1461,7 @@ const I18N = {
     activityError: "Could not load activity.",
     executor: "Executor", runTitle: "Title", event: "Event", status: "Status",
     duration: "Duration", started: "Started", link: "Run", open: "open",
+    prev: "Previous", next: "Next", pageOf: "page {page} of {pages} ({total} runs)",
     inProgress: "in progress", showSkipped: "show skipped", updated: "Updated at", dataFrom: "data",
     backlog: "Project backlog", position: "Position", dependsOn: "Depends on",
     st_pronto: "ready", st_bloqueado: "blocked", st_andamento: "in progress", st_concluido: "done",
@@ -1577,6 +1579,17 @@ document.documentElement.dataset.theme = prefs.theme;
 let lang = prefs.lang;
 let showSkipped = false;
 let data = null;
+// pagination (pure)
+const RUNS_PAGE_SIZE = 20;
+function paginate(items, page, size) {
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const p = Math.min(Math.max(0, Math.trunc(page) || 0), pages - 1);
+  return { rows: items.slice(p * size, (p + 1) * size), page: p, pages, total };
+}
+// end pagination
+// In-memory only: not persisted, and paginate() clamps it when the list shrinks.
+let runsPage = 0;
 // auto-refresh (pure)
 // The panel reloads by itself while the tab is visible, but never while someone is typing
 // or another load is running. A focused field always pauses it; an unfocused draft (a forgotten
@@ -1687,6 +1700,7 @@ let filters = parseFilters(location.search);
 
 function setFilters(next) {
   filters = next;
+  runsPage = 0;
   history.replaceState(null, "", location.pathname + filtersToSearch(filters, location.search) + location.hash);
   render();
 }
@@ -1995,7 +2009,9 @@ function renderRuns(runs) {
   ["executor", "runTitle", "event", "status", "duration", "started", "link"]
     .forEach((k) => head.append(el("th", t(k))));
   table.append(head);
-  for (const r of runs) {
+  const pg = paginate(runs, runsPage, RUNS_PAGE_SIZE);
+  runsPage = pg.page;
+  for (const r of pg.rows) {
     const tr = el("tr");
     const [st, cls] = statusInfo(r);
     const dur = r.status === "completed" ? formatDuration(runDuration(r)) : "—";
@@ -2016,6 +2032,19 @@ function renderRuns(runs) {
   }
   wrap.append(table);
   root.append(wrap);
+  if (pg.pages > 1) {
+    const nav = el("div", null, "sub");
+    const prev = el("button", t("prev"));
+    prev.disabled = pg.page === 0;
+    prev.addEventListener("click", () => { runsPage = pg.page - 1; renderRuns(runs); });
+    const next = el("button", t("next"));
+    next.disabled = pg.page >= pg.pages - 1;
+    next.addEventListener("click", () => { runsPage = pg.page + 1; renderRuns(runs); });
+    const label = el("span", t("pageOf").replace("{page}", pg.page + 1)
+      .replace("{pages}", pg.pages).replace("{total}", pg.total));
+    nav.append(prev, " ", label, " ", next);
+    root.append(nav);
+  }
 }
 
 // Project connections (ADR 0009), admin only. Secrets are write-only: the field is cleared
@@ -2397,7 +2426,7 @@ document.getElementById("lang").addEventListener("change", (e) => {
   try { localStorage.setItem("tradvia.lang", e.target.value); } catch (err) { /* ignore */ }
 });
 window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
-document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; render(); });
+document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; runsPage = 0; render(); });
 detectApi().then(() => { loadAuth(); return refresh(); });
 </script>
 </body>
