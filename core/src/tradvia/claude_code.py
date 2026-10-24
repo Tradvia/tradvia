@@ -78,13 +78,21 @@ def exec_max_turns() -> int:
 
 
 def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
-               runner: Callable = subprocess.run, timeout: int | None = None) -> dict:
-    """Run `claude -p` headless and return its JSON result."""
+               runner: Callable = subprocess.run, timeout: int | None = None,
+               env: dict[str, str] | None = None, disallowed_tools: str | None = None) -> dict:
+    """Run `claude -p` headless and return its JSON result.
+
+    `env` replaces the child's environment and `disallowed_tools` adds `--disallowedTools`;
+    both are only passed when given (the orchestrator uses them, see orchestrator.py).
+    """
     cmd = ["claude", "-p", prompt, "--output-format", "json",
            "--max-turns", str(max_turns), "--allowedTools", allowed_tools]
+    if disallowed_tools:
+        cmd += ["--disallowedTools", disallowed_tools]
+    extra = {"env": env} if env is not None else {}
     try:
         proc = runner(cmd, cwd=cwd, capture_output=True, text=True,
-                      timeout=timeout or _timeout())
+                      timeout=timeout or _timeout(), **extra)
     except FileNotFoundError:
         raise RuntimeError("Claude Code CLI not found: install it "
                            "(npm i -g @anthropic-ai/claude-code) and put `claude` on PATH") from None
