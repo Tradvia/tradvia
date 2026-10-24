@@ -23,6 +23,8 @@ from langgraph.types import interrupt
 
 from .integrations import Chat, GitHub
 from .llm import architect_plan
+from .policy import Policy, role_of
+from .risk import classify
 from .state import Card, transition
 
 MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
@@ -103,7 +105,10 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
-                checkpointer=None, executor=None, cwd: str = "."):
+                checkpointer=None, executor=None, cwd: str = ".",
+                policy: Policy | None = None):
+    policy = policy or Policy()
+
     def start_work(card: Card) -> dict:
         number = card["source"]["issue_number"]
         issue = github.get_issue(number)
@@ -183,7 +188,7 @@ def build_graph(github: GitHub, chat: Chat,
     def route_after_reply(card: Card) -> str:
         last = card["approvals"][-1]["decision"]
         if last == "approved":
-            return "open_pr"
+            return "risk_gate"
         if last == "feedback":
             if sum(a["decision"] == "feedback" for a in card["approvals"]) < max_replans():
                 return "plan"
@@ -200,6 +205,61 @@ def build_graph(github: GitHub, chat: Chat,
         else:
             github.comment(number, text)
         return transition(card["status"], "WAITING_HUMAN", "@Agent-Architect", "Replan limit reached")
+
+    def _describe_action(card: Card, action: str) -> str:
+        if action == "open_pull_request":
+            number = card["source"]["issue_number"]
+            target = f" com o arquivo `{card['file_path']}`" if card.get("file_path") else ""
+            return f"criar a branch `tradvia/issue-{number}`{target} e abrir um pull request."
+        return f"executar `{action}` no card {card['id']}."
+
+    def risk_gate(card: Card) -> dict:
+        """Pass straight through when the policy says free; else announce and suspend."""
+        action = card.get("pending_action") or "open_pull_request"
+        level = classify(action)
+        required = policy.risk_requirement(level)
+        if required is None:
+            return {"risk": {"action": action, "level": level, "state": "approved"}}
+        # The gate state is keyed by the card thread and carries the project (repo) id.
+        project = getattr(github, "repo", None)
+        chat.post(f"🟠 **{card['id']}** — ação `{action}` (risco `{level}`) precisa de aprovação "
+                  f"de quem tem o papel `{required}` ou superior. Responda **Aprovado** ou "
+                  f"**Rejeitado**.\nSerá feito: {_describe_action(card, action)}")
+        return {"risk": {"project_id": project, "action": action, "level": level,
+                         "required_role": required, "state": "pending"},
+                **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                             f"Risk gate: {action} ({level}) needs {required}")}
+
+    def risk_wait(card: Card) -> dict:
+        # Separate from risk_gate so the announcement is not posted again on resume.
+        risk = card["risk"]
+        reply = interrupt({"card_id": card["id"], "project_id": risk.get("project_id"),
+                           "action": risk["action"], "required_role": risk["required_role"]})
+        by = reply.get("by", "human")
+        decision = classify_reply(reply["text"])
+        if decision == "feedback":
+            return {}  # not a decision: keep waiting
+        role = role_of(github, by)
+        if not policy.allows_risk(risk["level"], role):
+            chat.post(f"⛔ **{card['id']}** — @{by} não pode aprovar `{risk['action']}`: "
+                      f"é preciso o papel `{risk['required_role']}` ou superior. "
+                      "A ação continua suspensa.")
+            return {}
+        entry = {"by": by, "decision": decision, "comment": reply["text"],
+                 "action": risk["action"], "role": role}
+        if decision == "rejected":
+            chat.post(f"🔴 **{card['id']}** — `{risk['action']}` rejeitada por @{by}. "
+                      "Nada foi executado.")
+            return {"approvals": [entry], "risk": {**risk, "state": "rejected"},
+                    **transition(card["status"], "BACKLOG", by, "Risk gate: action rejected")}
+        return {"approvals": [entry], "risk": {**risk, "state": "approved"},
+                **transition(card["status"], "AGENT_WORKING", by, "Risk gate: action approved")}
+
+    def route_risk_gate(card: Card) -> str:
+        return "risk_wait" if card["risk"]["state"] == "pending" else "open_pr"
+
+    def route_risk_wait(card: Card) -> str:
+        return {"approved": "open_pr", "rejected": END}.get(card["risk"]["state"], "risk_wait")
 
     def open_pr(card: Card) -> dict:
         number = card["source"]["issue_number"]
@@ -287,6 +347,8 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_node("plan", plan)
     g.add_node("ask_human", ask_human)
     g.add_node("wait_human", wait_human)
+    g.add_node("risk_gate", risk_gate)
+    g.add_node("risk_wait", risk_wait)
     g.add_node("open_pr", open_pr)
     g.add_node("replan_limit", replan_limit)
     g.add_edge(START, "start_work")
@@ -294,7 +356,9 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_conditional_edges("plan", lambda c: END if c.get("plan_error") else "ask_human",
                             ["ask_human", END])
     g.add_edge("ask_human", "wait_human")
-    g.add_conditional_edges("wait_human", route_after_reply, ["open_pr", "plan", "replan_limit", END])
+    g.add_conditional_edges("wait_human", route_after_reply, ["risk_gate", "plan", "replan_limit", END])
+    g.add_conditional_edges("risk_gate", route_risk_gate, ["risk_wait", "open_pr"])
+    g.add_conditional_edges("risk_wait", route_risk_wait, ["risk_wait", "open_pr", END])
     g.add_edge("open_pr", END)
     g.add_edge("replan_limit", END)
     return g.compile(checkpointer=checkpointer or MemorySaver())
