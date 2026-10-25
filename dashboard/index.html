@@ -74,7 +74,6 @@
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
   .controls { display: flex; gap: 8px; align-items: center; }
-  #help-link { border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
   button, select {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
@@ -198,7 +197,6 @@
       <button id="bell" type="button" hidden><span aria-hidden="true">🔔</span> <span id="bell-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
-      <a id="help-link" href="docs.html" target="_blank" rel="noopener" data-i18n="docs" data-i18n-title="docsTitle"></a>
       <select id="lang" aria-label="Language">
         <option value="pt">PT-BR</option>
         <option value="en">EN</option>
@@ -1724,6 +1722,10 @@ function navItems(rights) {
     // for an admin the link is live and scrolls there (see scrollToConnectionsIfLinked()).
     { id: "connections", labelKey: "nav.connections", status: rights && rights.can_manage_connections ? "ready" : "soon" },
     { id: "settings", labelKey: "nav.settings", status: "ready", limited: !rights },
+    // Two different things used to both say "Ajuda" in the header: this one leaves the app for
+    // the full README/guides page, the next opens the in-app help view. Keeping them side by
+    // side in the same menu, with distinct labels, makes clear they're not the same link twice.
+    { id: "docs", labelKey: "docs", status: "ready", href: "docs.html", external: true, titleKey: "docsTitle" },
     { id: "help", labelKey: "nav.help", status: "ready" },
   ];
 }
@@ -2393,6 +2395,11 @@ function renderNav() {
     if (it.status === "soon") {
       a.setAttribute("aria-disabled", "true");
       a.append(el("span", t("soon"), "soon-badge"));
+    } else if (it.external) {
+      a.href = it.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      if (it.titleKey) a.title = t(it.titleKey);
     } else {
       a.href = "#" + it.id;
       if (it.id === view) a.setAttribute("aria-current", "page");
@@ -2501,7 +2508,6 @@ function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
   document.querySelectorAll("[data-i18n-placeholder]").forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
-  document.querySelectorAll("[data-i18n-title]").forEach((n) => { n.title = t(n.dataset.i18nTitle); });
   document.getElementById("lang").value = lang;
   renderAuth();
   renderView();

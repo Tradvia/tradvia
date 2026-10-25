@@ -99,13 +99,18 @@ def test_shipped_claims_are_only_the_store_backed_ones():
     assert shipped == {"backlog", "kpis"}
 
 
-def test_help_link_points_to_the_docs_page():
-    links = [a for a in parse(INDEX).links if a.get("id") == "help-link"]
-    assert len(links) == 1
-    assert links[0]["href"] == "docs.html"
+def test_docs_link_lives_in_the_same_menu_as_help():
+    # The docs.html link and the in-app help view are both JS-rendered nav items (navItems()),
+    # not a static <a> tag, so they're read from source rather than parsed as markup. Keeping
+    # them in the one array is what puts them in the same menu, side by side, instead of one
+    # floating alone in the header controls like before.
     html = INDEX.read_text(encoding="utf-8")
+    nav_fn = re.search(r"function navItems\(rights\) \{.*?\n\}", html, re.S)
+    assert nav_fn, "navItems() not found"
+    body = nav_fn.group(0)
+    assert 'href: "docs.html"' in body and '"docs"' in body and '"help"' in body
     # Labeled "Documentação"/"Documentation", not "Ajuda"/"Help": that text is reserved for the
-    # separate in-app help view (nav.help), so the two links in the header read as distinct.
+    # separate in-app help view (nav.help), so the two items read as distinct, not a duplicate.
     assert 'docs: "Documentação"' in html and 'docs: "Documentation"' in html
 
 
