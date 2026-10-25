@@ -1295,6 +1295,32 @@ async function loadBacklog(repo) {
 
 const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em andamento": "andamento", "concluído": "concluido" };
 
+// A card can have real in-flight work (an open PR on its own branch) without ever carrying the
+// agent:ready label: the label starts a run (agent.yml), it does not mark one as under way. Left
+// alone, such a card was reachable only from the "Pendências" inbox, never as a card in its own
+// column (deriveCardState already places it correctly — it never looked at the label). Fetched
+// one issue at a time: there is no "give me these N issues" endpoint.
+function orphanedIssueNumbers(labeledIssues, prs) {
+  const known = new Set(labeledIssues.map((i) => i.number));
+  const found = new Set();
+  for (const p of prs) {
+    if (p.state !== "open") continue;
+    const n = issueOfBranch(p.head && p.head.ref);
+    if (n != null && !known.has(n)) found.add(n);
+  }
+  return [...found];
+}
+
+async function withOrphanedCards(repo, labeledIssues, prs) {
+  const numbers = orphanedIssueNumbers(labeledIssues, prs);
+  if (numbers.length === 0) return labeledIssues;
+  const fetched = await Promise.all(
+    numbers.map((n) => getData(repo, "/issues/" + n).catch(() => null))
+  );
+  const extra = fetched.filter((i) => i && !i.pull_request);
+  return labeledIssues.concat(extra);
+}
+
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
   const [agent, claude, issues, prs] = await Promise.all([
@@ -1306,7 +1332,9 @@ async function loadData(repo) {
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
-  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
+  const labeledIssues = issues.filter((i) => !i.pull_request);
+  const allIssues = await withOrphanedCards(repo, labeledIssues, prs);
+  return { agentRuns, runs, issues: allIssues, prs, backlog: await loadBacklog(repo) };
 }
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
