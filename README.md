@@ -60,6 +60,11 @@ with a scripted model; see [docs/orchestrator.md](docs/orchestrator.md).
 technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the
 "Help" link in the header. Status: ✅ Shipped.
 
+**Coding agents** ([docs/coding-agents.md](docs/coding-agents.md), ADR 0010): the planner
+and executor of a card is an adapter (Claude Code ✅ Shipped; Gemini CLI and Codex CLI
+🟨 In progress, tested offline with fake runners). IDE tools without a headless CLI are
+⏳ Planned.
+
 **Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
 the panel lists, per project, the cards waiting for you by role (plan ready, agent
 question, PR opened, budget or adjustment limit) with a counter in the header, and can
