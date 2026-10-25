@@ -3,8 +3,14 @@
 Status: 🟦 Partial. The conversation, the closed tool set, the budget, the cost record and
 the audit are implemented and tested offline with a scripted model. Not yet shipped: durable
 execution of a run across API restarts (#40; a run lost in a restart leaves the message
-without a reply), a pending-items inbox shared with the rest of the panel (#47; for now
-pending items live in the conversation) and a live check against real Claude Code.
+without a reply) and a pending-items inbox shared with the rest of the panel (#47; for now
+pending items live in the conversation).
+
+Until #104, the orchestrator could never actually run in production: the deploy image had
+no Node.js/Claude Code CLI and nothing passed `CLAUDE_CODE_OAUTH_TOKEN` through. `#104`
+fixed the deployment (Node.js + the CLI in `infra/oci/Dockerfile.api`, the token wired
+through `deploy-oci.yml` → `compose.yaml`'s `api` service) — see "Credentials" below for the
+one remaining owner step. Live-checked against real Claude Code once that secret is set.
 Part of [ADR 0007](adr/0007-tradvia-as-the-single-interaction-surface.md).
 
 ## How it works
@@ -70,6 +76,15 @@ No credential is put in the prompt. The user's GitHub token stays inside the API
 is used only by the tools. The model process gets an allow-listed environment (`PATH`,
 `HOME`, locale, proxy and CA settings and `CLAUDE_CODE_OAUTH_TOKEN`, which is its own login
 to Claude): no `GITHUB_TOKEN`, no `DATABASE_URL`, no `TRADVIA_SECRET_KEY`.
+
+**Production (owner step, #104):** `CLAUDE_CODE_OAUTH_TOKEN` has to exist in the `api`
+service's environment in the first place for the allow-list above to have anything to pass
+through. Run `claude setup-token` on your own machine and save the result as the
+`CLAUDE_CODE_OAUTH_TOKEN` secret of the `production` GitHub environment (see
+[deploy-oci.md](deploy-oci.md), step 4) — `deploy-oci.yml` and `compose.yaml` already wire it
+from there into the container. Without it, every chat message fails with "The orchestrator
+stopped: Claude Code CLI not found" (no CLI on `PATH`) or the CLI's own not-logged-in error
+(CLI present, no token) — this is the deploy image's dependency, not the API's.
 
 `review_pr` needs the project's checkout on the runner: set `TRADVIA_RUNNER_DIR_<OWNER>_<REPO>`
 (for `Tradvia/tradvia`: `TRADVIA_RUNNER_DIR_TRADVIA_TRADVIA`). Without it the tool answers

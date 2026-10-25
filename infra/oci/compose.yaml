@@ -27,7 +27,9 @@ services:
       context: ./src
       dockerfile: infra/oci/Dockerfile.api
     restart: unless-stopped
-    mem_limit: 256m
+    # Each orchestrator chat turn (#104) shells out to `claude -p` as a child process
+    # alongside uvicorn; 256m was sized for the API alone and starved that subprocess.
+    mem_limit: 512m
     environment:
       TRADVIA_REPO: ${TRADVIA_REPO:-Tradvia/tradvia}
       TRADVIA_PROJECTS: ${TRADVIA_PROJECTS:-${TRADVIA_REPO:-Tradvia/tradvia}}
@@ -39,6 +41,10 @@ services:
       TRADVIA_GITHUB_APP_CLIENT_ID: ${TRADVIA_GITHUB_APP_CLIENT_ID:-}
       TRADVIA_GITHUB_APP_CLIENT_SECRET: ${TRADVIA_GITHUB_APP_CLIENT_SECRET:-}
       TRADVIA_SECRET_KEY: ${TRADVIA_SECRET_KEY:-}
+      # Orchestrator chat (#57/#104): without this, every chat message fails with
+      # "The orchestrator stopped: Claude Code CLI not found" (claude_code.run_claude()),
+      # or, once the CLI is on PATH, with the CLI's own not-authenticated error.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

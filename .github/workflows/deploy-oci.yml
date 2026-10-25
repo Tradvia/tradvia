@@ -64,14 +64,18 @@ jobs:
           TRADVIA_SECRET_KEY: ${{ secrets.TRADVIA_SECRET_KEY }}
           TRADVIA_DOMAIN: ${{ vars.TRADVIA_DOMAIN }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          # Orchestrator chat (#57/#104): `claude setup-token` output, pasted as a repo/environment
+          # secret. Empty means the orchestrator chat stays unavailable (same as today).
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           # GITHUB_TOKEN is optional (fine-grained, read-only). Empty means anonymous GitHub API limits.
           # TRADVIA_WEBHOOK_SECRET signs GitHub webhooks (HMAC SHA-256). Empty means webhooks are rejected.
           # Sign in with GitHub (docs/github-app.md) stays off until all three TRADVIA_GITHUB_APP_* /
           # TRADVIA_SECRET_KEY values are set. The client ID is public, so it is a variable.
-          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\nTRADVIA_WEBHOOK_SECRET=%s\nTRADVIA_GITHUB_APP_CLIENT_ID=%s\nTRADVIA_GITHUB_APP_CLIENT_SECRET=%s\nTRADVIA_SECRET_KEY=%s\n' \
+          printf 'TRADVIA_DOMAIN=%s\nACME_EMAIL=%s\nPOSTGRES_PASSWORD=%s\nGITHUB_TOKEN=%s\nTRADVIA_WEBHOOK_SECRET=%s\nTRADVIA_GITHUB_APP_CLIENT_ID=%s\nTRADVIA_GITHUB_APP_CLIENT_SECRET=%s\nTRADVIA_SECRET_KEY=%s\nCLAUDE_CODE_OAUTH_TOKEN=%s\n' \
             "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" "$GITHUB_TOKEN" "$TRADVIA_WEBHOOK_SECRET" \
             "$TRADVIA_GITHUB_APP_CLIENT_ID" "$TRADVIA_GITHUB_APP_CLIENT_SECRET" "$TRADVIA_SECRET_KEY" \
+            "$CLAUDE_CODE_OAUTH_TOKEN" \
             | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
 
       - name: Upload compose, Caddyfile and dashboard

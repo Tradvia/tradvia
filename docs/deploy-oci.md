@@ -69,6 +69,7 @@ yourself as a **required reviewer**, then add:
 | Secret | `POSTGRES_PASSWORD` | a long random password |
 | Variable | `TRADVIA_DOMAIN` | `app.tradvia.org` |
 | Variable | `ACME_EMAIL` | e-mail for the HTTPS certificate notices |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | optional — output of `claude setup-token` run on your own machine. Enables the **orchestrator conversation** ([orchestrator.md](orchestrator.md)); without it chat stays unavailable, same as today |
 
 Delete the local `tradvia-deploy` private key after saving it as a secret.
 
@@ -89,11 +90,12 @@ services and checks `https://app.tradvia.org/healthz`.
 
 ## API
 
-The `api` service (`core/src/tradvia/api.py`, Starlette + uvicorn, 256 MB limit)
-removes the 60 requests/hour anonymous limit per visitor IP that the dashboard
-hits when it calls GitHub from the browser. On `app.tradvia.org` the dashboard
-detects `/api/healthz` and uses `/api/github/...`; elsewhere it still calls
-GitHub directly.
+The `api` service (`core/src/tradvia/api.py`, Starlette + uvicorn, 512 MB limit
+— raised from 256 MB in #104 because each orchestrator chat turn spawns a
+`claude -p` child process alongside uvicorn) removes the 60 requests/hour
+anonymous limit per visitor IP that the dashboard hits when it calls GitHub
+from the browser. On `app.tradvia.org` the dashboard detects `/api/healthz`
+and uses `/api/github/...`; elsewhere it still calls GitHub directly.
 
 - `GET /api/healthz` returns `{"ok": true}`.
 - `GET /api/github/{path}` forwards to `https://api.github.com/{path}` only for

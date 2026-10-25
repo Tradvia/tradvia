@@ -1,8 +1,21 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Build context: the directory that holds core/ (see compose.yaml).
+#
+# The orchestrator chat (ADR 0007, #57) shells out to the Claude Code CLI
+# (`claude -p`; orchestrator.default_model(), docs/orchestrator.md). Node.js
+# and the CLI are an explicit, documented runtime dependency of this image
+# for that reason alone (#104) — nothing else in the API needs them.
 FROM python:3.12-slim
 
 RUN useradd --create-home --uid 10001 tradvia
+
+# nodejs/npm (Debian bookworm's packaged versions) to install and run the
+# Claude Code CLI the orchestrator needs; see claude_code.run_claude()'s own
+# install hint ("npm i -g @anthropic-ai/claude-code").
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && npm install -g @anthropic-ai/claude-code \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY core ./core
