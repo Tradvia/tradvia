@@ -1473,9 +1473,17 @@ let cardToOpen = (() => {
 function openRequestedCard() {
   if (cardToOpen === null) return;
   const node = document.getElementById("card-" + cardToOpen);
-  if (!node) return;
   const n = cardToOpen;
-  cardToOpen = null;
+  cardToOpen = null; // one attempt: by the time this runs, data.issues has already loaded
+  if (!node) {
+    // The inbox (pending.py's PR_OPENED) flags any open PR on a tradvia/issue-N or
+    // claude/issue-N-... branch, whether or not that issue ever got the agent:ready label the
+    // board itself requires to render a card for it (#59, "/issues?labels=agent:ready..."). A
+    // pending item the board cannot show is still something to act on (ADR 0007): open the
+    // GitHub issue/PR directly rather than leaving the click looking like it did nothing.
+    window.open("https://github.com/" + getRepo() + "/issues/" + n, "_blank", "noopener");
+    return;
+  }
   node.scrollIntoView({ block: "center" });
   if (!openCards.has(n)) node.click();
 }
