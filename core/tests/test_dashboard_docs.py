@@ -104,7 +104,9 @@ def test_help_link_points_to_the_docs_page():
     assert len(links) == 1
     assert links[0]["href"] == "docs.html"
     html = INDEX.read_text(encoding="utf-8")
-    assert 'help: "Ajuda"' in html and 'help: "Help"' in html
+    # Labeled "Documentação"/"Documentation", not "Ajuda"/"Help": that text is reserved for the
+    # separate in-app help view (nav.help), so the two links in the header read as distinct.
+    assert 'docs: "Documentação"' in html and 'docs: "Documentation"' in html
 
 
 def test_docs_page_i18n_and_back_link():

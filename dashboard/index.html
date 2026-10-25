@@ -198,7 +198,7 @@
       <button id="bell" type="button" hidden><span aria-hidden="true">🔔</span> <span id="bell-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
-      <a id="help-link" href="docs.html" data-i18n="help"></a>
+      <a id="help-link" href="docs.html" target="_blank" rel="noopener" data-i18n="docs" data-i18n-title="docsTitle"></a>
       <select id="lang" aria-label="Language">
         <option value="pt">PT-BR</option>
         <option value="en">EN</option>
@@ -1521,7 +1521,7 @@ function openRequestedCard() {
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
-    help: "Ajuda",
+    docs: "Documentação", docsTitle: "README e guias de uso (abre em outra aba)",
     inbox: "Pendências", inboxEmpty: "Nada aguardando você.", notifications: "Notificações",
     enableNotify: "Ativar notificações", disableNotify: "Desativar notificações",
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
@@ -1615,7 +1615,7 @@ const I18N = {
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
-    help: "Help",
+    docs: "Documentation", docsTitle: "README and usage guides (opens in a new tab)",
     inbox: "Pending", inboxEmpty: "Nothing is waiting for you.", notifications: "Notifications",
     enableNotify: "Enable notifications", disableNotify: "Disable notifications",
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
@@ -2501,6 +2501,7 @@ function render() {
   document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
   document.querySelectorAll("[data-i18n]").forEach((n) => { n.textContent = t(n.dataset.i18n); });
   document.querySelectorAll("[data-i18n-placeholder]").forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
+  document.querySelectorAll("[data-i18n-title]").forEach((n) => { n.title = t(n.dataset.i18nTitle); });
   document.getElementById("lang").value = lang;
   renderAuth();
   renderView();
