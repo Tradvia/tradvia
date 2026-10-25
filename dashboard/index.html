@@ -1682,7 +1682,11 @@ const VIEWS = ["panel", "settings", "help"];
 function navItems(rights) {
   return [
     { id: "panel", labelKey: "nav.panel", status: "ready" },
-    { id: "connections", labelKey: "nav.connections", status: "soon" }, // #58
+    // #58/ADR 0009: shipped (roles, secrets, GitHub Actions delivery), rendered inline at the
+    // bottom of the panel view (#connections-section) rather than as its own routed view.
+    // "soon" only for someone who cannot use the screen yet (no admin role on this project);
+    // for an admin the link is live and scrolls there (see scrollToConnectionsIfLinked()).
+    { id: "connections", labelKey: "nav.connections", status: rights && rights.can_manage_connections ? "ready" : "soon" },
     { id: "settings", labelKey: "nav.settings", status: "ready", limited: !rights },
     { id: "help", labelKey: "nav.help", status: "ready" },
   ];
@@ -2330,6 +2334,15 @@ function currentView() {
   return parseView(location.hash);
 }
 
+// "#connections" is not a routed view (it falls back to "panel" in parseView): it is an
+// in-page anchor to #connections-section, which render()/renderConnections() already show or
+// hide by the time this runs. A no-op when the section is hidden (no admin role) or absent.
+function scrollToConnectionsIfLinked() {
+  if (location.hash !== "#connections") return;
+  const section = document.getElementById("connections-section");
+  if (section && !section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function navRights() {
   if (!authState || authState.authenticated !== true) return null;
   return myRights() || { role: null };
@@ -2578,9 +2591,9 @@ document.getElementById("lang").addEventListener("change", (e) => {
   // Mirrors the choice under the plain key docs.html (a separate page) reads.
   try { localStorage.setItem("tradvia.lang", e.target.value); } catch (err) { /* ignore */ }
 });
-window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
+window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); scrollToConnectionsIfLinked(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; runsPage = 0; render(); });
-detectApi().then(() => { loadAuth(); return refresh(); });
+detectApi().then(() => { loadAuth(); return refresh(); }).then(scrollToConnectionsIfLinked);
 </script>
 </body>
 </html>

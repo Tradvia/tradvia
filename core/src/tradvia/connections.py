@@ -46,21 +46,34 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         "anthropic", "Anthropic", "ai", "Partial", "ANTHROPIC_API_KEY",
         ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
-        "The planner calls it today; the other roles still read the choice only.",
+        "The planner and the orchestrator chat call it today (API key, pay per use); "
+        "executor/reviewer still read the choice only. No subscription login for this one: "
+        "use Claude Code (OAuth token) below if you want to pay through a Claude subscription "
+        "instead of a metered API key.",
     ),
     Provider(
         "claude-code", "Claude Code (OAuth token)", "cli", "Shipped", "CLAUDE_CODE_OAUTH_TOKEN",
-        (), "Runs the executor on the subscription (claude.yml).",
+        (), "Runs the executor (claude.yml) and, when no AI provider is chosen above, the "
+        "orchestrator chat, on your Claude subscription rather than a metered API key. Get the "
+        "token either way: `claude setup-token` prints a long-lived one to paste here, or run "
+        "`claude login` once on your own machine (opens a browser to sign in) and copy the "
+        "token it leaves behind — see docs/deploy-oci.md.",
     ),
     Provider(
         "gemini", "Google Gemini", "ai", "In progress", "GEMINI_API_KEY",
         ("gemini-2.5-pro", "gemini-2.5-flash"),
-        "Secret and model are stored and delivered; no executor uses them yet.",
+        "Secret and model are stored and delivered; the orchestrator chat can use it "
+        "(planner/executor/reviewer cannot yet). API key only: Google has no sanctioned way for "
+        "a third-party app to use a personal Gemini subscription instead (and enforces against "
+        "unofficial attempts at it), unlike Claude Code's or OpenAI's subscription login.",
     ),
     Provider(
         "openai", "OpenAI", "ai", "In progress", "OPENAI_API_KEY",
         ("gpt-5", "gpt-5-mini"),
-        "Secret and model are stored and delivered; no executor uses them yet.",
+        "Secret and model are stored and delivered; the orchestrator chat can use it "
+        "(planner/executor/reviewer cannot yet). API key only for now: OpenAI's own \"Sign in "
+        "with ChatGPT\" lets an approved partner app use a subscriber's ChatGPT plan instead of "
+        "an API key, but Tradvia is not (yet) one of those partners.",
     ),
     Provider("github", "GitHub", "repository", "Shipped", None, (), "Connected by the GitHub App."),
     Provider("gitlab", "GitLab", "repository", "Planned", None, (), "Planned, issue #60."),

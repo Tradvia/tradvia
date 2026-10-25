@@ -53,6 +53,27 @@ coming back to a browser.
     the subprocess (`run_claude(env=...)`) and the object never prints its values.
 - **New dependency**: `PyNaCl`. GitHub requires the sealed box
   (X25519 + XSalsa20-Poly1305), which `cryptography` does not implement.
+- **The "Conexões" nav item was dead** (`status: "soon"` since #58, even after the screen
+  shipped): it rendered disabled with a permanent "em breve" badge while the real screen sat,
+  reachable, at the bottom of the panel view. Fixed: the link is live once the signed-in person
+  has `manage_connections` on the current project, and clicking it scrolls to the screen (it is
+  not a separate routed view, so there was nowhere else to send the click).
+- **Authentication is not symmetric across providers, and the catalog says so.** Every AI
+  provider's `note` (shown on its card) states plainly what is and is not possible today, so
+  nothing here is presented as available before it is:
+  - *Claude Code*: a subscription login, not an API key. Get the token either by running
+    `claude setup-token` (prints a long-lived token to paste) or `claude login` once on your
+    own machine (opens a browser to sign in, same OAuth flow; the resulting token is what
+    `setup-token` also produces) — both land in the same `claude-code` secret field.
+  - *Anthropic (API key)*, *Gemini*, *OpenAI*: pasting an API key is the only method. OpenAI
+    has since announced "Sign in with ChatGPT" — a subscription login comparable to Claude
+    Code's, letting an *approved partner app* spend a subscriber's ChatGPT plan allowance
+    instead of a metered key — but Tradvia is not one of those partners (it is a short list of
+    named launch partners), so it cannot be offered here yet. Google has no equivalent program
+    for Gemini: there is no sanctioned way for a third-party app to use a personal Gemini
+    subscription, and Google has enforced against unofficial attempts at it. Neither gap is a
+    Tradvia limitation to engineer around; they are decided by Anthropic/OpenAI/Google, so the
+    note says so instead of implying a button is merely "not built yet".
 
 ## Status by provider
 
