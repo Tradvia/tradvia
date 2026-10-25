@@ -1,6 +1,6 @@
 # ADR 0011: an in-app manual, and i18n across PT-BR, English and Spanish
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-24
 
 ## Context
@@ -79,26 +79,27 @@ Two different things, two different fixes:
   Adding a further language beyond these three is still just one JSON file
   and extending the `<select>` — no HTML edits to existing content.
 - **Manual content** (the rendered `docs/*.md` / ADRs): the owner has
-  confirmed the product has to maintain PT-BR, English and Spanish, not
-  just the UI chrome — so this is not deferred the way an earlier draft of
-  this ADR proposed. What is still open, and needs the owner's answer
-  before implementation starts, is *which* manual content is in scope for
-  all three languages: the ten-plus ADRs are written for contributors and
-  `CLAUDE.md` still says "Docs and code in English" for the repository
-  itself, so translating ADR *source* may not be the right move — whereas
-  the user-facing guide pages (quick-start, capability status, how
-  something works) are exactly what a person using the product in PT-BR or
-  Spanish needs translated. Two sane splits, either acceptable, pending
-  that answer:
-  (a) only the user-facing guide pages ship in all three languages, and
-  ADRs stay English (linked from the manual, rendered as-is, with a note
-  that the source document is English); or
-  (b) every page in the manual, ADRs included, ships in all three —
-  which means `scripts/build-manual.py` needs a translated source per
-  language per file (`docs/i18n/<lang>/*.md` mirroring `docs/*.md`, or
-  equivalent), and a process for keeping translations from drifting out of
-  date as the English source changes (at minimum, a check that flags a
-  translated file older than its English source).
+  decided — everything in the manual that can reasonably be translated
+  ships in all three languages, ADRs included, not only the user-facing
+  guide pages.
+  `CLAUDE.md`'s "Docs and code in English" stays the rule for the
+  repository's own source documents (the canonical ADR a contributor reads
+  and edits in a PR is still the English file under `docs/adr/`) — this
+  ADR does not change that. What it adds is a **translated rendering** on
+  top: `docs/i18n/<lang>/adr/*.md` and `docs/i18n/<lang>/*.md` (mirroring
+  `docs/`'s own layout, one file per language per source file) hold the
+  PT-BR and Spanish versions, and `scripts/build-manual.py` renders
+  whichever translation exists for the language the reader picked, falling
+  back to the English source when a translation is missing — "everything
+  that's possible" means the manual is never blocked on 100% translation
+  coverage; a page simply shows in English with a visible note until its
+  translation lands.
+  Staleness is a required check, not an optional one: the build script (or
+  a `make` target CI runs) compares each translated file's last-touched
+  commit against its English source's and fails the build — or, at
+  minimum, visibly flags the page as "translation may be out of date" —
+  when the source changed more recently than the translation. Silent drift
+  is not acceptable given three languages are now a standing commitment.
 
 ## Consequences
 
@@ -107,9 +108,14 @@ Two different things, two different fixes:
   JSON file, not an HTML edit.
 - The live API gains no new runtime dependency; the one new dependency this
   introduces lives in a deploy-time script only.
-- Manual-content translation is a real, ongoing authoring/maintenance cost
-  (not just infrastructure) once (b) above is chosen — stale translations
-  need a visible signal, not a silent drift from the English source.
+- Manual-content translation (ADRs included) is a real, ongoing
+  authoring/maintenance cost, not just infrastructure — every new or
+  changed ADR and doc now has translation work to schedule, not only the
+  English source to write.
+- A page without a translation yet degrades to English with a visible
+  note, rather than blocking the whole manual on full coverage; a
+  translation that falls behind its English source is flagged, not
+  silently stale.
 
 ## Delivery
 
@@ -117,4 +123,4 @@ Two different things, two different fixes:
 |---|---|---|
 | 1 | `scripts/build-manual.py`, static `dashboard/manual/`, wired into `deploy-oci.yml` | Planned |
 | 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together) | Planned |
-| 3 | Manual content (guide pages at minimum, ADRs pending the owner's answer above) in `pt`/`en`/`es` | Planned |
+| 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind | Planned |
