@@ -55,12 +55,24 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         "gemini", "Google Gemini", "ai", "In progress", "GEMINI_API_KEY",
         ("gemini-2.5-pro", "gemini-2.5-flash"),
-        "Secret and model are stored and delivered; no executor uses them yet.",
+        "Secret and model are stored and delivered; the Gemini CLI entry below runs it as an agent.",
     ),
     Provider(
         "openai", "OpenAI", "ai", "In progress", "OPENAI_API_KEY",
         ("gpt-5", "gpt-5-mini"),
-        "Secret and model are stored and delivered; no executor uses them yet.",
+        "Secret and model are stored and delivered; the Codex CLI entry below runs it as an agent.",
+    ),
+    Provider(
+        "gemini-cli", "Gemini CLI", "cli", "In progress", "GEMINI_API_KEY",
+        ("gemini-2.5-pro", "gemini-2.5-flash"),
+        "Headless planner/executor adapter (docs/coding-agents.md); the CLI uses its own "
+        "model setting, the model chosen here is recorded only.",
+    ),
+    Provider(
+        "codex-cli", "OpenAI Codex CLI", "cli", "In progress", "OPENAI_API_KEY",
+        ("gpt-5", "gpt-5-mini"),
+        "Headless planner/executor adapter (docs/coding-agents.md); the CLI uses its own "
+        "model setting, the model chosen here is recorded only.",
     ),
     Provider("github", "GitHub", "repository", "Shipped", None, (), "Connected by the GitHub App."),
     Provider("gitlab", "GitLab", "repository", "Planned", None, (), "Planned, issue #60."),
