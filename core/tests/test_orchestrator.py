@@ -4,6 +4,8 @@ fake runner replaces `make check`, so nothing here needs a key, a network or a c
 
 import json
 import subprocess
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -315,6 +317,97 @@ def test_the_orchestrator_is_off_in_offline_mode(store, gh):
     assert last["kind"] == "warning" and "offline" in last["text"]
 
 
+# --- multi-provider model selection (ADR 0009's `orchestrator` role) -------------------------
+
+
+def fake_litellm(monkeypatch, content, usd=0.004, prompt_tokens=10, completion_tokens=2):
+    """Replaces `litellm` with a fake that records every `completion()` call."""
+    calls = []
+    module = types.ModuleType("litellm")
+    module.calls = calls
+
+    def completion(**kw):
+        calls.append(kw)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+        )
+
+    module.completion = completion
+    module.completion_cost = lambda completion_response=None: usd
+    monkeypatch.setitem(sys.modules, "litellm", module)
+    return module
+
+
+def test_litellm_model_calls_with_the_projects_model_and_key_never_the_environment(monkeypatch):
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "server-wide-key-should-not-be-used")
+    litellm = fake_litellm(monkeypatch, json.dumps({"reply": "via anthropic"}))
+
+    model = orchestrator.litellm_model("anthropic/claude-sonnet-5-5", "project-own-secret")
+    data = model("prompt text", 30)
+
+    (call,) = litellm.calls
+    assert call["model"] == "anthropic/claude-sonnet-5-5" and call["api_key"] == "project-own-secret"
+    assert call["messages"] == [{"role": "user", "content": "prompt text"}]
+    assert data["result"] == json.dumps({"reply": "via anthropic"})
+    assert data["total_cost_usd"] == 0.004
+    assert data["usage"] == {"input_tokens": 10, "output_tokens": 2}
+
+
+def test_litellm_model_redacts_its_own_key_from_a_provider_error(monkeypatch):
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    module = types.ModuleType("litellm")
+
+    def completion(**kw):
+        raise RuntimeError(f"invalid api key: {kw['api_key']}")
+
+    module.completion = completion
+    monkeypatch.setitem(sys.modules, "litellm", module)
+
+    model = orchestrator.litellm_model("anthropic/claude-sonnet-5-5", "sk-ant-project-secret")
+    with pytest.raises(RuntimeError) as excinfo:
+        model("hi", 30)
+    assert "sk-ant-project-secret" not in str(excinfo.value)
+
+
+def test_litellm_model_is_off_in_offline_mode(monkeypatch):
+    model = orchestrator.litellm_model("anthropic/claude-sonnet-5-5", "sk-test")
+    with pytest.raises(RuntimeError, match="offline"):
+        model("hi", 30)
+
+
+def test_model_for_connection_uses_litellm_for_a_configured_ai_provider(monkeypatch):
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    fake_litellm(monkeypatch, json.dumps({"reply": "ok"}))
+
+    def cli_runner(cmd, **kw):
+        raise AssertionError("should not shell out to Claude Code when an AI provider is configured")
+
+    model = orchestrator.model_for_connection(
+        "anthropic", "claude-sonnet-5-5", "project-secret", runner=cli_runner)
+    model("hi", 30)  # does not raise: never reaches cli_runner
+
+
+@pytest.mark.parametrize("provider, model_name, secret", [
+    (None, None, None),
+    ("claude-code", None, None),
+    ("anthropic", "claude-sonnet-5-5", None),  # chosen, but no secret saved yet
+])
+def test_model_for_connection_falls_back_to_claude_code_otherwise(monkeypatch, provider, model_name, secret):
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    seen = []
+
+    def cli_runner(cmd, **kw):
+        seen.append(cmd)
+        reply = {"result": json.dumps({"reply": "ok"}), "total_cost_usd": 0.0}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
+
+    model = orchestrator.model_for_connection(provider, model_name, secret, runner=cli_runner)
+    model("hi", 30)
+    assert seen  # the Claude Code CLI ran
+
+
 # --- review_pr ------------------------------------------------------------------------------
 
 
@@ -472,3 +565,54 @@ def test_chat_history_is_per_project(store, gh, clock):
     assert other.json()["can_chat"] is False
     assert c.get("/api/projects/Nope/nope/chat").status_code == 404
     assert post(c, "/api/projects/Nope/nope/chat", {"text": "x"}).status_code == 404
+
+
+def test_production_chat_uses_the_projects_own_orchestrator_connection_not_only_claude_code(
+    store, gh, clock, monkeypatch,
+):
+    """No `chat_model` is injected here (unlike `chat_client` above): this is the real
+    production path (api.py's `chat_model_for`), proving the orchestrator is not tied to
+    one API/CLI when the project has configured a different provider (ADR 0009)."""
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    gh.perm[A] = ("admin", "admin")
+    litellm = fake_litellm(monkeypatch, json.dumps({"reply": "via anthropic"}))
+
+    def cli_runner(cmd, **kw):
+        raise AssertionError("should not shell out to Claude Code when anthropic is configured")
+
+    app = create_app(store=store, identity=gh, clock=clock, chat_runner=cli_runner, spawn=lambda job: job())
+    c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    login(c)
+    r = c.put(f"{BASE}/connections/roles/orchestrator",
+             json={"provider": "anthropic", "model": "claude-sonnet-5-5"}, headers=csrf_headers(c))
+    assert r.status_code == 200
+    r = c.put(f"{BASE}/connections/secrets/anthropic",
+             json={"value": "sk-ant-project-own-secret"}, headers=csrf_headers(c))
+    assert r.status_code == 200
+
+    assert post(c, CHAT, {"text": "status?"}).status_code == 202
+
+    (call,) = litellm.calls
+    assert call["model"] == "anthropic/claude-sonnet-5-5" and call["api_key"] == "sk-ant-project-own-secret"
+    assert c.get(CHAT).json()["messages"][-1]["text"] == "via anthropic"
+
+
+def test_production_chat_falls_back_to_claude_code_when_no_connection_is_configured(
+    store, gh, clock, monkeypatch,
+):
+    """Same production path, nothing configured in Tradvia: today's behavior (#104) is
+    unchanged, not silently replaced."""
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    seen = []
+
+    def cli_runner(cmd, **kw):
+        seen.append(cmd)
+        reply = {"result": json.dumps({"reply": "via claude code"}), "total_cost_usd": 0.0}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
+
+    app = create_app(store=store, identity=gh, clock=clock, chat_runner=cli_runner, spawn=lambda job: job())
+    c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    login(c)
+
+    assert post(c, CHAT, {"text": "status?"}).status_code == 202
+    assert seen and c.get(CHAT).json()["messages"][-1]["text"] == "via claude code"

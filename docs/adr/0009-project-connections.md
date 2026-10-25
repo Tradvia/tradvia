@@ -59,15 +59,17 @@ coming back to a browser.
 | Provider | Status | What it means today |
 |---|---|---|
 | GitHub | Shipped | Sign in, roles and actions through the GitHub App; Actions secrets written on save (needs the *Secrets* permission) |
-| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The choice per role is not read yet by the workflows |
-| Google Gemini | In progress | Secret and model stored and delivered; no executor uses them yet |
-| OpenAI | In progress | Secret and model stored and delivered; no executor uses them yet |
+| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The `orchestrator` role reads its own choice (#107; [orchestrator.md](../orchestrator.md)); `planner`/`executor`/`reviewer` still do not |
+| Google Gemini | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
+| OpenAI | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
 | GitLab | Planned | Issue #60 |
 
 ## Consequences
 
-- The workflows do not read the per-role choice yet; wiring the planner and
-  executor to it is follow-up work, and the table above must change with it.
+- The `agent.yml`/`claude.yml` workflows (`planner`, `executor`, `reviewer`) do not read the
+  per-role choice yet; wiring them to it is follow-up work, and the table above must change
+  with it. The `orchestrator` role, called in-process rather than as a workflow, reads its own
+  choice already (#107).
 - The GitHub App needs the repository permission *Secrets: Read and write*
   ([docs/github-app.md](../github-app.md)); existing installs must accept it.
 - Status: Partial. Code and offline tests shipped.

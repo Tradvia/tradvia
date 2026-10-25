@@ -67,7 +67,7 @@ from .auth import (
 from . import pending, push
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
-from .connections import Connections, ConnectionInputError
+from .connections import BY_KEY, Connections, ConnectionInputError, resolve as resolve_connections
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -1143,6 +1143,28 @@ def create_app(
     def start_thread(job: Callable[[], None]) -> None:
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
+    def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
+        """The project's own `orchestrator` connection (ADR 0009), or None to keep today's
+        single Claude Code model. Never raises: an unreadable policy or a connections lookup
+        failure just falls back, the same as an unset connection, rather than failing the chat.
+        """
+        if connections is None:
+            return None
+        try:
+            # `fresh=False`: execute() already did a fresh role+policy check for this request
+            # moments ago (POLICY_TTL is 60s); re-fetching .tradvia.yml here would double that
+            # GitHub call for nothing, since the role was already established.
+            access = auth.can(session, repo, "start_card", fresh=False)
+            defaults = access.policy.providers if access.policy else {}
+            chosen = resolve_connections(defaults, db.list_connection_roles(pid)).get("orchestrator", {})
+            provider, model_name = chosen.get("provider"), chosen.get("model")
+            secret = None
+            if provider not in (None, "claude-code") and provider in BY_KEY:
+                secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
+            return orchestrator.model_for_connection(provider, model_name, secret, chat_runner or subprocess.run)
+        except Exception:
+            return None
+
     def work_chat(session: Any, repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
         def work(token: str) -> Done:
             text, refs = orchestrator.parse_message(data)
@@ -1156,10 +1178,12 @@ def create_app(
                 login=session.login, runner=chat_runner or subprocess.run,
                 cwd=orchestrator.runner_dir(repo), clock=clock,
             )
+            # `chat_model` (test injection) always wins; production resolves per project.
+            model = chat_model or chat_model_for(session, repo, pid)
 
             def job() -> None:
                 try:
-                    orchestrator.run(ctx, chat_model)
+                    orchestrator.run(ctx, model)
                 except Exception:  # never leave the conversation silent
                     try:
                         db.append_message(pid, {"author": orchestrator.AUTHOR, "kind": "warning",

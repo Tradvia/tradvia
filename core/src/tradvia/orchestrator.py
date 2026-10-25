@@ -68,7 +68,11 @@ MODEL_DENIED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
 MODEL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN",
              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS")
 
-Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> `claude -p` JSON result
+Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> `claude -p`-shaped JSON:
+# {"result": <text>, "total_cost_usd": <float>, "usage": {"input_tokens", "output_tokens"},
+#  "duration_ms": <float>}. `default_model()` gets this from Claude Code directly; `litellm_model()`
+# builds the same shape from a LiteLLM response so `_cost()` and `run()` need not know which.
+LITELLM_MAX_TOKENS = 4_000
 
 
 class Refused(Exception):
@@ -585,6 +589,61 @@ def default_model(runner: Callable = subprocess.run) -> Model:
             return run_claude(prompt, scratch, MODEL_TOOLS, max_turns=3, runner=runner,
                               timeout=timeout, env=model_env(), disallowed_tools=MODEL_DENIED)
     return model
+
+
+def litellm_model(model_name: str, api_key: str) -> Model:
+    """One of ADR 0009's AI providers (anthropic, openai, gemini) called through LiteLLM.
+
+    `model_name` is a LiteLLM model string (`"<provider>/<model>"`, e.g.
+    `"anthropic/claude-sonnet-5-5"`); `api_key` is the project's own decrypted connection
+    secret. The key is passed on the call itself, never through the process environment:
+    several projects' chat runs can be in flight in the same API process at once (each in its
+    own thread, `api.py`'s `start_thread`), and an env var would leak one project's key to
+    another's concurrent run. No shell, no file and no network tool exist here either way —
+    the closed protocol below is a plain prompt completion, not an agent loop of its own.
+    """
+    def model(prompt: str, timeout: int) -> dict:
+        if os.getenv("TRADVIA_OFFLINE") == "1":
+            raise RuntimeError("the orchestrator needs a model and is off in offline mode")
+        import litellm  # imported lazily, like llm.architect_plan: offline mode needs no key
+        start = time.monotonic()
+        try:
+            resp = litellm.completion(
+                model=model_name, api_key=api_key, timeout=timeout,
+                max_tokens=LITELLM_MAX_TOKENS, messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as e:
+            from .connections import redact  # local: connections imports orchestrator-free code only
+            raise RuntimeError(redact(str(e)[:300], [api_key])) from None
+        usage = getattr(resp, "usage", None)
+        try:
+            usd = float(litellm.completion_cost(completion_response=resp))
+        except Exception:
+            usd = 0.0
+        text = resp.choices[0].message.content if resp.choices else ""
+        return {
+            "result": text or "",
+            "total_cost_usd": usd,
+            "usage": {"input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                      "output_tokens": getattr(usage, "completion_tokens", 0) or 0},
+            "duration_ms": (time.monotonic() - start) * 1000,
+        }
+    return model
+
+
+def model_for_connection(provider: str | None, model_name: str | None, secret: str | None,
+                         runner: Callable = subprocess.run) -> Model:
+    """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0009).
+
+    Unset, `claude-code`, or a chosen AI provider with no secret saved yet all keep today's
+    path: Claude Code on the subscription token (`default_model`, #104). Any other configured
+    provider (`anthropic`, `openai`, `gemini`) is called through LiteLLM instead. This never
+    raises: an unusable choice falls back rather than failing a chat message outright, and the
+    fallback's own errors (missing CLI, missing token) still surface as today's warning message.
+    """
+    if provider in (None, "claude-code") or not model_name or not secret:
+        return default_model(runner)
+    return litellm_model(f"{provider}/{model_name}", secret)
 
 
 def _over(spent: Spent, budget: Budget) -> str | None:
