@@ -1148,6 +1148,10 @@ def create_app(
     chat_working: set[int] = set()
     chat_lock = threading.Lock()
 
+    def chat_enabled() -> bool:
+        """Off unless TRADVIA_CHAT_ENABLED=1 (docs/orchestrator.md, "Turning it on")."""
+        return os.getenv("TRADVIA_CHAT_ENABLED") == "1"
+
     def start_thread(job: Callable[[], None]) -> None:
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
@@ -1199,6 +1203,9 @@ def create_app(
             return private(_store_unavailable())
         if session is None:
             return private(JSONResponse({"error": "Sign in with GitHub first."}, status_code=401))
+        if not chat_enabled():  # refused before anything is stored or any run starts
+            return private(JSONResponse(
+                {"error": "The orchestrator conversation is turned off."}, status_code=503))
         key = request.headers.get(IDEMPOTENCY_HEADER)
         if key is not None and not _KEY_RE.fullmatch(key):
             return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
@@ -1230,11 +1237,13 @@ def create_app(
         if role is None:
             return read_refused(repo, reason)
         pid = project_id_of(repo)
+        enabled = chat_enabled()
         return Outcome(200, {
             "messages": db.list_messages(pid, CHAT_HISTORY),
             "working": pid in chat_working,
             "cost": db.project_cost(pid),
-            "can_chat": panel_rights(session, repo, role)["can_start"],
+            "enabled": enabled,
+            "can_chat": enabled and panel_rights(session, repo, role)["can_start"],
         })
 
     async def chat_history(request: Request) -> Response:

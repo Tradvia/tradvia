@@ -159,6 +159,7 @@
   .chat .refs, .chat .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 12px; }
   .chat .working { color: var(--info); font-size: 12px; }
   .chat form { display: grid; gap: 4px; }
+  .chat form[hidden] { display: none; }
   .chat textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; padding: 6px; }
   .chat button { padding: 2px 8px; font-size: 12px; justify-self: start; }
   .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
@@ -236,6 +237,7 @@
         <div class="log" id="chat-log" aria-live="polite"></div>
         <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
         <div class="sub" id="chat-cost"></div>
+        <div class="sub" id="chat-disabled" hidden data-i18n="chatDisabled"></div>
         <form id="chat-form" hidden>
           <textarea id="chat-input" rows="2" maxlength="2000" data-i18n-placeholder="chatHint"></textarea>
           <button type="submit" id="chat-send" data-i18n="chatSend"></button>
@@ -1179,7 +1181,7 @@ async function renderDeploys() {
 // Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
 // only). The agent never approves, merges or deploys: those arrive as "pending" messages with
 // a button that calls the same panel action, so the server checks the role again.
-let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+let chatState = { repo: null, messages: [], working: false, cost: null, enabled: true, canChat: false, at: 0 };
 let chatToken = 0;
 const CHAT_POLL_MS = 3000;
 const CHAT_IDLE_MS = 20000;
@@ -1232,6 +1234,7 @@ function renderChat() {
   chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canChat)));
   if (atEnd) log.scrollTop = log.scrollHeight;
   document.getElementById("chat-working").hidden = !chatState.working;
+  document.getElementById("chat-disabled").hidden = chatState.enabled;
   document.getElementById("chat-form").hidden = !chatState.canChat;
   document.getElementById("chat-send").disabled = chatState.working;
   const c = chatState.cost;
@@ -1246,7 +1249,8 @@ async function loadChat() {
   const res = await panelRequest("GET", "/chat");
   if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
   chatState = { repo, messages: res.data.messages, working: !!res.data.working,
-                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+                cost: res.data.cost, enabled: res.data.enabled !== false,
+                canChat: !!res.data.can_chat, at: Date.now() };
   renderChat();
 }
 
@@ -1545,6 +1549,7 @@ const I18N = {
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
     chatHint: "Peça ao orquestrador: criar um card, revisar um PR, ajustar um plano…", chatSend: "Enviar",
     chatEmpty: "Nenhuma mensagem ainda.", chatCost: "Custo do orquestrador neste projeto",
+    chatDisabled: "A conversa com o orquestrador está desligada nesta instalação.",
     chatApprovePlan: "Aprovar plano", chatRejectPlan: "Rejeitar plano", chatMerge: "Fazer merge",
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pendência para você",
@@ -1639,6 +1644,7 @@ const I18N = {
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
     chatHint: "Ask the orchestrator: create a card, review a PR, adjust a plan…", chatSend: "Send",
     chatEmpty: "No messages yet.", chatCost: "Orchestrator cost in this project",
+    chatDisabled: "The orchestrator conversation is turned off on this installation.",
     chatApprovePlan: "Approve plan", chatRejectPlan: "Reject plan", chatMerge: "Merge",
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pending for you",

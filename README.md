@@ -54,7 +54,8 @@ starts cards, answers plans with an adjustment and reviews pull requests
 (`make check` on the branch). It never approves a plan, merges or deploys:
 those become pending items with a button for the human. Per-message budget,
 cost record and an audit entry per tool. Status: 🟦 Partial, tested offline
-with a scripted model; see [docs/orchestrator.md](docs/orchestrator.md).
+with a scripted model, off by default (`TRADVIA_CHAT_ENABLED=1` turns it on);
+see [docs/orchestrator.md](docs/orchestrator.md).
 
 **Documentation in the dashboard:** capability status, a step-by-step guide and
 technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the

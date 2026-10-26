@@ -41,6 +41,12 @@ from tradvia.orchestrator import Budget, ToolContext, run  # noqa: E402
 CHAT = BASE + "/chat"
 
 
+@pytest.fixture(autouse=True)
+def chat_on(monkeypatch):
+    """The conversation is off unless TRADVIA_CHAT_ENABLED=1; these tests run it switched on."""
+    monkeypatch.setenv("TRADVIA_CHAT_ENABLED", "1")
+
+
 class ChatGitHub(PullGitHub):
     def update_issue(self, token, repo, number, title, body):
         self.calls.append(("update_issue", token, repo, number, title, body))
@@ -472,3 +478,30 @@ def test_chat_history_is_per_project(store, gh, clock):
     assert other.json()["can_chat"] is False
     assert c.get("/api/projects/Nope/nope/chat").status_code == 404
     assert post(c, "/api/projects/Nope/nope/chat", {"text": "x"}).status_code == 404
+
+
+@pytest.mark.parametrize("value", [None, "0", "true"])
+def test_chat_is_off_unless_the_flag_is_exactly_1(store, gh, clock, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("TRADVIA_CHAT_ENABLED")
+    else:
+        monkeypatch.setenv("TRADVIA_CHAT_ENABLED", value)
+    jobs = []
+    c = chat_client(store, gh, clock, ScriptedModel([{"reply": "hi"}]), spawn=jobs.append)
+    r = post(c, CHAT, {"text": "hi"})
+    assert r.status_code == 503 and "turned off" in r.json()["error"]
+    assert jobs == [] and store.list_messages(store.ensure_project(A), 10) == []
+    body = c.get(CHAT).json()
+    assert body["enabled"] is False and body["can_chat"] is False and body["messages"] == []
+
+
+def test_switching_the_conversation_off_keeps_the_history_readable(store, gh, clock, monkeypatch):
+    c = chat_client(store, gh, clock, ScriptedModel([{"reply": "before"}]))
+    assert c.get(CHAT).json()["enabled"] is True
+    assert post(c, CHAT, {"text": "hi"}).status_code == 202
+    monkeypatch.setenv("TRADVIA_CHAT_ENABLED", "0")
+    body = c.get(CHAT).json()
+    assert body["enabled"] is False and body["can_chat"] is False
+    assert [m["text"] for m in body["messages"]] == ["hi", "before"]
+    assert post(c, CHAT, {"text": "again"}).status_code == 503
+    assert [m["text"] for m in c.get(CHAT).json()["messages"]] == ["hi", "before"]

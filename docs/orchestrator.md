@@ -5,7 +5,29 @@ the audit are implemented and tested offline with a scripted model. Not yet ship
 execution of a run across API restarts (#40; a run lost in a restart leaves the message
 without a reply), a pending-items inbox shared with the rest of the panel (#47; for now
 pending items live in the conversation) and a live check against real Claude Code.
-Part of [ADR 0007](adr/0007-tradvia-as-the-single-interaction-surface.md).
+Part of [ADR 0007](adr/0007-tradvia-as-the-single-interaction-surface.md). It is **off by
+default**; see [Turning it on](#turning-it-on).
+
+## Turning it on
+
+The conversation stays off until `TRADVIA_CHAT_ENABLED=1` is set in the API's environment.
+Any other value, or no value, keeps it off. While it is off:
+
+- `POST /api/projects/{owner}/{repo}/chat` answers `503` before anything is stored and no run
+  starts.
+- `GET` still returns the history, with `enabled: false` and `can_chat: false`.
+- The dashboard hides the input and says that the conversation is turned off.
+
+Where the variable is set:
+
+- **Local run:** export `TRADVIA_CHAT_ENABLED=1` in the shell that starts the API.
+- **OCI host:** `infra/oci/compose.yaml` passes it to the API with the default `0`, read from the
+  host's `/opt/tradvia/.env`. The deploy workflow (`.github/workflows/deploy-oci.yml`) rewrites
+  that file from the repository secrets on every deploy and does not pass this variable yet.
+  A value set by hand on the host is lost at the next deploy, so enabling it in production needs
+  that workflow change as well.
+- **Production stays off** until the live check against real Claude Code, listed as not shipped
+  at the top of this page, has passed.
 
 ## How it works
 
