@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from datetime import datetime, timezone
+from typing import Any
 
 WARN_AT = 0.8
+_ALL_PULLS = 100_000
 
 WARNING_NOTICE = (
     "SYSTEM NOTICE: this card has used {pct:.0f}% of its execution budget. Do not start new "
@@ -52,6 +55,85 @@ def parse_budget(section: object) -> Budget:
         else:
             values[f.name] = n
     return Budget(**values)
+
+
+@dataclass(frozen=True)
+class MonthlyBudget:
+    """Project-wide monthly ceiling. None means no ceiling; there is no numeric default."""
+
+    monthly_usd: float | None = None
+
+
+def parse_monthly_usd(section: object) -> float | None:
+    """`budget.monthly_usd`; anything invalid is None (no ceiling), never a hidden one."""
+    if not isinstance(section, dict):
+        return None
+    return _positive(section.get("monthly_usd"))
+
+
+def parse_monthly_budget(section: object) -> MonthlyBudget:
+    return MonthlyBudget(monthly_usd=parse_monthly_usd(section))
+
+
+def _parse_utc(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _amount(value: object) -> float:
+    try:
+        n = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(n) or math.isinf(n) else n
+
+
+def month_spend(plans: list[dict], pulls: list[dict], now: datetime) -> float:
+    """USD spent in the UTC month of `now`: plan comments plus executor cost of PRs.
+
+    Same rule as docs/dashboard-kpis.md: the PR `cost_so_far_usd` already includes the plans,
+    so it is never added. A row whose date cannot be read counts as spent, so a bad timestamp
+    can only tighten the ceiling.
+    """
+    ref = _parse_utc(now) or datetime.now(timezone.utc)
+    total = 0.0
+    for row in [*plans, *pulls]:
+        if row.get("cost_usd") is None:
+            continue
+        at = _parse_utc(row.get("created_at"))
+        if at is None or (at.year, at.month) == (ref.year, ref.month):
+            total += max(_amount(row["cost_usd"]), 0.0)
+    return total
+
+
+def store_month_spend(store: Any, project_id: int, now: datetime | None = None) -> float:
+    """`month_spend` over everything the store holds for the project; raises if it cannot read."""
+    plans = store.list_plan_costs(project_id)
+    pulls = store.list_pulls(project_id, "all", _ALL_PULLS) or []
+    return month_spend(plans, pulls, now or datetime.now(timezone.utc))
+
+
+def monthly_check(spent: float, monthly_usd: float | None) -> str:
+    """'ok', 'warn' (>= 80% of the ceiling) or 'stop' (>= 100%). No ceiling is always 'ok'."""
+    if monthly_usd is None:
+        return "ok"
+    ratio = spent / monthly_usd
+    if ratio >= 1.0:
+        return "stop"
+    return "warn" if ratio >= WARN_AT else "ok"
+
+
+def format_monthly(spent: float, cap: float | None) -> str:
+    return f"Monthly budget used: ${spent:.4f}/${cap:g}" if cap is not None \
+        else f"Monthly spend: ${spent:.4f} (no ceiling)"
 
 
 def usage_ratio(usage: dict | None, budget: Budget) -> float:
