@@ -65,6 +65,7 @@ from .auth import (
     PolicyUnreadable,
     Session,
     load_config,
+    role_refusal,
 )
 from . import pending, push
 from .backlog import READY_LABEL, backlog_status
@@ -734,7 +735,8 @@ def create_app(
             if SESSION_COOKIE in request.cookies:  # stale or forged: drop it
                 clear_cookie(response, SESSION_COOKIE)
             return private(response)
-        roles = await run_in_threadpool(lambda: [auth.role_of(session, r) for r in repos])
+        statuses = await run_in_threadpool(lambda: [auth.role_status(session, r) for r in repos])
+        roles = [role for role, _ in statuses]
         can = await run_in_threadpool(lambda: [panel_rights(session, r, x) for r, x in zip(repos, roles)])
         counts = await run_in_threadpool(
             lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
@@ -748,8 +750,9 @@ def create_app(
                 "csrf": auth.csrf_token(session),
                 "projects": [
                     {"slug": project_slug(r), "external_id": r, "role": role,
+                     "role_reason": reason, "notice": role_refusal(reason),
                      "pending_count": n, **rights}
-                    for r, role, rights, n in zip(repos, roles, can, counts)
+                    for r, (role, reason), rights, n in zip(repos, statuses, can, counts)
                 ],
             }
         )
@@ -780,8 +783,9 @@ def create_app(
     def push_enabled(session: Any, repo: str, data: dict[str, Any]) -> Outcome | None:
         if sender is None:
             return Outcome(404, {"error": "Notifications are not enabled on this server."})
-        if auth.role_of(session, repo) is None:
-            return Outcome(403, {"error": f"You have no access to {repo}."})
+        role, reason = auth.role_status(session, repo)
+        if role is None:
+            return Outcome(403, {"error": role_refusal(reason) or f"You have no access to {repo}."})
         return None
 
     def subscribe(session: Any, repo: str, data: dict[str, Any]) -> Outcome:
@@ -942,9 +946,10 @@ def create_app(
             required = getattr(
                 access.policy.interactions if access.policy else Interactions(), interaction
             )
-            log("denied", f"role {access.role or 'none'} below {required}")
+            why = f" ({access.reason})" if access.role is None and access.reason else ""
+            log("denied", f"role {access.role or 'none'}{why} below {required}")
             if access.role is None:
-                message = f"You have no access to {repo}."
+                message = role_refusal(access.reason) or f"You have no access to {repo}."
             else:
                 message = (f"Your role in {repo} is '{access.role}'; "
                            f"'{interaction}' needs at least '{required}'.")
@@ -1214,11 +1219,16 @@ def create_app(
         status = 202 if out.status == 200 and "message_id" in out.body else out.status
         return private(JSONResponse(out.body, status_code=status))
 
+    def read_refused(repo: str, reason: str | None) -> Outcome:
+        """403 for a read route when the person has no role: the reason, when GitHub gave one."""
+        return Outcome(403, {"error": role_refusal(reason)
+                             or f"You need at least the 'read' role in {repo}."})
+
     def read_chat(session: Any, repo: str) -> Outcome:
         assert auth is not None and db is not None
-        role = auth.role_of(session, repo)
+        role, reason = auth.role_status(session, repo)
         if role is None:
-            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+            return read_refused(repo, reason)
         pid = project_id_of(repo)
         return Outcome(200, {
             "messages": db.list_messages(pid, CHAT_HISTORY),
@@ -1442,9 +1452,9 @@ def create_app(
 
     def read_card(session: Any, repo: str, number: int) -> Outcome:
         assert auth is not None and db is not None
-        role = auth.role_of(session, repo)
+        role, reason = auth.role_status(session, repo)
         if role is None:
-            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+            return read_refused(repo, reason)
         rows = db.list_audit(project_id_of(repo), number)
         plan = None
         try:  # the plan is read with the user's token, and only for who may answer it
@@ -1543,8 +1553,9 @@ def create_app(
         session: Any, repo: str, action: str, work: Callable[[Any, str], dict[str, Any]]
     ) -> Outcome:
         assert auth is not None and db is not None
-        if auth.role_of(session, repo) is None:
-            return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
+        role, reason = auth.role_status(session, repo)
+        if role is None:
+            return read_refused(repo, reason)
         token = auth.user_token(session)
         if token is None:
             return Outcome(401, {"error": "Sign in again."})
