@@ -39,7 +39,9 @@ from .actions import (
     awaiting_plan,
     backlog_string,
     deploy_view,
+    mark_waits,
     merge_block,
+    wait_alert_minutes,
     merge_title,
     new_backlog,
     parse_backlog_input,
@@ -331,6 +333,7 @@ def create_app(
         connections = Connections(db, auth.keys, auth.github if has_secrets_api else None, clock)
     repos = registered_projects()
     ttl = float(os.environ.get("TRADVIA_API_CACHE_TTL", "60"))
+    deploy_wait_alert = wait_alert_minutes(os.environ.get("TRADVIA_DEPLOY_WAIT_ALERT_MINUTES"))
     token = os.environ.get("GITHUB_TOKEN", "")
     patterns = allowed_patterns(repos)
     store_route = re.compile(
@@ -1568,9 +1571,10 @@ def create_app(
         runs = auth.github.list_runs(token, repo, "waiting")[:MAX_DEPLOY_RUNS]
         pending = {r["id"]: auth.github.list_pending_deployments(token, repo, r["id"]) for r in runs}
         return {
-            "deploys": deploy_view(runs, pending),
+            "deploys": mark_waits(deploy_view(runs, pending), clock(), deploy_wait_alert),
             "backlog": backlog_string(backlog_view(project_id_of(repo))),
             "can": rights(session, repo, "approve_deploy"),
+            "wait_alert_minutes": deploy_wait_alert,
         }
 
     def read_github(
