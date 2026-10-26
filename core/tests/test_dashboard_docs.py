@@ -93,10 +93,11 @@ def test_statuses_match_adr_0007():
     assert {"45", "46", "56", "58"} <= refs
 
 
-def test_shipped_claims_are_only_the_store_backed_ones():
+def test_shipped_claims_are_exactly_the_live_ones():
     page = parse(DOCS)
     shipped = {c["id"] for c in page.capabilities if c["badges"] == ["Shipped"]}
-    assert shipped == {"backlog", "kpis"}
+    # Sign-in and card creation are live in the panel (issue #117, mirror #48).
+    assert shipped == {"backlog", "kpis", "signin", "create"}
 
 
 def test_help_link_points_to_the_docs_page():
