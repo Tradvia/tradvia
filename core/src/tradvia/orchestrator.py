@@ -73,6 +73,9 @@ Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> `claude -p`-s
 #  "duration_ms": <float>}. `default_model()` gets this from Claude Code directly; `litellm_model()`
 # builds the same shape from a LiteLLM response so `_cost()` and `run()` need not know which.
 LITELLM_MAX_TOKENS = 4_000
+# The chat is a prompt completion, so only API providers can answer it. A coding-agent CLI
+# (gemini-cli, codex-cli) shares their key but is not a LiteLLM provider name.
+LITELLM_PROVIDERS = ("anthropic", "openai", "gemini")
 
 
 class Refused(Exception):
@@ -641,7 +644,7 @@ def model_for_connection(provider: str | None, model_name: str | None, secret: s
     raises: an unusable choice falls back rather than failing a chat message outright, and the
     fallback's own errors (missing CLI, missing token) still surface as today's warning message.
     """
-    if provider in (None, "claude-code") or not model_name or not secret:
+    if provider not in LITELLM_PROVIDERS or not model_name or not secret:
         return default_model(runner)
     return litellm_model(f"{provider}/{model_name}", secret)
 

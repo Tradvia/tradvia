@@ -122,6 +122,11 @@ def validate_assignment(role: object, provider: object, model: object) -> tuple[
         raise ConnectionInputError(f"unknown provider (use one of {names})")
     if not isinstance(model, str) or model not in spec.models:
         raise ConnectionInputError(f"unknown model for {spec.key} (use one of {', '.join(spec.models)})")
+    if role == "orchestrator" and spec.kind != "ai":
+        names = ", ".join(p.key for p in PROVIDERS if p.kind == "ai")
+        raise ConnectionInputError(
+            f"the orchestrator chat needs an AI provider (use one of {names}); "
+            f"{spec.key} runs cards, not the chat")
     return role, spec.key, model
 
 

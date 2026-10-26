@@ -393,6 +393,8 @@ def test_model_for_connection_uses_litellm_for_a_configured_ai_provider(monkeypa
     (None, None, None),
     ("claude-code", None, None),
     ("anthropic", "claude-sonnet-5-5", None),  # chosen, but no secret saved yet
+    ("gemini-cli", "gemini-2.5-pro", "key"),  # a coding-agent CLI, not a LiteLLM provider
+    ("codex-cli", "gpt-5", "key"),
 ])
 def test_model_for_connection_falls_back_to_claude_code_otherwise(monkeypatch, provider, model_name, secret):
     monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
