@@ -15,6 +15,7 @@ import sys
 from langgraph.types import Command
 
 from .checkpoints import LOCAL_PROJECT_ID, fork, list_checkpoints, make_checkpointer, thread_config
+from .agents import PROVIDERS as CODING_AGENTS, make_agent
 from .claude_code import ClaudeCodeExecutor, claude_code_plan
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
@@ -53,11 +54,13 @@ def make_planner(kind: str | None = None):
     kind = kind or os.getenv("TRADVIA_PLANNER", "")
     if kind == "claude-code":
         return claude_code_plan
+    if kind in CODING_AGENTS:
+        return make_agent(kind).plan
     if kind == "offline":
         return _offline_plan
     if kind in ("", "litellm"):
         return architect_plan
-    sys.exit(f"Unknown TRADVIA_PLANNER {kind!r}: use claude-code, litellm or offline")
+    sys.exit(f"Unknown TRADVIA_PLANNER {kind!r}: use {', '.join(CODING_AGENTS)}, litellm or offline")
 
 
 def make_executor(kind: str | None = None, repeat_limit: int = 3,
@@ -65,9 +68,11 @@ def make_executor(kind: str | None = None, repeat_limit: int = 3,
     kind = kind or os.getenv("TRADVIA_EXECUTOR", "")
     if kind == "claude-code":
         return ClaudeCodeExecutor(repeat_limit=repeat_limit, project_id=project_id)
+    if kind in CODING_AGENTS:
+        return make_agent(kind, repeat_limit=repeat_limit, project_id=project_id)
     if kind in ("", "note"):
         return None
-    sys.exit(f"Unknown TRADVIA_EXECUTOR {kind!r}: use claude-code or note")
+    sys.exit(f"Unknown TRADVIA_EXECUTOR {kind!r}: use {', '.join(CODING_AGENTS)} or note")
 
 
 def project_id_of(repo: str) -> int:

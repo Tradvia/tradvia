@@ -137,6 +137,27 @@ def _cost(data: dict) -> dict:
             "duration_s": round((data.get("duration_ms") or 0) / 1000, 3)}
 
 
+def _reported(data: dict) -> dict:
+    """Whether the provider gave a cost and token usage (else the panel says 'não informado')."""
+    return {"usd_reported": data.get("total_cost_usd") is not None,
+            "tokens_reported": isinstance(data.get("usage"), dict)}
+
+
+def parse_plan(text: str, label: str = "Claude Code") -> dict:
+    """Parse and validate a planner answer; shared by every coding agent adapter."""
+    try:
+        plan = _parse_json(text)
+    except ValueError as e:
+        raise ValueError(f"{label} plan is not valid JSON: {e}") from None
+    steps = plan.get("plan")
+    if not (isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps)):
+        raise ValueError(f"{label} plan is missing a non-empty 'plan' list of strings")
+    if not isinstance(plan.get("question"), str) or not plan["question"]:
+        raise ValueError(f"{label} plan is missing 'question'")
+    plan.setdefault("summary", "")
+    return plan
+
+
 def claude_code_plan(title: str, body: str, number: int, runner: Callable = subprocess.run,
                      cwd: str = ".", notice: str = "") -> dict:
     """Same signature and return shape as `architect_plan`, minus the single-file fields.
@@ -146,17 +167,8 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
     prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
     data = run_claude(prompt + (f"\n\n{notice}" if notice else ""), cwd,
                       PLAN_TOOLS, max_turns=plan_max_turns(), runner=runner)
-    try:
-        plan = _parse_json(data.get("result", ""))
-    except ValueError as e:
-        raise ValueError(f"Claude Code plan is not valid JSON: {e}") from None
-    steps = plan.get("plan")
-    if not (isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps)):
-        raise ValueError("Claude Code plan is missing a non-empty 'plan' list of strings")
-    if not isinstance(plan.get("question"), str) or not plan["question"]:
-        raise ValueError("Claude Code plan is missing 'question'")
-    plan.setdefault("summary", "")
-    plan["_cost"] = _cost(data)
+    plan = parse_plan(data.get("result", ""))
+    plan["_cost"] = {**_cost(data), **_reported(data)}
     plan["_tool_calls"] = _count(data, "num_turns")
     return plan
 
@@ -340,4 +352,22 @@ class ClaudeCodeExecutor:
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
                 "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
                 "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"],
-                "tool_calls": _count(data, "num_turns"), "summary": str(data.get("result", "")).strip()}
+                **_reported(data), "tool_calls": _count(data, "num_turns"),
+                "summary": str(data.get("result", "")).strip()}
+
+
+class ClaudeCodeAgent:
+    """`CodingAgent` (agents.py) backed by Claude Code: delegates to the functions above."""
+
+    name = "claude-code"
+
+    def __init__(self, runner: Callable = subprocess.run, repeat_limit: int = DEFAULT_REPEAT_LIMIT,
+                 project_id: int | str | None = None, max_turns: int | None = None):
+        self.runner = runner
+        self._executor = ClaudeCodeExecutor(runner, max_turns, repeat_limit, project_id)
+
+    def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
+        return claude_code_plan(title, body, number, runner=self.runner, cwd=cwd, notice=notice)
+
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
+        return self._executor.execute(card, cwd, budget_notice)

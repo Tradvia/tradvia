@@ -62,18 +62,30 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         "gemini", "Google Gemini", "ai", "In progress", "GEMINI_API_KEY",
         ("gemini-2.5-pro", "gemini-2.5-flash"),
-        "Secret and model are stored and delivered; the orchestrator chat can use it "
-        "(planner/executor/reviewer cannot yet). API key only: Google has no sanctioned way for "
-        "a third-party app to use a personal Gemini subscription instead (and enforces against "
-        "unofficial attempts at it), unlike Claude Code's or OpenAI's subscription login.",
+        "Secret and model are stored and delivered; the orchestrator chat can use it, and the "
+        "Gemini CLI entry below runs it as an agent. API key only: Google has no sanctioned way "
+        "for a third-party app to use a personal Gemini subscription instead (and enforces "
+        "against unofficial attempts at it).",
     ),
     Provider(
         "openai", "OpenAI", "ai", "In progress", "OPENAI_API_KEY",
         ("gpt-5", "gpt-5-mini"),
-        "Secret and model are stored and delivered; the orchestrator chat can use it "
-        "(planner/executor/reviewer cannot yet). API key only for now: OpenAI's own \"Sign in "
+        "Secret and model are stored and delivered; the orchestrator chat can use it, and the "
+        "Codex CLI entry below runs it as an agent. API key only for now: OpenAI's \"Sign in "
         "with ChatGPT\" lets an approved partner app use a subscriber's ChatGPT plan instead of "
         "an API key, but Tradvia is not (yet) one of those partners.",
+    ),
+    Provider(
+        "gemini-cli", "Gemini CLI", "cli", "In progress", "GEMINI_API_KEY",
+        ("gemini-2.5-pro", "gemini-2.5-flash"),
+        "Headless planner/executor adapter (docs/coding-agents.md); the CLI uses its own "
+        "model setting, the model chosen here is recorded only.",
+    ),
+    Provider(
+        "codex-cli", "OpenAI Codex CLI", "cli", "In progress", "OPENAI_API_KEY",
+        ("gpt-5", "gpt-5-mini"),
+        "Headless planner/executor adapter (docs/coding-agents.md); the CLI uses its own "
+        "model setting, the model chosen here is recorded only.",
     ),
     Provider("github", "GitHub", "repository", "Shipped", None, (), "Connected by the GitHub App."),
     Provider("gitlab", "GitLab", "repository", "Planned", None, (), "Planned, issue #60."),
