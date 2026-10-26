@@ -60,7 +60,8 @@ for them. Design: ADR 0008.
    the new permissions:** changing them on the App page does not apply until
    the owner (and each organization that installed it) approves the request in
    the installation settings. Until then the affected buttons answer with a
-   message naming the missing permission.
+   message naming the missing permission. A session opened before the update keeps
+   its old token, so the person signs in again after the owner accepts it.
 4. **Where can this GitHub App be installed?** Any account, so collaborators of
    other registered projects can sign in. Create the App.
 5. On the App page copy the **Client ID** and click **Generate a new client
@@ -122,8 +123,7 @@ accessible by integration`), the answer names it, e.g. *The GitHub App needs
 Actions: Read and write*; Contents for merge and delete branch, Pull requests for
 update-branch, Deployments for approve and reject. A refusal for the person
 reads *You are not a reviewer of the production environment.* Other clear
-messages: no role in the project, *Merge refused: the required check(s) failed*
-*Merge refused: the required check(s) wait for their workflows to be approved*, and *The branch is behind main*.
+messages: no role in the project, *Merge refused: the required check(s) failed*, *Merge refused: the required check(s) wait for their workflows to be approved*, and *The branch is behind main*.
 
 The new `.tradvia.yml` interactions are `merge_pr`, `update_branch` and
 `approve_deploy` (also approve, reject, cancel and the post-deploy operation);
@@ -137,7 +137,15 @@ all default to `maintain`. See `docs/tradvia.example.yml`.
 - The user token is stored encrypted (Fernet, key derived from
   `TRADVIA_SECRET_KEY`), is never sent to the browser and is never logged.
 - Roles come from `GET /repos/{owner}/{repo}/collaborators/{login}/permission`
-  with the user's token and are cached for 5 minutes per session.
+  with the user's token. A GitHub answer is cached for 5 minutes per session; a failed
+  check is not cached, and the next request asks again. With no role, the answer says
+  why, in the action and read routes and per project in `GET /api/auth/me`
+  (`role_reason` and `notice`):
+  - The sign-in token was revoked or expired (401): *Your GitHub sign-in is no longer valid*. Sign in again.
+  - GitHub refused the check (403): the App needs `Metadata: Read-only`. An owner accepts the update on the installation, then the person signs in again.
+  - GitHub's rate limit (403 or 429): wait a few minutes.
+  - GitHub could not be reached, or answered in an unexpected way: try again.
+  - GitHub says the person is not a collaborator (404, or `permission: none`): the plain answer, *You have no access* or *You need at least the 'read' role*.
 
 ## Approving a pull request's waiting workflows
 

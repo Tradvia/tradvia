@@ -205,6 +205,40 @@ UNREADABLE_POLICY = (
     "Cannot read .tradvia.yml: the GitHub App needs the Contents: Read-only permission."
 )
 
+# Why a person has no role. GitHub's answer is classified, never flattened into "no role":
+# each reason has its own message (role_refusal), and a failed lookup is not cached.
+ROLE_NONE = "not_collaborator"  # GitHub says: not a collaborator (the plain no-access answer)
+ROLE_TOKEN = "sign_in_expired"  # the sign-in token is revoked, expired or unreadable (401)
+ROLE_APP = "app_permission"  # GitHub refused the check (403) and it is not a rate limit
+ROLE_RATE_LIMIT = "rate_limited"  # GitHub's rate limit (403 or 429)
+ROLE_UNAVAILABLE = "github_unavailable"  # unreachable, 5xx, or anything unexpected
+
+_ROLE_NOTICES = {
+    ROLE_TOKEN: "Your GitHub sign-in is no longer valid (expired or revoked). Sign in again.",
+    ROLE_APP: (
+        "GitHub refused the role check for this sign-in. The GitHub App needs Metadata: "
+        "Read-only: an owner must check it and accept any update on the installation "
+        "(docs/github-app.md), then sign in again."
+    ),
+    ROLE_RATE_LIMIT: (
+        "GitHub's rate limit was reached while checking your role. Try again in a few minutes."
+    ),
+    ROLE_UNAVAILABLE: "GitHub could not be reached to check your role. Try again.",
+}
+
+
+def role_refusal(reason: str | None) -> str | None:
+    """What to say to someone without a role, given why. None keeps the plain no-access answer."""
+    return _ROLE_NOTICES.get(reason or "")
+
+
+class RoleLookupFailed(Exception):
+    """GitHub did not confirm a role. `reason` is one of the ROLE_* codes."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
 
 _REASON_RE = re.compile(r"[a-z_]{1,64}")
 
@@ -228,6 +262,17 @@ def _github_message(r: requests.Response) -> str:
     except Exception:
         return ""
     return str(data.get("message") or "")[:200] if isinstance(data, dict) else ""
+
+
+def _lookup_refusal(r: requests.Response) -> str:
+    """The ROLE_* code for a refused role lookup. GitHub's text only classifies it; never shown."""
+    if r.status_code == 401:
+        return ROLE_TOKEN
+    if r.status_code == 429 or (r.status_code == 403 and "rate limit" in _github_message(r).lower()):
+        return ROLE_RATE_LIMIT
+    if r.status_code == 403:
+        return ROLE_APP
+    return ROLE_UNAVAILABLE
 
 
 class HttpGitHub:
@@ -271,9 +316,15 @@ class HttpGitHub:
         return {"id": data["id"], "login": data["login"], "avatar_url": data.get("avatar_url")}
 
     def get_permission(self, token: str, repo: str, login: str) -> tuple[str | None, str | None]:
-        r = self._get(token, f"/repos/{repo}/collaborators/{login}/permission")
-        if r.status_code != 200:
+        """(permission, role_name) of `login`. A refusal raises RoleLookupFailed with its reason."""
+        try:
+            r = self._get(token, f"/repos/{repo}/collaborators/{login}/permission")
+        except Exception:  # never echo: the error may carry request headers
+            raise RoleLookupFailed(ROLE_UNAVAILABLE) from None
+        if r.status_code == 404:  # not a collaborator: a normal answer, with no role
             return None, None
+        if r.status_code != 200:
+            raise RoleLookupFailed(_lookup_refusal(r))
         data = r.json()
         return data.get("permission"), data.get("role_name")
 
@@ -484,6 +535,7 @@ class Access(NamedTuple):
     role: str | None
     policy: Policy | None  # None when the role is missing: the file is not even read
     allowed: bool
+    reason: str | None = None  # why there is no role (a ROLE_* code), for the answer
 
 
 class Auth:
@@ -642,33 +694,43 @@ class Auth:
     # roles
     def role_of(self, session: Session, repo: str) -> str | None:
         """Role of the caller in `repo`; an API token gets the lower of its own and its owner's."""
-        role = self._github_role(session, repo)
+        return self.role_status(session, repo)[0]
+
+    def role_status(self, session: Session, repo: str) -> tuple[str | None, str | None]:
+        """(role, reason): the caller's role in `repo`, or None and the ROLE_* code saying why."""
+        role, reason = self._github_role(session, repo)
         scope = session.rec.get("api_token")
         if scope is None or role is None:
-            return role
+            return role, reason
         if scope["project_id"] != self.store.ensure_project(repo):
-            return None
-        return min(role, scope["role"], key=role_rank)
+            return None, ROLE_NONE
+        return min(role, scope["role"], key=role_rank), None
 
-    def _github_role(self, session: Session, repo: str) -> str | None:
-        """Role of the signed-in user in `repo`, cached for ROLE_TTL per session."""
+    def _github_role(self, session: Session, repo: str) -> tuple[str | None, str | None]:
+        """Role of the signed-in user in `repo` and, without one, why. Cached for ROLE_TTL.
+
+        Only an answer from GitHub is cached: a refused or failed lookup is asked again on the
+        next request, so a fixed App or a new sign-in takes effect without waiting.
+        """
         now = self.now()
         cache = session.rec["role_cache"]
         hit = cache.get(repo)
         if hit and now - hit["at"] < ROLE_TTL:
-            return hit["role"]
+            return hit["role"], (None if hit["role"] else ROLE_NONE)
         token = self.keys.decrypt(session.rec["token_enc"])
         if token is None:
-            return None
+            return None, ROLE_TOKEN
         try:
             role = role_of(_UserRoles(self.github, token, repo), session.login)
-        except Exception:  # GitHub down or token revoked: no role, and do not cache it
-            return None
+        except RoleLookupFailed as e:
+            return None, e.reason
+        except Exception:  # never echo: the error may carry the token; and do not cache it
+            return None, ROLE_UNAVAILABLE
         cache[repo] = {"role": role, "at": now}
         self.store.update_session(
             session.rec["id"], session.rec["expires_at"], session.rec["last_used_at"], cache
         )
-        return role
+        return role, (None if role else ROLE_NONE)
 
     def user_token(self, session: Session) -> str | None:
         """The user's GitHub token, decrypted. Never log it or put it in a response."""
@@ -696,8 +758,8 @@ class Auth:
 
     def can(self, session: Session, repo: str, interaction: str, fresh: bool = True) -> Access:
         """Role, policy and whether the role meets the minimum for `interaction`."""
-        role = self.role_of(session, repo)
+        role, reason = self.role_status(session, repo)
         if role is None:
-            return Access(None, None, False)
+            return Access(None, None, False, reason)
         policy = self.policy_for(session, repo, fresh)
         return Access(role, policy, policy.allows(interaction, role))
