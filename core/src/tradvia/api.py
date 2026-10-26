@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import subprocess
@@ -66,7 +67,7 @@ from .auth import (
 )
 from . import pending, push
 from .backlog import READY_LABEL, backlog_status
-from . import orchestrator
+from . import orchestrator, subscription
 from .connections import BY_KEY, Connections, ConnectionInputError, resolve as resolve_connections
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
@@ -307,9 +308,11 @@ def create_app(
     chat_runner: Callable[..., Any] | None = None,
     spawn: Callable[[Callable[[], None]], None] | None = None,
     push_sender: push.Sender | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Starlette:
     """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
-    background thread of the orchestrator conversation (tests inject fakes)."""
+    background thread of the orchestrator conversation; `sleep` is the subscription mode's
+    deliberate wait (tests inject fakes)."""
     fetch = fetch or default_fetch
     # Web Push is off unless both VAPID keys are set (or a sender is injected, in tests).
     sender: push.Sender | None = push_sender or push.default_sender()
@@ -1139,36 +1142,117 @@ def create_app(
 
     chat_working: set[int] = set()
     chat_lock = threading.Lock()
+    pace_lock = threading.Lock()  # one reservation at a time: a subscription is shared (ADR 0012)
 
     def start_thread(job: Callable[[], None]) -> None:
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
-    def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
-        """The project's own `orchestrator` connection (ADR 0009), or None to keep today's
-        single Claude Code model. Never raises: an unreadable policy or a connections lookup
-        failure just falls back, the same as an unset connection, rather than failing the chat.
+    def chat_mode(session: Any, repo: str, pid: int) -> dict[str, Any]:
+        """How this project's chat answers (ADR 0009, ADR 0012). Never raises, never a secret.
+
+        `kind`: "api" (an AI provider with its key saved), "subscription" (the server's Claude
+        token, with its owner declared), "unavailable" (chosen but not usable: `missing` says
+        what) or "unset" (nothing chosen: the chat never falls back to someone's subscription).
         """
-        if connections is None:
-            return None
+        mode: dict[str, Any] = {"kind": "unset", "provider": None, "model": None,
+                                "pace": subscription.Pace(), "owner": None, "missing": None}
         try:
-            # `fresh=False`: execute() already did a fresh role+policy check for this request
-            # moments ago (POLICY_TTL is 60s); re-fetching .tradvia.yml here would double that
-            # GitHub call for nothing, since the role was already established.
+            # `fresh=False`: the request's own role+policy check ran moments ago (POLICY_TTL).
             access = auth.can(session, repo, "start_card", fresh=False)
-            defaults = access.policy.providers if access.policy else {}
-            chosen = resolve_connections(defaults, db.list_connection_roles(pid)).get("orchestrator", {})
+            policy = access.policy
+            if policy is not None:
+                mode["pace"] = policy.subscription
+            rows = db.list_connection_roles(pid) if connections is not None else {}
+            chosen = resolve_connections(policy.providers if policy else {}, rows).get("orchestrator", {})
             provider, model_name = chosen.get("provider"), chosen.get("model")
-            secret = None
-            if provider not in (None, "claude-code") and provider in BY_KEY:
-                secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
-            return orchestrator.model_for_connection(provider, model_name, secret, chat_runner or subprocess.run)
+            mode.update(provider=provider, model=model_name)
+            if provider == subscription.PROVIDER:
+                owner, token = subscription.server_owner(), subscription.server_token()
+                mode["owner"] = owner
+                mode["kind"] = "subscription" if token and owner else "unavailable"
+                mode["missing"] = None if token and owner else ("token" if not token else "owner")
+            elif provider in orchestrator.LITELLM_PROVIDERS:
+                saved = connections is not None and provider in db.list_connection_secrets(pid)
+                mode["kind"], mode["missing"] = ("api", None) if saved else ("unavailable", "key")
         except Exception:
-            return None
+            pass
+        return mode
+
+    def chat_refusal(session: Any, mode: dict[str, Any]) -> Exception | None:
+        """Why the production chat cannot take this message, or None."""
+        kind, owner = mode["kind"], mode["owner"]
+        if kind == "unset":
+            return Conflict(
+                "This project's chat has no model yet. An admin chooses one in Connections, "
+                "orchestrator role: an AI provider with an API key (recommended), or the "
+                "subscription mode of the server's Claude token owner, which answers only that "
+                "person and is paced on purpose (ADR 0012).")
+        if kind == "unavailable" and mode["missing"] == "key":
+            return Conflict(f"This project's chat uses {mode['provider']}, but no API key is "
+                            "saved for it in Connections.")
+        if kind == "unavailable":
+            what = ("has no Claude subscription token" if mode["missing"] == "token" else
+                    f"does not say whose Claude token it is ({subscription.OWNER_ENV})")
+            return Conflict(
+                f"This project's chat uses the subscription mode, but the server {what}. Its "
+                f"owner sets {subscription.TOKEN_ENV} and {subscription.OWNER_ENV} on the "
+                "server, or an admin chooses an API key in Connections (recommended).")
+        if kind == "subscription" and not subscription.is_owner(session.login, owner):
+            return Refused(
+                f"This project's chat uses the subscription mode of @{owner}, which answers "
+                "only that person: Anthropic's terms do not let one person's subscription serve "
+                "others. An admin can choose an API key in Connections for everyone else.")
+        return None
+
+    def chat_model_for(mode: dict[str, Any], pid: int) -> orchestrator.Model:
+        secret = None
+        if mode["kind"] == "api" and connections is not None:
+            secret = connections.runner_env(pid).get(BY_KEY[mode["provider"]].env or "")
+        return orchestrator.model_for_connection(
+            mode["provider"], mode["model"], secret, chat_runner or subprocess.run)
+
+    def wait_for_turn(pid: int, mode: dict[str, Any]) -> None:
+        """Reserve this answer's start on the owner's subscription; wait for it, saying why."""
+        pace, owner = mode["pace"], mode["owner"]
+        with pace_lock:
+            now = clock()
+            starts = db.audit_times(subscription.AUDIT_ACTION, owner, now - subscription.WINDOW_S)
+            start, reason = subscription.schedule(now, starts, pace)
+            wait = max(0, int(math.ceil(start - now)))
+            db.append_audit(pid, {
+                "actor_login": owner, "action": subscription.AUDIT_ACTION, "issue_number": None,
+                "result": "ok", "detail": f"start reserved, waited {wait}s ({reason or 'none'})",
+                "idempotency_key": None, "created_at": start})
+        if wait > 0:
+            db.append_message(pid, {"author": orchestrator.AUTHOR,
+                                    **subscription.notice(wait, reason or "interval", pace, owner)})
+            sleep(wait)
+
+    def public_mode(session: Any, mode: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {"kind": mode["kind"], "provider": mode["provider"],
+                               "model": mode["model"], "missing": mode["missing"]}
+        if mode["provider"] == subscription.PROVIDER:
+            owner, pace = mode["owner"], mode["pace"]
+            out.update(owner=owner, you_are_owner=subscription.is_owner(session.login, owner),
+                       pace=pace.public())
+            if mode["kind"] == "subscription":
+                now = clock()
+                starts = db.audit_times(subscription.AUDIT_ACTION, owner, now - subscription.WINDOW_S)
+                start, _ = subscription.schedule(now, starts, pace)
+                out.update(used_last_hour=subscription.used(now, starts),
+                           next_wait_seconds=max(0, int(math.ceil(start - now))))
+        return out
 
     def work_chat(session: Any, repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
         def work(token: str) -> Done:
             text, refs = orchestrator.parse_message(data)
             pid = project_id_of(repo)
+            mode = chat_mode(session, repo, pid)
+            refusal = chat_refusal(session, mode)
+            # `chat_model` (test injection) answers a project that chose nothing; a refusal
+            # for the subscription owner or a missing credential still applies.
+            if refusal is not None and not (chat_model is not None and mode["kind"] == "unset"):
+                raise refusal
             with chat_lock:
                 if pid in chat_working:
                     raise Conflict("The orchestrator is still working on the previous message.")
@@ -1178,12 +1262,12 @@ def create_app(
                 login=session.login, runner=chat_runner or subprocess.run,
                 cwd=orchestrator.runner_dir(repo), clock=clock,
             )
-            # `chat_model` (test injection) always wins; production resolves per project.
-            model = chat_model or chat_model_for(session, repo, pid)
 
             def job() -> None:
                 try:
-                    orchestrator.run(ctx, model)
+                    if mode["kind"] == "subscription":
+                        wait_for_turn(pid, mode)
+                    orchestrator.run(ctx, chat_model or chat_model_for(mode, pid))
                 except Exception:  # never leave the conversation silent
                     try:
                         db.append_message(pid, {"author": orchestrator.AUTHOR, "kind": "warning",
@@ -1246,6 +1330,7 @@ def create_app(
             "working": pid in chat_working,
             "cost": db.project_cost(pid),
             "can_chat": panel_rights(session, repo, role)["can_start"],
+            "mode": public_mode(session, chat_mode(session, repo, pid)),
         })
 
     async def chat_history(request: Request) -> Response:
@@ -1425,6 +1510,8 @@ def create_app(
             elif kind == "role":
                 connections.set_role(pid, login, params["role"], data.get("provider"), data.get("model"))
             body["connections"] = connections.state(pid, defaults)
+            pace = access.policy.subscription if access.policy else subscription.Pace()
+            body["connections"]["subscription"]["pace"] = pace.public()
             return Outcome(200, body)
         except ConnectionInputError as e:
             record_audit(pid, login, action, None, "failed", "invalid input", None)

@@ -7,7 +7,8 @@ value shows where it came from. Provider secrets are stored encrypted (a key der
 TRADVIA_SECRET_KEY), are never returned (only "configured at ... by ..."), and every change
 is audited without the value. Delivery to the executor: a GitHub Actions repository secret
 written at configuration time (sealed box, as GitHub requires), or an environment variable of
-the run on a self-hosted runner.
+the run on a self-hosted runner. The one exception is the Claude subscription token
+(`claude-code`, ADR 0012): Tradvia never stores it; it stays in its owner's own secrets.
 
 This module does not log. Errors carry no secret and go through `redact`.
 Everything here is blocking; `api.py` calls it through a thread pool.
@@ -20,6 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
+from . import subscription
 from .actions import GitHubError
 from .store import Store
 
@@ -47,17 +49,18 @@ PROVIDERS: tuple[Provider, ...] = (
         "anthropic", "Anthropic", "ai", "Partial", "ANTHROPIC_API_KEY",
         ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
         "The planner and the orchestrator chat call it today (API key, pay per use); "
-        "executor/reviewer still read the choice only. No subscription login for this one: "
-        "use Claude Code (OAuth token) below if you want to pay through a Claude subscription "
-        "instead of a metered API key.",
+        "executor/reviewer still read the choice only. Recommended for the chat: it answers "
+        "with no deliberate wait, billed to the key's owner.",
     ),
     Provider(
-        "claude-code", "Claude Code (OAuth token)", "cli", "Shipped", "CLAUDE_CODE_OAUTH_TOKEN",
-        (), "Runs the executor (claude.yml) and, when no AI provider is chosen above, the "
-        "orchestrator chat, on your Claude subscription rather than a metered API key. Get the "
-        "token either way: `claude setup-token` prints a long-lived one to paste here, or run "
-        "`claude login` once on your own machine (opens a browser to sign in) and copy the "
-        "token it leaves behind — see docs/deploy-oci.md.",
+        "claude-code", "Claude Code (subscription)", "cli", "Shipped", "CLAUDE_CODE_OAUTH_TOKEN",
+        ("default",), "Subscription mode (ADR 0012). The chat answers only the token's owner, "
+        "and on purpose at least 60 s apart and at most 20 an hour (a project can be stricter "
+        "in .tradvia.yml), so the use stays the ordinary, individual use Anthropic's terms "
+        "assume. Tradvia never stores this token: its owner runs `claude setup-token` and puts "
+        "it in their own secrets, CLAUDE_CODE_OAUTH_TOKEN with CLAUDE_CODE_OAUTH_TOKEN_OWNER "
+        "(the server, for the chat; the repository's Actions secrets, for the agent "
+        "workflows). An API key above answers without the wait and is the recommended choice.",
     ),
     Provider(
         "gemini", "Google Gemini", "ai", "In progress", "GEMINI_API_KEY",
@@ -92,6 +95,10 @@ PROVIDERS: tuple[Provider, ...] = (
 )
 BY_KEY = {p.key: p for p in PROVIDERS}
 SECRET_PROVIDERS = tuple(p.key for p in PROVIDERS if p.env)
+# Who can answer the orchestrator chat: the API providers, and the subscription mode.
+CHAT_PROVIDERS = ("anthropic", "openai", "gemini", subscription.PROVIDER)
+# Secrets Tradvia never stores: they stay in their owner's own secrets (ADR 0012).
+OUTSIDE_SECRETS = (subscription.PROVIDER,)
 
 SOURCE_YML = "tradvia.yml"
 SOURCE_TRADVIA = "tradvia"
@@ -122,11 +129,10 @@ def validate_assignment(role: object, provider: object, model: object) -> tuple[
         raise ConnectionInputError(f"unknown provider (use one of {names})")
     if not isinstance(model, str) or model not in spec.models:
         raise ConnectionInputError(f"unknown model for {spec.key} (use one of {', '.join(spec.models)})")
-    if role == "orchestrator" and spec.kind != "ai":
-        names = ", ".join(p.key for p in PROVIDERS if p.kind == "ai")
+    if role == "orchestrator" and spec.key not in CHAT_PROVIDERS:
         raise ConnectionInputError(
-            f"the orchestrator chat needs an AI provider (use one of {names}); "
-            f"{spec.key} runs cards, not the chat")
+            f"the orchestrator chat needs an AI provider or the subscription mode (use one of "
+            f"{', '.join(CHAT_PROVIDERS)}); {spec.key} runs cards, not the chat")
     return role, spec.key, model
 
 
@@ -250,24 +256,44 @@ class Connections:
 
     # reading: never the value
     def state(
-        self, pid: int, yml_defaults: Mapping[str, Mapping[str, str]] | None
+        self, pid: int, yml_defaults: Mapping[str, Mapping[str, str]] | None,
+        env: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         secrets = self.store.list_connection_secrets(pid)
+        purged = self._purge_outside(pid, secrets)
         roles = resolve(yml_defaults, self.store.list_connection_roles(pid))
+        owner, token = subscription.server_owner(env), subscription.server_token(env)
         providers = []
         for p in PROVIDERS:
             entry: dict[str, Any] = {
                 "key": p.key, "name": p.name, "kind": p.kind, "status": p.status,
                 "models": list(p.models), "note": p.note,
             }
-            if p.env:
+            if p.key in OUTSIDE_SECRETS:
+                # Only whether the server has it, and whose it is: Tradvia never holds it.
+                entry["secret"] = {"configured": token and owner is not None, "outside": True,
+                                   "server_token": token, "owner": owner}
+            elif p.env:
                 s = secrets.get(p.key)
                 entry["secret"] = (
                     {"configured": True, "set_at": s["set_at"], "set_by": s["set_by"]}
                     if s else {"configured": False}
                 )
             providers.append(entry)
-        return {"roles": roles, "providers": providers}
+        return {"roles": roles, "providers": providers,
+                "subscription": {"server_token": token, "owner": owner,
+                                 "purged_stored_token": purged}}
+
+    def _purge_outside(self, pid: int, secrets: dict[str, Any]) -> bool:
+        """Delete a subscription token stored before ADR 0012. Returns True when one was."""
+        purged = False
+        for provider in OUTSIDE_SECRETS:
+            if provider in secrets:
+                purged = self.store.delete_connection_secret(pid, provider) or purged
+                secrets.pop(provider, None)
+                self._audit(pid, "tradvia", "secret_remove", "ok",
+                            f"provider={provider} reason=not stored by Tradvia (ADR 0012)")
+        return purged
 
     # writing
     def set_role(self, pid: int, actor: str, role: object, provider: object, model: object) -> None:
@@ -283,6 +309,12 @@ class Connections:
         Returns `{"replaced": bool, "github_actions": "ok" | "failed" | "skipped"}`.
         """
         provider = validate_secret_provider(provider)
+        if provider in OUTSIDE_SECRETS:
+            raise ConnectionInputError(
+                "Tradvia does not store Claude subscription tokens (ADR 0012): put "
+                f"{subscription.TOKEN_ENV} and {subscription.OWNER_ENV} in your own secrets "
+                "(the server's, for the chat; the repository's Actions secrets, for the agent "
+                "workflows). An API key is the recommended way for the chat.")
         plain = validate_secret_value(value)
         replaced = self.store.put_connection_secret(
             pid, provider, self.cipher.encrypt_secret(plain), actor, self.clock()
@@ -310,7 +342,8 @@ class Connections:
         provider = validate_secret_provider(provider)
         removed = self.store.delete_connection_secret(pid, provider)
         delivery = "skipped"
-        if self.repo_secrets is not None and token:
+        # The subscription token in GitHub is its owner's own secret now: never deleted from here.
+        if self.repo_secrets is not None and token and provider not in OUTSIDE_SECRETS:
             try:
                 self.repo_secrets.delete_actions_secret(token, repo, BY_KEY[provider].env or "")
                 delivery = "ok"
@@ -326,6 +359,8 @@ class Connections:
     def runner_env(self, pid: int) -> SecretEnv:
         env = SecretEnv()
         for provider in self.store.list_connection_secrets(pid):
+            if provider in OUTSIDE_SECRETS:
+                continue  # never handed out, even if one was stored before ADR 0012
             cipher = self.store.get_connection_secret(pid, provider)
             plain = self.cipher.decrypt_secret(cipher) if cipher else None
             spec = BY_KEY.get(provider)

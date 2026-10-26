@@ -151,6 +151,10 @@
   .chat .m.reply { border-color: var(--info); }
   .chat .m.pending { border-color: var(--warn); }
   .chat .m.warning { border-color: var(--bad); }
+  .chat .m.pace { border-color: var(--warn); border-style: dashed; }
+  .chat .mode { font-size: 12px; color: var(--muted); border-left: 3px solid var(--line); padding: 4px 8px; }
+  .chat .mode.subscription { border-left-color: var(--warn); }
+  .conn .sub-mode { font-size: 12px; color: var(--muted); border-left: 3px solid var(--warn); padding: 2px 8px; flex-basis: 100%; }
   .chat .m .who { color: var(--muted); font-size: 11px; }
   .chat .m .txt { white-space: pre-wrap; }
   .chat .refs, .chat .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 12px; }
@@ -228,6 +232,7 @@
     <div id="chat-section" hidden>
       <h2 data-i18n="chat"></h2>
       <div class="chat">
+        <div class="mode" id="chat-mode" hidden></div>
         <div class="log" id="chat-log" aria-live="polite"></div>
         <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
         <div class="sub" id="chat-cost"></div>
@@ -1157,7 +1162,7 @@ async function renderDeploys() {
 // Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
 // only). The agent never approves, merges or deploys: those arrive as "pending" messages with
 // a button that calls the same panel action, so the server checks the role again.
-let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, mode: null, at: 0 };
 let chatToken = 0;
 const CHAT_POLL_MS = 3000;
 const CHAT_IDLE_MS = 20000;
@@ -1177,9 +1182,25 @@ function pendingButtons(host, r) {
   return [];
 }
 
+// The subscription mode's deliberate wait (ADR 0012), said from its numbers, not its text.
+function waitText(seconds) {
+  return seconds >= 120 ? Math.ceil(seconds / 60) + " min" : seconds + " s";
+}
+
+function paceText(r) {
+  const rule = r.reason === "hourly" ? fill(t("paceHourly"), { max: r.max_per_hour })
+                                      : fill(t("paceInterval"), { min: r.min_interval_seconds });
+  return fill(t("paceWait"), { wait: waitText(r.seconds), owner: r.owner, rule });
+}
+
 function chatMessage(m, canAct) {
   const box = el("div", null, "m " + (m.kind === "message" ? "" : m.kind));
   box.append(el("div", "@" + m.author + " · " + fmtTime(m.created_at), "who"));
+  if (m.kind === "pace") {
+    const r = (m.refs || [])[0];
+    box.append(el("div", r ? paceText(r) : m.text, "txt"));
+    return box;
+  }
   box.append(el("div", m.kind === "pending" ? t("chatPendingKind") + ": " + m.text : m.text, "txt"));
   const refs = el("div", null, "refs");
   const acts = el("div", null, "acts");
@@ -1211,10 +1232,39 @@ function renderChat() {
   if (atEnd) log.scrollTop = log.scrollHeight;
   document.getElementById("chat-working").hidden = !chatState.working;
   document.getElementById("chat-form").hidden = !chatState.canChat;
-  document.getElementById("chat-send").disabled = chatState.working;
+  const mode = chatState.mode;
+  const modeBox = document.getElementById("chat-mode");
+  modeBox.hidden = !mode;
+  if (mode) {
+    modeBox.textContent = chatModeText(mode);
+    modeBox.className = "mode " + mode.kind;
+  }
+  document.getElementById("chat-send").disabled = chatState.working || !chatCanAnswer(mode);
   const c = chatState.cost;
   document.getElementById("chat-cost").textContent =
     c && c.runs ? t("chatCost") + ": $" + Number(c.usd).toFixed(4) + " · " + c.runs : "";
+}
+
+// How this project's chat answers (ADR 0009, ADR 0012), always on screen above the talk.
+function chatModeText(mode) {
+  if (mode.kind === "api") return fill(t("modeApi"), { provider: mode.provider, model: mode.model });
+  if (mode.kind === "unset") return t("modeUnset");
+  if (mode.kind === "unavailable") {
+    if (mode.missing === "key") return fill(t("modeNoKey"), { provider: mode.provider });
+    return mode.missing === "owner" ? t("modeNoOwner") : t("modeNoToken");
+  }
+  const pace = mode.pace || {};
+  let text = fill(t("modeSubscription"), { owner: mode.owner, min: pace.min_interval_seconds,
+                                           max: pace.max_per_hour, used: mode.used_last_hour || 0 });
+  if (!mode.you_are_owner) text += " " + fill(t("modeNotOwner"), { owner: mode.owner });
+  else if (mode.next_wait_seconds > 0) text += " " + fill(t("modeNextIn"), { wait: waitText(mode.next_wait_seconds) });
+  return text;
+}
+
+function chatCanAnswer(mode) {
+  if (!mode) return true; // an older API without the mode: let the server decide
+  if (mode.kind === "unset" || mode.kind === "unavailable") return false;
+  return mode.kind !== "subscription" || !!mode.you_are_owner;
 }
 
 async function loadChat() {
@@ -1224,7 +1274,8 @@ async function loadChat() {
   const res = await panelRequest("GET", "/chat");
   if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
   chatState = { repo, messages: res.data.messages, working: !!res.data.working,
-                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+                cost: res.data.cost, canChat: !!res.data.can_chat, mode: res.data.mode || null,
+                at: Date.now() };
   renderChat();
 }
 
@@ -1606,6 +1657,23 @@ const I18N = {
     secretSet: "Salvar segredo", secretReplace: "Substituir", secretRemove: "Remover",
     secretNone: "não configurado", secretAt: "configurado em", secretBy: "por",
     secretNote: "O valor é criptografado no servidor e nunca volta para o navegador.",
+    paceWait: "Aguardando {wait} antes de responder: o chat deste projeto usa o modo Assinatura de @{owner}, que mantém de propósito {rule}. Uma chave de API em Conexões responde sem essa espera.",
+    paceInterval: "pelo menos {min} s entre respostas", paceHourly: "no máximo {max} respostas por hora",
+    modeApi: "Modo chave de API ({provider} · {model}): responde sem espera proposital; o custo vai para a conta da chave.",
+    modeUnset: "Nenhum modelo escolhido para este chat. Um admin escolhe em Conexões, papel orchestrator: uma chave de API (recomendado) ou o modo Assinatura do dono do token, que tem ritmo limitado.",
+    modeNoKey: "Este chat usa {provider}, mas falta salvar a chave de API em Conexões.",
+    modeNoToken: "Este chat usa o modo Assinatura, mas o servidor não tem o token de assinatura configurado.",
+    modeNoOwner: "Este chat usa o modo Assinatura, mas o servidor não diz de quem é o token (CLAUDE_CODE_OAUTH_TOKEN_OWNER); sem dono, o modo fica desligado.",
+    modeSubscription: "Modo Assinatura de @{owner}: por escolha deste projeto, o chat espera pelo menos {min} s entre respostas e responde no máximo {max} por hora ({used} na última hora), para o uso da assinatura ficar dentro dos termos da Anthropic. Recomendado: uma chave de API em Conexões, que responde sem essa espera.",
+    modeNotOwner: "Só @{owner} pode conversar neste modo; para os demais, um admin escolhe uma chave de API em Conexões.",
+    modeNextIn: "A próxima resposta pode começar em {wait}.",
+    subChosen: "Modo Assinatura: o chat responde só {who} e, de propósito, espera pelo menos {min} s entre respostas e responde no máximo {max} por hora, somando todos os projetos desta assinatura. É o que mantém o uso dentro do uso individual comum que os termos da Anthropic pressupõem; as esperas aparecem no chat como consequência desta escolha. Recomendado: uma chave de API (Anthropic, OpenAI ou Gemini), que responde sem essa espera.",
+    subTheOwner: "ao dono do token", subToOwner: "a @{owner}",
+    subNotReady: "Hoje o servidor ainda não tem o token ou o dono configurado: veja o cartão Claude Code abaixo.",
+    subOnServer: "No servidor, de @{owner}. O Tradvia não guarda este token.",
+    subNotOnServer: "Não configurado no servidor.",
+    subHowTo: "Como configurar: rode `claude setup-token` na sua máquina e coloque o resultado em CLAUDE_CODE_OAUTH_TOKEN, com o seu login do GitHub em CLAUDE_CODE_OAUTH_TOKEN_OWNER, nos secrets do servidor (para o chat) ou nos secrets do repositório (para os workflows de agente). Nunca é colado aqui.",
+    subPurged: "Um token de assinatura salvo antes no Tradvia foi apagado: agora ele fica só nos seus secrets.",
     ghActionsOk: "gravado como secret do GitHub Actions", ghActionsFailed: "salvo, mas não foi possível gravar no GitHub Actions (o App precisa da permissão Secrets: Read and write)",
     connFailed: "Não foi possível salvar a conexão.", provKind_cli: "CLI", provKind_ai: "IA", provKind_repository: "Repositório",
     act_secret_set: "configurou um segredo", act_secret_replace: "substituiu um segredo",
@@ -1700,6 +1768,23 @@ const I18N = {
     secretSet: "Save secret", secretReplace: "Replace", secretRemove: "Remove",
     secretNone: "not configured", secretAt: "configured at", secretBy: "by",
     secretNote: "The value is encrypted on the server and never sent back to the browser.",
+    paceWait: "Waiting {wait} before answering: this project's chat uses the subscription mode of @{owner}, which keeps {rule} on purpose. An API key in Connections answers without this wait.",
+    paceInterval: "at least {min} s between answers", paceHourly: "at most {max} answers an hour",
+    modeApi: "API key mode ({provider} · {model}): answers with no deliberate wait; the cost goes to the key's account.",
+    modeUnset: "No model chosen for this chat. An admin chooses one in Connections, orchestrator role: an API key (recommended) or the token owner's subscription mode, which is paced.",
+    modeNoKey: "This chat uses {provider}, but its API key is not saved in Connections yet.",
+    modeNoToken: "This chat uses the subscription mode, but the server has no subscription token set.",
+    modeNoOwner: "This chat uses the subscription mode, but the server does not say whose token it is (CLAUDE_CODE_OAUTH_TOKEN_OWNER); without an owner the mode stays off.",
+    modeSubscription: "Subscription mode of @{owner}: by this project's choice, the chat waits at least {min} s between answers and answers at most {max} an hour ({used} in the last hour), so the subscription's use stays within Anthropic's terms. Recommended: an API key in Connections, which answers without this wait.",
+    modeNotOwner: "Only @{owner} can talk in this mode; for everyone else, an admin chooses an API key in Connections.",
+    modeNextIn: "The next answer can start in {wait}.",
+    subChosen: "Subscription mode: the chat answers only {who} and, on purpose, waits at least {min} s between answers and answers at most {max} an hour, counting every project on this subscription. That keeps the use within the ordinary, individual use Anthropic's terms assume; the waits show in the chat as a consequence of this choice. Recommended: an API key (Anthropic, OpenAI or Gemini), which answers without this wait.",
+    subTheOwner: "the token's owner", subToOwner: "@{owner}",
+    subNotReady: "The server does not have the token or its owner set yet: see the Claude Code card below.",
+    subOnServer: "On the server, owned by @{owner}. Tradvia does not store this token.",
+    subNotOnServer: "Not set on the server.",
+    subHowTo: "How to set it: run `claude setup-token` on your machine and put the result in CLAUDE_CODE_OAUTH_TOKEN, with your GitHub login in CLAUDE_CODE_OAUTH_TOKEN_OWNER, in the server's secrets (for the chat) or the repository's secrets (for the agent workflows). It is never pasted here.",
+    subPurged: "A subscription token saved in Tradvia before was deleted: it now lives only in your own secrets.",
     ghActionsOk: "written as a GitHub Actions secret", ghActionsFailed: "saved, but could not be written to GitHub Actions (the App needs the Secrets: Read and write permission)",
     connFailed: "Could not save the connection.", provKind_cli: "CLI", provKind_ai: "AI", provKind_repository: "Repository",
     act_secret_set: "set a secret", act_secret_replace: "replaced a secret",
@@ -1805,6 +1890,8 @@ function autoRefreshDue(s) {
 let fetchState = "loading"; // loading | ok | ratelimit | error
 let updatedAt = null;
 const t = (k) => I18N[lang][k];
+// `fill("a {x} b", {x: 1})`: every `{name}` of an i18n string, in the reader's language.
+const fill = (text, vars) => String(text).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
 
 function el(tag, text, cls) {
   const e = document.createElement(tag);
@@ -2288,11 +2375,20 @@ function roleRow(root, name, role, providers) {
     (p ? p.models : []).forEach((m) => model.append(new Option(m, m)));
   };
   prov.append(new Option(t("connChoose"), ""));
-  providers.forEach((p) => prov.append(new Option(p.name, p.key)));
+  // The chat is a prompt completion: only the API providers and the subscription mode answer it.
+  const chatOnly = ["anthropic", "openai", "gemini", "claude-code"];
+  providers.filter((p) => name !== "orchestrator" || chatOnly.includes(p.key))
+    .forEach((p) => prov.append(new Option(p.name, p.key)));
   prov.value = role.provider || "";
   fillModels();
   if (role.model) model.value = role.model;
-  prov.addEventListener("change", fillModels);
+  const subNote = el("div", null, "sub-mode");
+  const explain = () => {
+    subNote.hidden = !(name === "orchestrator" && prov.value === "claude-code");
+    if (!subNote.hidden) subNote.textContent = subscriptionNote(connState.subscription || {});
+  };
+  prov.addEventListener("change", () => { fillModels(); explain(); });
+  explain();
   const save = el("button", t("connSave"));
   save.type = "button";
   save.addEventListener("click", () => {
@@ -2300,14 +2396,32 @@ function roleRow(root, name, role, providers) {
     saveConnection(root, "PUT", "/roles/" + name, { provider: prov.value, model: model.value });
   });
   const origin = sourceLabel(role) + (role.source === "tradvia" && role.updated_by ? " · @" + role.updated_by : "");
-  row.append(el("b", t("role_" + name)), prov, model, save, el("span", origin, "sub"));
+  row.append(el("b", t("role_" + name)), prov, model, save, el("span", origin, "sub"), subNote);
   return row;
+}
+
+// Said when the subscription mode is chosen, and kept in view while it is (ADR 0012).
+function subscriptionNote(sub) {
+  const pace = sub.pace || { min_interval_seconds: 60, max_per_hour: 20 };
+  const who = sub.owner ? fill(t("subToOwner"), { owner: sub.owner }) : t("subTheOwner");
+  let text = fill(t("subChosen"), { who, min: pace.min_interval_seconds, max: pace.max_per_hour });
+  if (!sub.server_token || !sub.owner) text += " " + t("subNotReady");
+  return text;
 }
 
 function providerCard(root, p) {
   const card = el("div", null, "prov");
   card.append(el("h4", p.name), el("div", t("provKind_" + p.kind) + " · " + p.status, "sub"), el("div", p.note, "sub"));
   if (!p.secret) return card;
+  if (p.secret.outside) {
+    card.append(el("div", p.secret.configured ? fill(t("subOnServer"), { owner: p.secret.owner })
+                                              : t("subNotOnServer"), p.secret.configured ? "ok" : "neutral"));
+    card.append(el("div", t("subHowTo"), "sub"));
+    if (connState.subscription && connState.subscription.purged_stored_token) {
+      card.append(el("div", t("subPurged"), "note"));
+    }
+    return card;
+  }
   const configured = p.secret.configured;
   card.append(el("div", configured
     ? t("secretAt") + " " + fmtTime(p.secret.set_at) + " " + t("secretBy") + " @" + p.secret.set_by

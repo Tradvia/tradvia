@@ -16,6 +16,7 @@ import yaml
 from .budget import Budget, parse_budget
 from .connections import ConnectionInputError, validate_assignment
 from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
+from .subscription import Pace, parse_pace
 
 POLICY_FILE = ".tradvia.yml"
 ROLES = ("read", "triage", "write", "maintain", "admin")
@@ -68,6 +69,8 @@ class Policy:
     budget: Budget = Budget()
     # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
     providers: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Pace of the chat's subscription mode (ADR 0012): only ever slower than the ceiling.
+    subscription: Pace = Pace()
 
     def risk_requirement(self, level: str) -> str | None:
         """None when `level` runs free, else the minimum approving role. Unknown levels fail closed."""
@@ -124,7 +127,7 @@ def parse_policy(text: str | None) -> Policy:
         raise PolicyError("top level must be a mapping")
     unknown = sorted(str(k) for k in data
                      if k not in ("access", "interactions", "stagnation", "risk", "budget",
-                                  "providers"))
+                                  "providers", "subscription"))
     if unknown:
         raise PolicyError(f"unknown top-level key(s): {', '.join(unknown)}")
 
@@ -152,9 +155,10 @@ def parse_policy(text: str | None) -> Policy:
     raw_risk = _section(data, "risk", RISK_LEVELS)
     risk = RiskPolicy(**{k: v if v == "free" else _role(v, f"risk.{k}")
                          for k, v in raw_risk.items()})
-    # Never raises: invalid budget values fall back to the safe defaults.
+    # Never raises: invalid budget and subscription values fall back to the safe defaults.
     return Policy(view=view, interactions=interactions, stagnation=stagnation, risk=risk,
-                  budget=parse_budget(data.get("budget")), providers=_providers(data))
+                  budget=parse_budget(data.get("budget")), providers=_providers(data),
+                  subscription=parse_pace(data.get("subscription")))
 
 
 def _providers(data: dict) -> dict[str, dict[str, str]]:

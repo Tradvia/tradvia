@@ -437,3 +437,59 @@ def test_catalog_states_real_status():
     assert status["gitlab"] == "Planned" and status["github"] == "Shipped"
     assert status["gemini"] == "In progress" and status["openai"] == "In progress"
     assert set(status.values()) <= {"Shipped", "In progress", "Partial", "Planned"}
+
+
+# subscription token (ADR 0012) -------------------------------------------------------------
+
+SUBSCRIPTION_TOKEN = "sk-ant-oat01-SUBSCRIPTIONTOKEN0123456789"
+
+
+def test_the_subscription_token_is_never_stored(client, store, gh):
+    r = put_secret(client, SUBSCRIPTION_TOKEN, provider="claude-code")
+    assert r.status_code == 400
+    assert "does not store Claude subscription tokens" in r.json()["error"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN_OWNER" in r.json()["error"]
+    assert SUBSCRIPTION_TOKEN not in everything_stored(store) and gh.secrets == {}
+
+
+def test_a_subscription_token_stored_before_is_purged_and_never_handed_out(store, gh):
+    keys = Keys(SECRET_KEY)
+    pid = store.ensure_project(A)
+    # As an install before ADR 0012 would have left it.
+    store.put_connection_secret(pid, "claude-code", keys.encrypt_secret(SUBSCRIPTION_TOKEN), "ana", 1.0)
+    service = connections.Connections(store, keys, None, lambda: 2.0)
+    service.set_secret(pid, "ana", A, None, "anthropic", API_KEY)
+    assert service.runner_env(pid) == {"ANTHROPIC_API_KEY": API_KEY}
+
+    client = make_client(store, gh)
+    state = client.get(url()).json()["connections"]
+    assert state["subscription"]["purged_stored_token"] is True
+    assert "claude-code" not in store.list_connection_secrets(pid)
+    removal = [a for a in store.audit if a["action"] == "secret_remove" and a["actor_login"] == "tradvia"]
+    assert removal and "ADR 0012" in removal[0]["detail"]
+    assert client.get(url()).json()["connections"]["subscription"]["purged_stored_token"] is False
+
+
+def test_removing_the_subscription_token_never_touches_the_owners_github_secret(client, gh):
+    gh.secrets[(A, "CLAUDE_CODE_OAUTH_TOKEN")] = ("owner-put-it-there", "k1")
+    r = client.delete(url(tail="/secrets/claude-code"), headers=headers(client))
+    assert r.status_code == 200 and r.json()["github_actions"] == "skipped"
+    assert (A, "CLAUDE_CODE_OAUTH_TOKEN") in gh.secrets
+
+
+def test_connections_show_the_servers_subscription_and_the_projects_pace(store, gh, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", SUBSCRIPTION_TOKEN)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_OWNER", "ana")
+    gh.policy = "subscription:\n  min_interval_seconds: 120\n"
+    body = json.dumps(make_client(store, gh).get(url()).json())
+    state = json.loads(body)["connections"]
+    assert state["subscription"] == {"server_token": True, "owner": "ana", "purged_stored_token": False,
+                                     "pace": {"min_interval_seconds": 120, "max_per_hour": 20}}
+    (cc,) = [p for p in state["providers"] if p["key"] == "claude-code"]
+    assert cc["secret"] == {"configured": True, "outside": True, "server_token": True, "owner": "ana"}
+    assert cc["models"] == ["default"] and SUBSCRIPTION_TOKEN not in body
+
+
+def test_the_subscription_mode_can_answer_the_chat():
+    assert connections.validate_assignment("orchestrator", "claude-code", "default") == (
+        "orchestrator", "claude-code", "default")

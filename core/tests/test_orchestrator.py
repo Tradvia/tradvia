@@ -515,7 +515,7 @@ def test_a_crash_in_the_run_leaves_a_warning_and_clears_the_flag(store, gh, cloc
         raise ValueError("secret detail")
 
     monkeypatch.setattr(orchestrator, "run", boom)
-    c = chat_client(store, gh, clock)
+    c = chat_client(store, gh, clock, ScriptedModel([]))
     assert post(c, CHAT, {"text": "hi"}).status_code == 202
     body = c.get(CHAT).json()
     assert body["working"] is False and body["messages"][-1]["kind"] == "warning"
@@ -599,22 +599,177 @@ def test_production_chat_uses_the_projects_own_orchestrator_connection_not_only_
     assert c.get(CHAT).json()["messages"][-1]["text"] == "via anthropic"
 
 
-def test_production_chat_falls_back_to_claude_code_when_no_connection_is_configured(
+def test_production_chat_without_a_choice_asks_for_one_instead_of_using_a_subscription(
     store, gh, clock, monkeypatch,
 ):
-    """Same production path, nothing configured in Tradvia: today's behavior (#104) is
-    unchanged, not silently replaced."""
+    """Same production path, nothing chosen: even with a subscription token on the server, the
+    chat does not fall back to it in silence (ADR 0012) but says how to choose."""
     monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
-    seen = []
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-server-token")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_OWNER", "ana")
 
     def cli_runner(cmd, **kw):
-        seen.append(cmd)
-        reply = {"result": json.dumps({"reply": "via claude code"}), "total_cost_usd": 0.0}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
+        raise AssertionError("nothing was chosen: the subscription must not be used")
 
     app = create_app(store=store, identity=gh, clock=clock, chat_runner=cli_runner, spawn=lambda job: job())
     c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
     login(c)
 
+    r = post(c, CHAT, {"text": "status?"})
+    assert r.status_code == 409
+    assert "no model yet" in r.json()["error"] and "API key (recommended)" in r.json()["error"]
+    body = c.get(CHAT).json()
+    assert body["messages"] == [] and body["mode"]["kind"] == "unset"
+
+
+# --- subscription mode (ADR 0012) ----------------------------------------------------------
+
+
+def claude_runner(seen):
+    def runner(cmd, **kw):
+        seen.append(cmd)
+        reply = {"result": json.dumps({"reply": "via the subscription"}), "total_cost_usd": 0.0}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
+    return runner
+
+
+def subscription_client(store, gh, clock, monkeypatch, owner="ana", seen=None, sleeps=None,
+                        repo_base=BASE):
+    """The real production path with the orchestrator role on `claude-code`."""
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-server-token")
+    if owner is None:
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN_OWNER", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_OWNER", owner)
+    seen = [] if seen is None else seen
+    sleeps = [] if sleeps is None else sleeps
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock.advance(seconds)
+
+    app = create_app(store=store, identity=gh, clock=clock, chat_runner=claude_runner(seen),
+                     spawn=lambda job: job(), sleep=sleep)
+    c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    login(c)
+    r = c.put(f"{repo_base}/connections/roles/orchestrator",
+              json={"provider": "claude-code", "model": "default"}, headers=csrf_headers(c))
+    assert r.status_code == 200, r.json()
+    return c
+
+
+def test_subscription_mode_answers_its_owner_and_reserves_the_start(store, gh, clock, monkeypatch):
+    seen = []
+    c = subscription_client(store, gh, clock, monkeypatch, seen=seen)
     assert post(c, CHAT, {"text": "status?"}).status_code == 202
-    assert seen and c.get(CHAT).json()["messages"][-1]["text"] == "via claude code"
+    body = c.get(CHAT).json()
+    assert seen and [m["kind"] for m in body["messages"]] == ["message", "reply"]
+    assert body["mode"] == {"kind": "subscription", "provider": "claude-code", "model": "default",
+                            "missing": None, "owner": "ana", "you_are_owner": True,
+                            "pace": {"min_interval_seconds": 60, "max_per_hour": 20},
+                            "used_last_hour": 1, "next_wait_seconds": 60}
+    assert store.audit_times("subscription_answer", "ana", 0) == [clock()]
+
+
+def test_subscription_mode_waits_between_answers_and_says_why(store, gh, clock, monkeypatch):
+    sleeps = []
+    c = subscription_client(store, gh, clock, monkeypatch, sleeps=sleeps)
+    assert post(c, CHAT, {"text": "one"}).status_code == 202
+    clock.advance(10)
+    assert post(c, CHAT, {"text": "two"}).status_code == 202
+    assert sleeps == [50]
+    messages = c.get(CHAT).json()["messages"]
+    assert [m["kind"] for m in messages] == ["message", "reply", "message", "pace", "reply"]
+    pace = messages[3]
+    assert pace["refs"] == [{"type": "pace", "reason": "interval", "seconds": 50, "owner": "ana",
+                             "min_interval_seconds": 60, "max_per_hour": 20}]
+    assert "subscription mode of @ana" in pace["text"] and "API key" in pace["text"]
+
+
+def test_subscription_mode_holds_the_hourly_limit(store, gh, clock, monkeypatch):
+    gh.policy = "subscription:\n  max_per_hour: 2\n"
+    sleeps = []
+    c = subscription_client(store, gh, clock, monkeypatch, sleeps=sleeps)
+    for _ in range(3):
+        assert post(c, CHAT, {"text": "next"}).status_code == 202
+        clock.advance(60)
+    # The first two start a minute apart; the third waits until the first leaves the hour.
+    assert sleeps == [3600 - 120]
+    pace = [m for m in c.get(CHAT).json()["messages"] if m["kind"] == "pace"]
+    assert pace[0]["refs"][0]["reason"] == "hourly" and pace[0]["refs"][0]["max_per_hour"] == 2
+
+
+def test_the_pace_counts_every_project_on_the_one_subscription(store, gh, clock, monkeypatch):
+    gh.perm[B] = ("admin", "admin")
+    sleeps = []
+    c = subscription_client(store, gh, clock, monkeypatch, sleeps=sleeps)
+    other = BASE.replace(A, B)
+    r = c.put(f"{other}/connections/roles/orchestrator",
+              json={"provider": "claude-code", "model": "default"}, headers=csrf_headers(c))
+    assert r.status_code == 200
+    assert post(c, CHAT, {"text": "in A"}).status_code == 202
+    clock.advance(15)
+    assert post(c, other + "/chat", {"text": "in B"}).status_code == 202
+    assert sleeps == [45]
+
+
+def test_subscription_mode_answers_only_the_token_owner(store, gh, clock, monkeypatch):
+    seen = []
+    c = subscription_client(store, gh, clock, monkeypatch, owner="someone-else", seen=seen)
+    r = post(c, CHAT, {"text": "status?"})
+    assert r.status_code == 403 and "answers only that person" in r.json()["error"]
+    body = c.get(CHAT).json()
+    assert not seen and body["messages"] == []
+    assert body["mode"]["you_are_owner"] is False and body["mode"]["owner"] == "someone-else"
+
+
+def test_subscription_mode_without_a_declared_owner_stays_off(store, gh, clock, monkeypatch):
+    seen = []
+    c = subscription_client(store, gh, clock, monkeypatch, owner=None, seen=seen)
+    r = post(c, CHAT, {"text": "status?"})
+    assert r.status_code == 409 and "CLAUDE_CODE_OAUTH_TOKEN_OWNER" in r.json()["error"]
+    assert not seen and c.get(CHAT).json()["mode"]["missing"] == "owner"
+
+
+@pytest.mark.parametrize("yml, pace", [
+    ("subscription:\n  min_interval_seconds: 10\n  max_per_hour: 99\n", (60, 20)),
+    ("subscription:\n  min_interval_seconds: 300\n  max_per_hour: 5\n", (300, 5)),
+    ("subscription:\n  min_interval_seconds: soon\n", (60, 20)),
+])
+def test_a_project_can_be_slower_but_never_faster(store, gh, clock, monkeypatch, yml, pace):
+    gh.policy = yml
+    c = subscription_client(store, gh, clock, monkeypatch)
+    got = c.get(CHAT).json()["mode"]["pace"]
+    assert (got["min_interval_seconds"], got["max_per_hour"]) == pace
+
+
+def test_api_mode_never_waits(store, gh, clock, monkeypatch):
+    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
+    fake_litellm(monkeypatch, json.dumps({"reply": "via anthropic"}))
+    sleeps = []
+    app = create_app(store=store, identity=gh, clock=clock, spawn=lambda job: job(),
+                     sleep=sleeps.append)
+    c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    login(c)
+    c.put(f"{BASE}/connections/roles/orchestrator",
+          json={"provider": "anthropic", "model": "claude-sonnet-5-5"}, headers=csrf_headers(c))
+    c.put(f"{BASE}/connections/secrets/anthropic", json={"value": "sk-ant-api03-projectkey0123456789"},
+          headers=csrf_headers(c))
+    assert post(c, CHAT, {"text": "one"}).status_code == 202
+    assert post(c, CHAT, {"text": "two"}).status_code == 202
+    body = c.get(CHAT).json()
+    assert sleeps == [] and "pace" not in [m["kind"] for m in body["messages"]]
+    assert body["mode"] == {"kind": "api", "provider": "anthropic", "model": "claude-sonnet-5-5",
+                            "missing": None}
+
+
+def test_api_mode_without_its_key_is_unavailable(store, gh, clock, monkeypatch):
+    app = create_app(store=store, identity=gh, clock=clock, spawn=lambda job: job())
+    c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    login(c)
+    c.put(f"{BASE}/connections/roles/orchestrator",
+          json={"provider": "openai", "model": "gpt-5"}, headers=csrf_headers(c))
+    r = post(c, CHAT, {"text": "hi"})
+    assert r.status_code == 409 and "no API key is saved" in r.json()["error"]
+    assert c.get(CHAT).json()["mode"]["missing"] == "key"

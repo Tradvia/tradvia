@@ -638,11 +638,10 @@ def model_for_connection(provider: str | None, model_name: str | None, secret: s
                          runner: Callable = subprocess.run) -> Model:
     """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0009).
 
-    Unset, `claude-code`, or a chosen AI provider with no secret saved yet all keep today's
-    path: Claude Code on the subscription token (`default_model`, #104). Any other configured
-    provider (`anthropic`, `openai`, `gemini`) is called through LiteLLM instead. This never
-    raises: an unusable choice falls back rather than failing a chat message outright, and the
-    fallback's own errors (missing CLI, missing token) still surface as today's warning message.
+    An AI provider (`anthropic`, `openai`, `gemini`) with its key is called through LiteLLM;
+    anything else is Claude Code on the server's subscription token (`default_model`). Whether
+    a project may use the subscription at all, for whom and at what pace is decided before
+    this, in `api.py` (ADR 0012): it never reaches here for a project that chose nothing.
     """
     if provider not in LITELLM_PROVIDERS or not model_name or not secret:
         return default_model(runner)

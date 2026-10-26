@@ -104,6 +104,11 @@ class Store(Protocol):
     ) -> dict[str, Any] | None:
         """Newest successful entry of this actor with this key at or after `since` (epoch)."""
 
+    def audit_times(self, action: str, actor_login: str, since: float) -> list[float]:
+        """Epoch times of this actor's entries with this action at or after `since`, oldest
+        first, in EVERY project: the one cross-project read, for the pace of a Claude
+        subscription, which is one subscription whatever project uses it (ADR 0012)."""
+
     # Orchestrator conversation (orchestrator.py). `rec`: author, kind, text, refs, and for a
     # run's last message cost_usd, tokens_in, tokens_out. Every query filters by project.
     def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
@@ -411,6 +416,12 @@ class MemoryStore:
                 and r["created_at"] >= since
             ]
         return copy.deepcopy(max(hits, key=lambda r: r["created_at"])) if hits else None
+
+    def audit_times(self, action: str, actor_login: str, since: float) -> list[float]:
+        with self._lock:
+            return sorted(float(r["created_at"]) for r in self.audit
+                          if r["action"] == action and r["actor_login"] == actor_login
+                          and r["created_at"] >= since)
 
     def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -744,6 +755,11 @@ _INSERT_AUDIT_SQL = """
 _LIST_AUDIT_SQL = """
     SELECT actor_login, action, issue_number, result, detail, created_at, via
     FROM audit_log WHERE project_id = %s AND issue_number = %s
+    ORDER BY created_at, id
+"""
+_AUDIT_TIMES_SQL = """
+    SELECT extract(epoch FROM created_at) FROM audit_log
+    WHERE action = %s AND actor_login = %s AND created_at >= to_timestamp(%s)
     ORDER BY created_at, id
 """
 _RECENT_AUDIT_KEY_SQL = """
@@ -1124,6 +1140,11 @@ class PgStore:
             return None
         return {"actor_login": row[0], "action": row[1], "issue_number": row[2],
                 "result": row[3], "detail": row[4]}
+
+    def audit_times(self, action: str, actor_login: str, since: float) -> list[float]:
+        with self._conn() as conn:
+            rows = conn.execute(_AUDIT_TIMES_SQL, (action, actor_login, since)).fetchall()
+        return [float(r[0]) for r in rows]
 
     def append_message(self, project_id: int, rec: dict[str, Any]) -> dict[str, Any]:
         from psycopg.types.json import Jsonb
