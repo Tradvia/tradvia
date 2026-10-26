@@ -61,10 +61,12 @@ coming back to a browser.
 - **Authentication is not symmetric across providers, and the catalog says so.** Every AI
   provider's `note` (shown on its card) states plainly what is and is not possible today, so
   nothing here is presented as available before it is:
-  - *Claude Code*: a subscription login, not an API key. Get the token either by running
-    `claude setup-token` (prints a long-lived token to paste) or `claude login` once on your
-    own machine (opens a browser to sign in, same OAuth flow; the resulting token is what
-    `setup-token` also produces) — both land in the same `claude-code` secret field.
+  - *Claude Code*: a subscription login, not an API key, and since ADR 0012 never stored by
+    Tradvia: its owner runs `claude setup-token` and keeps the token in their own secrets (the
+    server's, for the chat's subscription mode; the repository's Actions secrets, for the agent
+    workflows), with `CLAUDE_CODE_OAUTH_TOKEN_OWNER` beside it. The Connections screen shows only
+    whether the server has it and whose it is. In the chat the mode answers that owner alone,
+    at a deliberate pace (ADR 0012).
   - *Anthropic (API key)*, *Gemini*, *OpenAI*: pasting an API key is the only method. OpenAI
     has since announced "Sign in with ChatGPT" — a subscription login comparable to Claude
     Code's, letting an *approved partner app* spend a subscriber's ChatGPT plan allowance

@@ -126,7 +126,7 @@ def test_docs_page_i18n_and_back_link():
 
 def test_every_adr_is_linked():
     hrefs = " ".join(a.get("href", "") for a in parse(DOCS).links)
-    adrs = sorted(ADR_DIR.glob("000*.md"))
+    adrs = sorted(ADR_DIR.glob("0*.md"))
     assert len(adrs) >= 8
     for adr in adrs:
         assert f"docs/adr/{adr.name}" in hrefs, adr.name

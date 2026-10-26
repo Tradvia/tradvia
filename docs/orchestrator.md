@@ -41,14 +41,22 @@ The `orchestrator` row of the project's connections (`dashboard` → Connections
 (`.tradvia.yml`'s `providers` section is the default, a value set on the Connections screen
 overrides it):
 
-- **Unset, or `claude-code`:** today's original path — Claude Code headless (`claude -p`),
-  on the subscription token (`CLAUDE_CODE_OAUTH_TOKEN`; see "Credentials" and #104).
-- **`anthropic`, `openai` or `gemini`, with a secret saved:** a plain chat completion through
-  LiteLLM (already a `core` dependency — the planner, `llm.py`, uses it the same way), with the
-  project's own stored key passed on the call itself. Nothing is shelled out, so none of this
-  needs Node.js or the CLI.
-- **An AI provider is chosen but no secret is saved yet:** falls back to the `claude-code` path
-  above rather than failing the message outright (`orchestrator.model_for_connection`).
+- **`anthropic`, `openai` or `gemini`, with its key saved (recommended):** a plain chat
+  completion through LiteLLM (already a `core` dependency; the planner, `llm.py`, uses it the
+  same way), with the project's own stored key passed on the call itself. Nothing is shelled
+  out, so none of this needs Node.js or the CLI, and nothing waits on purpose.
+- **`claude-code`, the subscription mode ([ADR 0012](adr/0012-subscription-mode-for-the-chat.md)):**
+  Claude Code headless (`claude -p`) on the server's subscription token. It answers only the
+  token's owner (`CLAUDE_CODE_OAUTH_TOKEN_OWNER`), and on purpose at least 60 s apart and at most
+  20 an hour across every project on the server; a project can be slower in `.tradvia.yml`
+  (`subscription:`), never faster. Each wait is said in the conversation, with the pointer to an
+  API key.
+- **Nothing chosen, or a choice that cannot work** (an AI provider with no key saved, the
+  subscription mode with no token or no declared owner): the message is refused with what to do.
+  The chat never falls back to someone's subscription in silence.
+
+The dashboard shows the mode above the conversation: the provider, or for the subscription mode
+its owner, pace and the answers in the last hour.
 
 This is per project, not a server-wide setting: two projects on the same Tradvia deployment can
 answer through two different providers, and switching providers needs no redeploy — only a
@@ -93,9 +101,10 @@ the closed tool set limits what a prompt injection can do.
 No credential is put in the prompt. The user's GitHub token stays inside the API process and
 is used only by the tools.
 
-- **Claude Code path:** the model process gets an allow-listed environment (`PATH`, `HOME`,
+- **Subscription path:** the model process gets an allow-listed environment (`PATH`, `HOME`,
   locale, proxy and CA settings and `CLAUDE_CODE_OAUTH_TOKEN`, which is its own login to
-  Claude): no `GITHUB_TOKEN`, no `DATABASE_URL`, no `TRADVIA_SECRET_KEY`.
+  Claude): no `GITHUB_TOKEN`, no `DATABASE_URL`, no `TRADVIA_SECRET_KEY`. The token comes from
+  the server's own environment, put there by its owner; Tradvia never stores it (ADR 0012).
 - **LiteLLM path:** the project's decrypted connection secret (ADR 0009) is passed as the
   `api_key` argument of the one completion call, never through an environment variable of the
   API process. Several projects' chat runs can be in flight at once, each in its own thread of
