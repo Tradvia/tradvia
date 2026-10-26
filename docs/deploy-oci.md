@@ -69,7 +69,8 @@ yourself as a **required reviewer**, then add:
 | Secret | `POSTGRES_PASSWORD` | a long random password |
 | Variable | `TRADVIA_DOMAIN` | `app.tradvia.org` |
 | Variable | `ACME_EMAIL` | e-mail for the HTTPS certificate notices |
-| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | optional — output of `claude setup-token` run on your own machine. Enables the **orchestrator conversation** ([orchestrator.md](orchestrator.md)); without it chat stays unavailable, same as today |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | optional — output of `claude setup-token` run on your own machine. Enables the chat's **subscription mode** ([ADR 0012](adr/0012-subscription-mode-for-the-chat.md)) for projects that choose it in Connections. The recommended way is an API key per project, set in Connections, which needs neither of these two |
+| Variable | `CLAUDE_CODE_OAUTH_TOKEN_OWNER` | the GitHub login of the token's owner. The chat answers that person alone in subscription mode, at least 60 s apart and at most 20 an hour; without it the mode stays off. Tradvia never stores the token: it lives only here |
 
 Delete the local `tradvia-deploy` private key after saving it as a secret.
 
