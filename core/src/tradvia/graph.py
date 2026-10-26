@@ -10,6 +10,8 @@ Card statuses follow core/contracts/card-state.v1.json.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import os
 import re
 import unicodedata
@@ -28,6 +30,7 @@ from .llm import architect_plan
 from .policy import Policy, role_of
 from .risk import classify
 from .state import Card, add_usage, transition
+from .tracing import Tracer, get_tracer
 
 MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
 _CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
@@ -108,9 +111,34 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
                 checkpointer=None, executor=None, cwd: str = ".",
-                policy: Policy | None = None, budget: Budget | None = None):
+                policy: Policy | None = None, budget: Budget | None = None,
+                tracer: Tracer | None = None):
     policy = policy or Policy()
     budget = budget or Budget()
+    tracer = tracer or get_tracer()
+    takes_on_tool = bool(executor) and "on_tool" in inspect.signature(executor.execute).parameters
+
+    def traced(name: str, agent: str):
+        """Run a node inside the span `node.<name>` of the card trace (logic unchanged)."""
+        def decorate(fn):
+            @functools.wraps(fn)
+            def run(card: Card):
+                with tracer.span(f"node.{name}", card_id=card["id"], agent=agent,
+                                 **{"issue.number": card["source"]["issue_number"],
+                                    "status.from": card.get("status")}) as sp:
+                    out = fn(card)
+                    sp.set(**{"status.to": (out or {}).get("status"),
+                              "plan_error": (out or {}).get("plan_error")})
+                    return out
+            return run
+        return decorate
+
+    def tool_span(name: str, summary: str) -> None:
+        with tracer.span(f"tool.{name}", tool=name, summary=summary):
+            pass
+
+    def model_name(agent: object, default: str) -> str:
+        return str(getattr(agent, "name", None) or getattr(agent, "__name__", None) or default)
 
     def step_usage(steps: int, cost: dict) -> dict:
         return {"steps": steps, "minutes": (cost.get("duration_s") or 0) / 60,
@@ -156,7 +184,11 @@ def build_graph(github: GitHub, chat: Chat,
         if level == "warn":
             body += "\n\n" + warning_notice(card.get("usage"), budget)
         try:
-            p = planner(card["title"], body, card["source"]["issue_number"])
+            with tracer.span("model.planner", model=model_name(planner, "planner")) as sp:
+                p = planner(card["title"], body, card["source"]["issue_number"])
+                c = p.get("_cost") or {}
+                sp.set(usd=c.get("usd"), tokens_in=c.get("tokens_in"),
+                       tokens_out=c.get("tokens_out"), tool_calls=int(p.get("_tool_calls") or 0))
         except (RuntimeError, ValueError) as e:
             why = str(e)[:300]
             chat.post(f"🔴 **{card['id']}** — o planejamento falhou: {why}. Nenhum plano foi "
@@ -300,10 +332,16 @@ def build_graph(github: GitHub, chat: Chat,
             chat.post(f"🟡 **{card['id']}** — {why}. Nenhum PR foi aberto.")
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
+            kwargs = {"on_tool": tool_span} if takes_on_tool else {}
+            if level == "warn":
+                kwargs["budget_notice"] = warning_notice(card.get("usage"), budget)
             try:
-                run = (executor.execute(card, cwd, budget_notice=warning_notice(card.get("usage"),
-                                                                                 budget))
-                       if level == "warn" else executor.execute(card, cwd))
+                with tracer.span("model.executor",
+                                 model=model_name(executor, type(executor).__name__)) as sp:
+                    run = executor.execute(card, cwd, **kwargs)
+                    sp.set(usd=run.get("cost_usd"), tokens_in=run.get("tokens_in"),
+                           tokens_out=run.get("tokens_out"),
+                           tool_calls=int(run.get("tool_calls") or 0))
             except StagnationError as e:
                 why = (f"o agente repetiu `{e.tool}` {e.count} vezes seguidas e a nova tentativa "
                        "com a mensagem reflexiva também falhou")
@@ -384,14 +422,15 @@ def build_graph(github: GitHub, chat: Chat,
                 **transition(card["status"], "IN_REVIEW_PR", "@Agent-Coder", "Pull request opened")}
 
     g = StateGraph(Card)
-    g.add_node("start_work", start_work)
-    g.add_node("plan", plan)
-    g.add_node("ask_human", ask_human)
-    g.add_node("wait_human", wait_human)
-    g.add_node("risk_gate", risk_gate)
-    g.add_node("risk_wait", risk_wait)
-    g.add_node("open_pr", open_pr)
-    g.add_node("replan_limit", replan_limit)
+    for name, fn, agent in (("start_work", start_work, "human"),
+                            ("plan", plan, "@Agent-Architect"),
+                            ("ask_human", ask_human, "@Agent-Architect"),
+                            ("wait_human", wait_human, "human"),
+                            ("risk_gate", risk_gate, "@Agent-Coder"),
+                            ("risk_wait", risk_wait, "human"),
+                            ("open_pr", open_pr, "@Agent-Coder"),
+                            ("replan_limit", replan_limit, "@Agent-Architect")):
+        g.add_node(name, traced(name, agent)(fn))
     g.add_edge(START, "start_work")
     g.add_edge("start_work", "plan")
     g.add_conditional_edges("plan", lambda c: END if c.get("plan_error") else "ask_human",
