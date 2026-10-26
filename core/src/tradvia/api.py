@@ -31,6 +31,7 @@ from .actions import (
     ActionError,
     CardNotFound,
     GitHubError,
+    AWAITING_APPROVAL,
     DEPLOY_REF,
     DEPLOY_WORKFLOW,
     agent_login,
@@ -50,6 +51,7 @@ from .actions import (
     reorder,
     replaced_run_ids,
     required_checks,
+    runs_awaiting_approval,
 )
 from .auth import (
     API_TOKEN_DEFAULT_DAYS,
@@ -97,6 +99,7 @@ APP_PERMISSION = {
     "approve_deploy": "Deployments: Read and write",
     "reject_deploy": "Deployments: Read and write",
     "cancel_run": "Actions: Read and write",
+    "approve_workflows": "Actions: Read and write",
     "post_deploy": "Actions: Read and write",
     "view_pull": "Pull requests: Read-only and Checks: Read-only",
     "view_deploys": "Actions: Read-only and Deployments: Read-only",
@@ -104,6 +107,7 @@ APP_PERMISSION = {
 NOT_FOUND_MESSAGE = {
     "merge_pr": "Pull request not found in this project.",
     "update_branch": "Pull request not found in this project.",
+    "approve_workflows": "Pull request not found in this project.",
     "view_pull": "Pull request not found in this project.",
     "approve_deploy": "Deploy not found in this project.",
     "reject_deploy": "Deploy not found in this project.",
@@ -1070,7 +1074,8 @@ def create_app(
             if blocked:
                 raise Conflict(blocked)
             ignored = ignore_cla and any(
-                c["name"] == "cla" and c["state"] == "failed" for c in required_checks(checks)
+                c["name"] == "cla" and c["state"] in ("failed", "awaiting")
+                for c in required_checks(checks)
             )
             auth.github.merge_pull(token, repo, number, title, sha)
             head = pull.get("head") or {}
@@ -1081,7 +1086,7 @@ def create_app(
                     deleted = True
                 except GitHubError:
                     pass
-            detail = "squash" + (" ignore_cla (cla failed)" if ignored else "")
+            detail = "squash" + (" ignore_cla (cla not passed)" if ignored else "")
             detail += "" if deleted else " (branch not deleted)"
             return Done(number, detail, {"issue_number": number, "branch_deleted": deleted})
         return work
@@ -1090,6 +1095,35 @@ def create_app(
         def work(token: str) -> Done:
             auth.github.update_branch(token, repo, number)
             return Done(number, "update branch", {"issue_number": number})
+        return work
+
+    def work_approve_workflows(
+        repo: str, number: int, data: dict[str, Any]
+    ) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            # Only the commit the person looked at: a push since then is never approved implicitly.
+            sha = data.get("sha")
+            if not isinstance(sha, str) or not sha:
+                raise ActionError("sha is required: the commit whose workflows are approved")
+            pull = auth.github.get_pull(token, repo, number)
+            if pull.get("merged") or pull.get("state") != "open":
+                raise Conflict("This pull request is not open.")
+            if (pull.get("head") or {}).get("sha") != sha:
+                raise Conflict(
+                    "The pull request has new commits since you looked. Reload the panel first."
+                )
+            waiting = runs_awaiting_approval(
+                auth.github.list_runs(token, repo, AWAITING_APPROVAL), sha
+            )
+            if not waiting:
+                raise Conflict("No workflow is waiting for approval on this commit.")
+            # One at a time: if GitHub refuses one, the runs approved before it stay approved.
+            for run_id in waiting:
+                auth.github.approve_run(token, repo, run_id)
+            return Done(
+                number, "approve workflows runs=" + ",".join(map(str, waiting)),
+                {"issue_number": number, "runs": waiting},
+            )
         return work
 
     def work_review_deploy(
@@ -1341,6 +1375,8 @@ def create_app(
                 work = work_merge(repo, number, data)
             elif action == "update_branch":
                 work = work_update_branch(repo, number)
+            elif action == "approve_workflows":
+                work = work_approve_workflows(repo, number, data)
             elif action in ("approve_deploy", "reject_deploy"):
                 work = work_review_deploy(
                     repo, request.path_params["run_id"], action == "approve_deploy", data
@@ -1517,6 +1553,8 @@ def create_app(
                  "has_diff": f.get("patch") is not None}
                 for f in pull["files"]
             ],
+            "head_sha": pull["head"]["sha"],
+            "workflows_waiting": any(c.get("conclusion") == AWAITING_APPROVAL for c in checks),
             "checks": required_checks(checks),
             "review_comments": [
                 {"author": (c.get("user") or {}).get("login"), "body": c.get("body"),
@@ -1620,6 +1658,8 @@ def create_app(
                   action_route("merge_pr", "merge_pr"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}/update-branch",
                   action_route("update_branch", "update_branch"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/pulls/{n:int}/approve-workflows",
+                  action_route("approve_workflows", "merge_pr"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/deployments/pending",
                   read_route("deploys"), methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/deployments/{run_id:int}/approve",

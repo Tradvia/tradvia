@@ -110,6 +110,9 @@ class PullGitHub(FakeGitHub):
     def cancel_run(self, token, repo, run_id):
         self._call("cancel_run", token, run_id)
 
+    def approve_run(self, token, repo, run_id):
+        self._call("approve_run", token, run_id)
+
     def dispatch_workflow(self, token, repo, workflow, ref, inputs):
         self._call("dispatch_workflow", token, workflow, ref, inputs)
 
