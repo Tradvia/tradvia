@@ -39,6 +39,8 @@ services:
       TRADVIA_GITHUB_APP_CLIENT_ID: ${TRADVIA_GITHUB_APP_CLIENT_ID:-}
       TRADVIA_GITHUB_APP_CLIENT_SECRET: ${TRADVIA_GITHUB_APP_CLIENT_SECRET:-}
       TRADVIA_SECRET_KEY: ${TRADVIA_SECRET_KEY:-}
+      # Claude Code CLI for the orchestrator (docs/orchestrator.md). Without it the orchestrator cannot answer.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

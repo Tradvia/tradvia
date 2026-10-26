@@ -67,6 +67,7 @@ yourself as a **required reviewer**, then add:
 | Secret | `OCI_SSH_KEY` | content of `tradvia-deploy` (private key) |
 | Secret | `OCI_KNOWN_HOSTS` | the `ssh-keyscan` line |
 | Secret | `POSTGRES_PASSWORD` | a long random password |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN` | optional: the token the GitHub agent uses. Without it the orchestrator cannot answer. A repository secret with this name also works |
 | Variable | `TRADVIA_DOMAIN` | `app.tradvia.org` |
 | Variable | `ACME_EMAIL` | e-mail for the HTTPS certificate notices |
 

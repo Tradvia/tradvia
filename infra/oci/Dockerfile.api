@@ -4,6 +4,25 @@ FROM python:3.12-slim
 
 RUN useradd --create-home --uid 10001 tradvia
 
+# Node.js 22 and the Claude Code CLI. The orchestrator runs `claude -p` inside this container
+# (core/src/tradvia/orchestrator.py); Claude Code 2.1.310 needs Node >= 22. Installed as root,
+# before USER tradvia. `claude --version` is a build-time smoke test.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && install -d -m 0755 /etc/apt/keyrings \
+ && curl -fsSL -o /tmp/nodesource.key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+ && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key \
+ && rm -f /tmp/nodesource.key \
+ && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g "@anthropic-ai/claude-code@2.1.310" \
+ && npm cache clean --force \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version \
+ && claude --version
+
 WORKDIR /app
 COPY core ./core
 RUN pip install --no-cache-dir "./core[api]"
