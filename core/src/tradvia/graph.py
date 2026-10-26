@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import re
-import unicodedata
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
@@ -23,6 +22,7 @@ from langgraph.types import interrupt
 from .budget import Budget, check, format_usage, warning_notice
 from .checkpoints import make_checkpointer
 from .claude_code import StagnationError
+from .decisions import classify_reply
 from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .policy import Policy, role_of
@@ -31,8 +31,6 @@ from .state import Card, add_usage, transition
 
 MAX_REPLANS = 3  # default; override with TRADVIA_MAX_REPLANS
 _CONVENTIONAL = re.compile(r"(feat|fix|docs|ci|chore|refactor|test|perf|build)(\([^)]*\))?!?:")
-APPROVE = ("aprovado", "aprovo", "approved", "approve", "sim", "yes", "ok", "pode", "lgtm")
-REJECT = ("rejeitado", "rejeito", "reject", "rejected", "nao", "no", "cancela", "cancel")
 
 
 def max_replans() -> int:
@@ -42,17 +40,6 @@ def max_replans() -> int:
     except ValueError:
         return MAX_REPLANS
     return n if n > 0 else MAX_REPLANS
-
-
-def classify_reply(text: str) -> str:
-    """Return 'approved', 'rejected' or 'feedback' for a human chat reply."""
-    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower().strip()
-    first = re.split(r"[\s,.!:;]+", t, maxsplit=1)[0] if t else ""
-    if first in APPROVE:
-        return "approved"
-    if first in REJECT:
-        return "rejected"
-    return "feedback"
 
 
 def tokens_line(cost: dict | None) -> str:

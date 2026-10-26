@@ -5,8 +5,10 @@
 # plan as a comment and waits for a maintainer to answer "Aprovado" / "Approved",
 # "Rejeitado" / "Rejected", or an adjustment. On approval @Agent-Coder opens a PR.
 #
-# Only people with triage access can add labels, and only OWNER / MEMBER /
-# COLLABORATOR replies are read, so outsiders cannot start or approve a run.
+# Only people with triage access can add labels. A plan is approved only by a reply
+# from someone whose GitHub role meets approve_plan (write by default; checked through
+# the collaborator permission endpoint in GitHubIssueChat, core/src/tradvia/integrations.py).
+# A decision from anyone else is ignored, and the card gets a notice saying why.
 # Without the ANTHROPIC_API_KEY secret the run uses the offline planner.
 name: agent
 
