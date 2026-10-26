@@ -1331,7 +1331,8 @@ async function loadData(repo) {
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
 
-const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit"];
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+  "deploy_stuck", "cost_outlier", "run_dead"];
 let inboxOpen = false;
 let inboxData = []; // [{ repo, items }] of the projects that have something pending
 let pushKey = null; // VAPID public key; null while unknown or when notifications are off
@@ -1511,7 +1512,8 @@ const I18N = {
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
     kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
     kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
-    kind_adjust_limit: "limite de ajustes",
+    kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
+    kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1605,7 +1607,8 @@ const I18N = {
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
     kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
     kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
-    kind_adjust_limit: "adjustment limit",
+    kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
+    kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
