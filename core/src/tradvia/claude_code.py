@@ -218,8 +218,20 @@ def _text_of(content: object) -> str:
     return ""
 
 
-def _feed(event: dict, monitor: StagnationMonitor) -> tuple[str, str]:
+def _tool_summary(tool_input: object) -> str:
+    """Short hint of what a tool call targets (path, command or pattern), for tracing."""
+    if isinstance(tool_input, dict):
+        for key in ("file_path", "path", "command", "pattern", "url"):
+            if tool_input.get(key):
+                return str(tool_input[key])[:200]
+    return ""
+
+
+def _feed(event: dict, monitor: StagnationMonitor,
+          on_tool: Callable[[str, str], None] | None = None) -> tuple[str, str]:
     """Feed one stream-json event to the monitor; return (signal, tool).
+
+    `on_tool(name, summary)`, when given, is called for each `tool_use` block (tracing).
 
     `assistant` events carry `tool_use` blocks (name + input); `user` events carry the
     `tool_result` blocks, the intermediate outputs.
@@ -234,6 +246,8 @@ def _feed(event: dict, monitor: StagnationMonitor) -> tuple[str, str]:
             continue
         if event.get("type") == "assistant" and block.get("type") == "tool_use":
             name = str(block.get("name", ""))
+            if on_tool:
+                on_tool(name, _tool_summary(block.get("input")))
             result = monitor.record_call(name, block.get("input"))
             if result != "ok":
                 return result, name
@@ -264,7 +278,9 @@ def _popen_lines(cmd: list[str], cwd: str, timeout: int, tail: list[str]):
 
 def run_claude_stream(prompt: str, cwd: str, allowed_tools: str, max_turns: int,
                       monitor: StagnationMonitor, runner: Callable = subprocess.run,
-                      timeout: int | None = None) -> tuple[dict | None, str, str]:
+                      timeout: int | None = None,
+                      on_tool: Callable[[str, str], None] | None = None,
+                      ) -> tuple[dict | None, str, str]:
     """Run `claude -p --output-format stream-json --verbose`, feeding the monitor live.
 
     Returns (result, signal, tool): `result` is the final JSON object, or None when the
@@ -301,7 +317,7 @@ def run_claude_stream(prompt: str, cwd: str, allowed_tools: str, max_turns: int,
                                                  and "message" not in event):
                 final = event
                 continue
-            signal, tool = _feed(event, monitor)
+            signal, tool = _feed(event, monitor, on_tool)
             if signal != "ok":
                 if hasattr(lines, "close"):
                     lines.close()
@@ -331,7 +347,8 @@ class ClaudeCodeExecutor:
         self.runner, self.max_turns = runner, max_turns
         self.repeat_limit, self.project_id = repeat_limit, project_id
 
-    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
+                on_tool: Callable[[str, str], None] | None = None) -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
         prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
@@ -340,11 +357,12 @@ class ClaudeCodeExecutor:
         # One monitor per run: nothing is shared between cards or projects.
         monitor = StagnationMonitor(self.repeat_limit, card.get("project_id", self.project_id))
         turns = self.max_turns or exec_max_turns()
-        data, signal, tool = run_claude_stream(prompt, cwd, EXEC_TOOLS, turns, monitor, self.runner)
+        data, signal, tool = run_claude_stream(prompt, cwd, EXEC_TOOLS, turns, monitor, self.runner,
+                                            on_tool=on_tool)
         if data is None:  # first time at the limit: restart once with the reflective message
             note = reflective_message(tool, monitor.repeat_count)
             data, signal, tool = run_claude_stream(f"{prompt}\n\n{note}", cwd, EXEC_TOOLS, turns,
-                                                   monitor, self.runner)
+                                                   monitor, self.runner, on_tool=on_tool)
             if data is None:
                 raise StagnationError(tool, monitor.repeat_count)
         cost = _cost(data)
@@ -369,5 +387,6 @@ class ClaudeCodeAgent:
     def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
         return claude_code_plan(title, body, number, runner=self.runner, cwd=cwd, notice=notice)
 
-    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
-        return self._executor.execute(card, cwd, budget_notice)
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
+                on_tool: Callable[[str, str], None] | None = None) -> dict:
+        return self._executor.execute(card, cwd, budget_notice, on_tool)
