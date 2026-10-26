@@ -160,6 +160,9 @@ it in the thread, and the agent opens the pull request. See
 - [x] **Phase 0 — Foundation:** open-core monorepo, CLA, CI, card contract
 - [ ] **Phase 1 — Engine v0.1:** orchestrator, LiteLLM API runtime, GitHub,
       approval gates in chat *(in progress)*
+  - Stage 3 (robustness) — evals harness with golden tasks and per-model/prompt
+    regression: **Partial** (offline with a scripted model via `make evals`;
+    real model is manual only, `TRADVIA_EVALS_LIVE=1`)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose
