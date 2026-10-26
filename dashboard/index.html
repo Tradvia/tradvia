@@ -90,6 +90,8 @@
   button:disabled { opacity: .5; cursor: default; }
   #bell.has { border-color: var(--warn); }
   #bell.has #bell-count { color: var(--warn); font-weight: 600; }
+  #deploy-alert { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+  .deploys li.blocking { border-left: 3px solid var(--warn); padding-left: 8px; }
   .inbox { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 14px 12px; margin-bottom: 14px; }
   .inbox[hidden], .notify[hidden] { display: none; }
   .inbox h3 { margin: 10px 0 4px; font-size: 13px; }
@@ -196,6 +198,7 @@
     <nav class="mainnav" id="mainnav" aria-label="Main"></nav>
     <div class="controls">
       <button id="bell" type="button" hidden><span aria-hidden="true">🔔</span> <span id="bell-count">0</span></button>
+      <button id="deploy-alert" type="button" hidden><span aria-hidden="true">⏳</span> <span id="deploy-alert-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
       <a id="help-link" href="docs.html" data-i18n="help"></a>
@@ -495,6 +498,11 @@ function buildTimeline(events) {
   }
   settle("awaiting");
   return out;
+}
+
+// Deploys waiting for approval past the alert threshold; the server flags them (long_wait).
+function longWaitCount(deploys) {
+  return (deploys || []).filter((x) => x.long_wait === true).length;
 }
 
 // cards: [{number, title, items}]; returns the newest `limit` events across cards.
@@ -1110,8 +1118,10 @@ let deploysToken = 0;
 async function renderDeploys() {
   const section = document.getElementById("deploys-section");
   const box = document.getElementById("deploys");
+  const alertBtn = document.getElementById("deploy-alert");
   const mine = myRights();
   section.hidden = !mine;
+  alertBtn.hidden = true;
   box.replaceChildren();
   if (!mine) return;
   const mineToken = ++deploysToken;
@@ -1123,15 +1133,18 @@ async function renderDeploys() {
   const list = el("ul");
   d.deploys.forEach((x) => {
     const li = el("li");
+    if (x.replaced) li.classList.add("blocking");
     const link = el("a", "#" + x.run_id + " " + (x.title || ""));
     const href = safeGithubUrl(x.html_url);
     if (href) { link.href = href; link.target = "_blank"; link.rel = "noopener"; }
     li.append(link, el("span", " · " + (x.environments || []).join(", ") + " · " + fmtTime(x.created_at), "sub"));
-    if (x.replaced) li.append(el("span", " · " + t("replaced"), "badge"));
+    if (x.long_wait) li.append(el("span", " · " + t("waitingFor") + " " + x.waiting_minutes + " min", "badge"));
+    if (x.replaced) li.append(el("span", " · " + t("replaced"), "badge"), el("div", t("blocksQueue"), "sub"));
+    else if (x.long_wait) li.append(el("div", t("longWaitNote"), "sub"));
     if (d.can.approve_deploy) {
       const base = "/deployments/" + x.run_id;
       const acts = el("div", null, "acts");
-      if (x.replaced) acts.append(actionButton(li, t("cancelRun"), base + "/cancel", {}));
+      if (x.replaced) acts.append(actionButton(li, t("cancelBlocking"), base + "/cancel", {}));
       else if (x.can_approve) {
         acts.append(actionButton(li, t("approve"), base + "/approve", {}), actionButton(li, t("reject"), base + "/reject", {}));
       }
@@ -1140,6 +1153,13 @@ async function renderDeploys() {
     list.append(li);
   });
   box.append(list);
+  const waiting = longWaitCount(d.deploys);
+  if (d.can.approve_deploy && waiting > 0) {
+    document.getElementById("deploy-alert-count").textContent = String(waiting);
+    alertBtn.title = t("deployAlert") + ": " + waiting;
+    alertBtn.onclick = () => section.scrollIntoView({ block: "start" });
+    alertBtn.hidden = false;
+  }
   if (!d.can.approve_deploy) return;
   const op = el("div", null, "op");
   const backfill = el("input");
@@ -1529,8 +1549,8 @@ const I18N = {
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pendência para você",
     act_chat: "conversou com o orquestrador",
-    deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído",
-    cancelRun: "Cancelar", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
+    deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído", waitingFor: "aguardando há", blocksQueue: "Esta execução bloqueia o deploy mais recente: cancelar libera a fila.", longWaitNote: "Esperando há muito tempo: rejeitar libera a fila; aprovar roda o deploy.", deployAlert: "Deploys aguardando aprovação há muito tempo",
+    cancelBlocking: "Cancelar e liberar a fila", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
     pullRequest: "Pull request", pr_open: "aberto", pr_closed: "fechado", pr_merged: "mesclado",
     executorSummary: "Resumo do executor", description: "Descrição", changedFiles: "Arquivos alterados",
     checks: "Checks", reviewComments: "Comentários de revisão", loadingPull: "Carregando PR…",
@@ -1623,8 +1643,8 @@ const I18N = {
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pending for you",
     act_chat: "talked to the orchestrator",
-    deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced",
-    cancelRun: "Cancel", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
+    deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced", waitingFor: "waiting for", blocksQueue: "This run blocks the newest deploy: cancelling it frees the queue.", longWaitNote: "Waiting a long time: rejecting it frees the queue; approving runs the deploy.", deployAlert: "Deploys waiting for approval for a long time",
+    cancelBlocking: "Cancel and free the queue", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
     pullRequest: "Pull request", pr_open: "open", pr_closed: "closed", pr_merged: "merged",
     executorSummary: "Executor summary", description: "Description", changedFiles: "Changed files",
     checks: "Checks", reviewComments: "Review comments", loadingPull: "Loading PR…",
