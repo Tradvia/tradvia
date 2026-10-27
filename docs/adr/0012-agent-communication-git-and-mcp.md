@@ -24,7 +24,9 @@ the owner. What is missing is a way for those agents to use the same tools.
 
 1. **Two channels, one gate.**
    - *Git* carries the code. An agent works in its own checkout, pushes a branch
-     `agent/<issue>` and opens a pull request that says `Closes #N`. CI runs `make check`,
+     `tradvia/issue-<N>` and opens a pull request that says `Closes #N`. The panel and the
+     core recognize only this prefix (`BRANCH_PREFIX`), so another name would leave the pull
+     request out of the card's review state. CI runs `make check`,
      and a maintainer merges. Tradvia does not run code from an agent pull request.
    - *MCP* carries the conversation with the orchestrator: read, start, create, answer.
 2. **MCP is an adapter, not a second implementation.** The agent's tools are
