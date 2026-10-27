@@ -281,6 +281,16 @@ function branchMatchesIssue(ref, n) {
   return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
 }
 
+// True while a run of this card that started after `since` (ISO time) is still going. The
+// marker before it is from an earlier attempt, so the board shows the card as worked on.
+function runningSince(title, agentRuns, since) {
+  const t = Date.parse(since);
+  if (isNaN(t)) return false;
+  return agentRuns.some((r) => r.status !== "completed"
+    && (r.display_title || r.name) === title
+    && Date.parse(r.run_started_at) > t);
+}
+
 // agentRuns: runs of agent.yml only.
 function deriveCardState(issue, prs, agentRuns) {
   if (issue.state === "closed") return "DONE";
@@ -295,7 +305,12 @@ function deriveCardState(issue, prs, agentRuns) {
   // (BLOCKED); any other marker means something is waiting on a human right now, whatever
   // the run status says.
   if (issue.tradvia_last_marker) {
-    return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    // A run still going that started after the marker (tradvia_last_marker_at, #152) is a
+    // new attempt: the marker belongs to the attempt before it.
+    if (!runningSince(issue.title, agentRuns, issue.tradvia_last_marker_at)) {
+      return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    }
+    return "AGENT_WORKING";
   }
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";

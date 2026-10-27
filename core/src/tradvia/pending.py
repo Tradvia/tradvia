@@ -71,13 +71,24 @@ def last_agent_marker(card: dict[str, Any], agent: str | None = None) -> str | N
     Used by the dashboard to tell BLOCKED (🔴) apart from the other markers, which all mean
     the card still waits on a human even when the underlying CI run looks "successful" or
     is still "in_progress" (card #87): the agent's own word is more current than the run's."""
+    return marker_in(last_agent_marker_comment(card, agent))
+
+
+def marker_in(comment: dict[str, Any] | None) -> str | None:
+    """The marker emoji a comment leads with, or None."""
+    m = AGENT_MARKERS_RE.search((comment or {}).get("body") or "")
+    return m.group(0) if m else None
+
+
+def last_agent_marker_comment(
+    card: dict[str, Any], agent: str | None = None
+) -> dict[str, Any] | None:
+    """The agent's last comment on an open card when it leads with a marker, else None. Its
+    `created_at` is when the marker was posted: a run started after it is a new attempt (#152)."""
     if card.get("state") == "closed":
         return None
     comment = _last_agent_comment(card.get("comments") or [], agent or agent_login())
-    if comment is None:
-        return None
-    m = AGENT_MARKERS_RE.search(comment.get("body") or "")
-    return m.group(0) if m else None
+    return comment if marker_in(comment) else None
 
 
 def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
