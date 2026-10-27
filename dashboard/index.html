@@ -124,8 +124,6 @@
   .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
   .card:focus-visible { outline: 2px solid var(--info); }
   .card .cost { color: var(--muted); font-size: 12px; }
-  .activity { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; font-size: 12px; }
-  .activity h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .acts button, .approval button, .newcard button { padding: 2px 8px; font-size: 12px; }
   .newcard { display: grid; gap: 4px; margin-bottom: 8px; }
@@ -161,11 +159,37 @@
   .chat form { display: grid; gap: 4px; }
   .chat textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; padding: 6px; }
   .chat button { padding: 2px 8px; font-size: 12px; justify-self: start; }
-  .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
-  .activity li, .recent li { padding: 3px 0; }
+  .recent ul { list-style: none; margin: 0; padding: 0; }
+  .recent li { padding: 3px 0; }
   .when { color: var(--muted); }
-  .activity ol { margin: 4px 0 0 18px; padding: 0; }
+  .dialog ol { margin: 4px 0 0 18px; padding: 0; }
   .card .n { color: var(--muted); font-size: 12px; }
+  .agents { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .agent-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; white-space: nowrap; }
+  .agent-chip.planner { color: var(--info); }
+  .dialog { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .45); display: grid; place-items: center; padding: 16px; }
+  .dialog[hidden] { display: none; }
+  .dialog-box { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); width: min(880px, 100%); max-height: 90vh; overflow-y: auto; padding: var(--s3); display: grid; gap: 14px; }
+  .dialog-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  .dialog-head h2 { margin: 0; font-size: 16px; color: var(--text); text-transform: none; letter-spacing: normal; overflow-wrap: anywhere; }
+  .dialog-head h2 a { font-size: 12px; font-weight: 400; }
+  .dialog section { display: grid; gap: 6px; }
+  .dialog h3, .dialog h4 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .dialog ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .dialog li { padding: 3px 0; overflow-wrap: anywhere; }
+  .dialog table { font-size: 12px; }
+  .dialog tr.total td { font-weight: 600; }
+  .dialog .note { margin-top: 0; }
+  .dialog-remote { display: grid; gap: 12px; font-size: 12px; }
+  .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: 13px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 600px) {
+    .dialog { padding: 0; }
+    .dialog-box { width: 100%; max-height: 100vh; border-radius: 0; }
+    .facts { grid-template-columns: 1fr; }
+    .dialog th, .dialog td { white-space: normal; }
+  }
   .col.AGENT_WORKING h3 { color: var(--info); }
   .col.WAITING_HUMAN h3 { color: var(--warn); }
   .col.BLOCKED h3 { color: var(--bad); }
@@ -229,6 +253,7 @@
     <div class="charts" id="charts"></div>
     <div class="note" data-i18n="costNote"></div>
     <h2 data-i18n="board"></h2>
+    <div class="msg" id="board-note" hidden></div>
     <div class="board" id="board"></div>
     <div id="chat-section" hidden>
       <h2 data-i18n="chat"></h2>
@@ -259,6 +284,15 @@
   <section id="view-settings" class="view" hidden></section>
   <section id="view-help" class="view" hidden></section>
 </main>
+<div id="card-dialog" class="dialog" hidden>
+  <div class="dialog-box" role="dialog" aria-modal="true" aria-labelledby="card-dialog-title">
+    <div class="dialog-head">
+      <h2 id="card-dialog-title"></h2>
+      <button type="button" id="card-dialog-close" data-i18n="closeDialog"></button>
+    </div>
+    <div id="card-dialog-body"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -304,6 +338,33 @@ function deriveCardState(issue, prs, agentRuns) {
   const latest = mine.find((r) => r.status === "completed");
   if (latest) return FAILED_CONCLUSIONS.includes(latest.conclusion) ? "BLOCKED" : "WAITING_HUMAN";
   return "BACKLOG";
+}
+
+// Pull requests from several fetches, one entry per PR number (the first copy wins).
+function mergePulls(...lists) {
+  const byNumber = new Map();
+  for (const list of lists) for (const p of list) if (!byNumber.has(p.number)) byNumber.set(p.number, p);
+  return [...byNumber.values()];
+}
+
+// The cards the board shows: the ones started with agent:ready, plus any other open card whose
+// agent PR is still open. The bell counts those too (pending.py, PR_OPENED), so the board must
+// show them as well. Closed cards without the label are left out.
+function boardCards(labeled, openIssues, prs) {
+  const byNumber = new Map();
+  for (const issue of labeled) if (!issue.pull_request) byNumber.set(issue.number, issue);
+  for (const issue of openIssues) {
+    if (issue.pull_request || issue.state !== "open" || byNumber.has(issue.number)) continue;
+    const agentPr = prs.some((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
+    if (agentPr) byNumber.set(issue.number, issue);
+  }
+  return [...byNumber.values()];
+}
+
+// True when the card filter names a card the board does not hold: applied, it would empty the board.
+function cardFilterMissing(filters, issues) {
+  const n = filters ? filters.card : null;
+  return !!n && !(issues || []).some((i) => i.number === n);
 }
 
 // Duration in ms, or null when timestamps are missing.
@@ -540,7 +601,7 @@ function totalAndMedianCost(prs) {
 
 const DAY_MS = 86400000;
 const PRESET_DAYS = { "7d": 7, "30d": 30, "90d": 90 };
-const FILTER_KEYS = ["from", "to", "executor", "card", "status"];
+const FILTER_KEYS = ["from", "to", "executor", "fcard", "status"];
 const EXECUTOR_BRANCH = { agent: "tradvia/", claude: "claude/" };
 const EXECUTOR_WORKFLOW = { agent: "agent.yml", claude: "claude.yml" };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -563,10 +624,12 @@ function formatTokens(n) {
 }
 
 // Filters from the query string. `from` is 7d | 30d | 90d | YYYY-MM-DD (null = everything).
+// `fcard` narrows the board to one card. `card` is not a filter: it opens that card on load
+// (the link from notifications and the inbox), so it never hides the rest of the board.
 function parseFilters(search) {
   const q = new URLSearchParams(search || "");
   const from = q.get("from"), to = q.get("to"), executor = q.get("executor"), status = q.get("status");
-  const card = parseInt(q.get("card"), 10);
+  const card = parseInt(q.get("fcard"), 10);
   return {
     from: from && (PRESET_DAYS[from] || DATE_RE.test(from)) ? from : null,
     to: to && DATE_RE.test(to) ? to : null,
@@ -584,7 +647,7 @@ function filtersToSearch(filters, base) {
   if (f.from) q.set("from", f.from);
   if (f.to) q.set("to", f.to);
   if (f.executor && f.executor !== "all") q.set("executor", f.executor);
-  if (f.card) q.set("card", String(f.card));
+  if (f.card) q.set("fcard", String(f.card));
   if (f.status && f.status !== "all") q.set("status", f.status);
   const s = q.toString();
   return s ? "?" + s : "";
@@ -723,6 +786,97 @@ function cardCosts(issue, comments, prs) {
   const all = parts.plans.concat(parts.exec || [], parts.fallback || []);
   const sum = (k) => all.reduce((a, p) => a + p[k], 0);
   return { usd: sum("usd"), in: sum("in"), out: sum("out"), cache: sum("cache"), plans: parts.plans.length };
+}
+
+// Runs that did work on a card. A skipped run did none, so it does not count.
+function workedRuns(issue, runs) {
+  return runs.filter((r) => r.conclusion !== "skipped" && runIssue(r, [issue]));
+}
+
+// The workflow a run belongs to, as the executor kind it stands for.
+function runExecutor(r) {
+  return r.workflowFile === "claude.yml" ? "claude" : "agent";
+}
+
+// One agent's cost fields ({usd, in, out, cache}), all null when no cost was recorded for it.
+function costFields(p) {
+  return p ? { usd: p.usd, in: p.in, out: p.out, cache: p.cache } : { usd: null, in: null, out: null, cache: null };
+}
+
+// Sum of cost parts ({usd, in, out, cache}), or null when there are none.
+function sumParts(list) {
+  if (!list.length) return null;
+  return list.reduce((a, p) => ({ usd: a.usd + p.usd, in: a.in + p.in, out: a.out + p.out, cache: a.cache + p.cache }),
+    { usd: 0, in: 0, out: 0, cache: 0 });
+}
+
+// The agents that worked on a card: the planner first, then each executor (Tradvia agent or Claude
+// Code) that ran for it or opened its PR. The planner is listed when plans were recorded, or when the
+// Tradvia agent ran, since it plans before it executes. Each entry is {role, executor, runs, prs,
+// plans, usd, in, out, cache}: runs, prs and plans are null where they do not apply, and the cost
+// fields are null when no cost was recorded for that agent.
+function cardAgents(issue, prs, runs) {
+  const cardPrs = prs.filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number));
+  const cardRuns = workedRuns(issue, runs);
+  const kindRuns = (k) => cardRuns.filter((r) => runExecutor(r) === k).length;
+  const kindPrs = (k) => cardPrs.filter((p) => branchExecutor(p.head.ref) === k).length;
+  const plans = planCostsOf(issue.tradvia_plan_cost);
+  // cardCostParts reads the newest PR that has a cost; that PR's executor owns the executor cost.
+  const parts = cardCostParts(issue, issue.tradvia_plan_cost, prs);
+  const newest = cardPrs.slice().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const costed = newest.find((p) => prCost(p));
+  const execKind = parts && parts.exec && costed ? branchExecutor(costed.head.ref) : null;
+  const agents = [];
+  if (plans.length || kindRuns("agent") || kindPrs("agent")) {
+    agents.push({ role: "planner", executor: null, runs: null, prs: null, plans: plans.length,
+      ...costFields(sumParts(plans)) });
+  }
+  for (const k of ["agent", "claude"]) {
+    if (!kindRuns(k) && !kindPrs(k)) continue;
+    agents.push({ role: "executor", executor: k, runs: kindRuns(k), prs: kindPrs(k), plans: null,
+      ...costFields(execKind === k ? parts.exec : null) });
+  }
+  return agents;
+}
+
+// What a card's runs and PRs say, for the card dialog. `state` is the card's state on the board.
+// The last run is the newest one that did work, whichever workflow ran it.
+function cardDiagnostics(issue, state, prs, runs) {
+  const started = (r) => Date.parse(r.run_started_at || r.created_at) || 0;
+  const cardRuns = workedRuns(issue, runs).sort((a, b) => started(b) - started(a));
+  const cardPrs = prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const last = cardRuns[0] || null;
+  const newest = cardPrs[0] || null;
+  return {
+    state,
+    marker: issue.tradvia_last_marker || null,
+    labels: (issue.labels || []).map((l) => (typeof l === "string" ? l : l && l.name)).filter(Boolean),
+    created: issue.created_at || null,
+    updated: issue.updated_at || null,
+    runs: {
+      total: cardRuns.length,
+      noResult: cardRuns.filter((r) => r.status === "completed" && FAILED_CONCLUSIONS.includes(r.conclusion)).length,
+      running: cardRuns.filter((r) => r.status !== "completed").length,
+    },
+    last: last && {
+      executor: runExecutor(last),
+      status: last.status,
+      conclusion: last.conclusion || null,
+      started: last.run_started_at || last.created_at || null,
+      durationMs: last.status === "completed" ? runDuration(last) : null,
+      url: last.html_url || null,
+    },
+    prs: {
+      total: cardPrs.length,
+      newest: newest && {
+        number: newest.number,
+        state: newest.merged_at ? "merged" : newest.state === "open" ? "open" : "closed",
+        url: newest.html_url || null,
+      },
+    },
+  };
 }
 
 // Indicators over an already filtered view: {cards, withCost, totalUsd, medianUsd, tokens, medianTokens,
@@ -1006,10 +1160,10 @@ async function fillAudit(root, number) {
   root.append(el("h4", t("auditLog")), ul);
 }
 
-function renderApproval(card, number) {
+function renderApproval(host, number) {
   const box = el("div", null, "approval");
   box.addEventListener("click", (e) => e.stopPropagation());
-  card.append(box);
+  host.append(box);
   loadCardInfo(number).then((info) => {
     if (!info || !info.awaiting_plan || !info.plan) return;
     const text = el("textarea");
@@ -1317,16 +1471,20 @@ const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em a
 
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
-  const [agent, claude, issues, prs] = await Promise.all([
+  const [agent, claude, labeled, openIssues, prs, openPrs] = await Promise.all([
     getData(repo, "/actions/workflows/agent.yml/runs?per_page=30"),
     getData(repo, "/actions/workflows/claude.yml/runs?per_page=30"),
     getData(repo, "/issues?labels=agent:ready&state=all&per_page=50"),
+    getData(repo, "/issues?state=open&per_page=100"),
     getData(repo, "/pulls?state=all&per_page=50"),
+    getData(repo, "/pulls?state=open&per_page=100"),
   ]);
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
-  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
+  // Open PRs are read in full: the 50 most recent PRs alone can leave out an old open one.
+  const allPrs = mergePulls(openPrs, prs);
+  return { agentRuns, runs, issues: boardCards(labeled, openIssues, allPrs), prs: allPrs, backlog: await loadBacklog(repo) };
 }
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
@@ -1489,15 +1647,32 @@ let cardToOpen = (() => {
   const n = Number(new URLSearchParams(location.search).get("card"));
   return Number.isInteger(n) && n > 0 ? n : null;
 })();
+const deepLinkCard = cardToOpen; // kept for the note; cardToOpen is consumed once tried
+
+// A one-line note above the board: a card that the filter or a link names is not on it.
+function showBoardNote(text) {
+  const note = document.getElementById("board-note");
+  note.textContent = text || "";
+  note.hidden = !text;
+}
+
+// The note for the ?card=N link while that card is not on the board. Derived on every render
+// (a later render must not clear it), and gone as soon as the card is shown.
+function deepLinkNote() {
+  const n = deepLinkCard;
+  if (!n || !data || document.getElementById("card-" + n)) return "";
+  const onBoard = data.issues.some((i) => i.number === n);
+  return t(onBoard ? "noteHiddenCard" : "noteDeepLinkCard").replace("{n}", String(n));
+}
 
 function openRequestedCard() {
   if (cardToOpen === null) return;
-  const node = document.getElementById("card-" + cardToOpen);
-  if (!node) return;
   const n = cardToOpen;
-  cardToOpen = null;
+  cardToOpen = null; // tried once: the note above the board says why when it is not there
+  const node = document.getElementById("card-" + n);
+  if (!node) return;
   node.scrollIntoView({ block: "center" });
-  if (!openCards.has(n)) node.click();
+  if (dialogCard !== n) node.click();
 }
 
 /* ---------- i18n ---------- */
@@ -1507,6 +1682,9 @@ const I18N = {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
     help: "Ajuda",
     inbox: "Pendências", inboxEmpty: "Nada aguardando você.", notifications: "Notificações",
+    noteFilterCard: "O card #{n} não está no quadro: o filtro por card foi ignorado.",
+    noteDeepLinkCard: "O card #{n} não está no quadro (sem o rótulo agent:ready e sem PR aberta do agente).",
+    noteHiddenCard: "O card #{n} está fora dos filtros atuais (período, executor ou status).",
     enableNotify: "Ativar notificações", disableNotify: "Desativar notificações",
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
     kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
@@ -1596,11 +1774,23 @@ const I18N = {
     connFailed: "Não foi possível salvar a conexão.", provKind_cli: "CLI", provKind_ai: "IA", provKind_repository: "Repositório",
     act_secret_set: "configurou um segredo", act_secret_replace: "substituiu um segredo",
     act_secret_remove: "removeu um segredo", act_set_connection: "alterou uma conexão",
+    closeDialog: "Fechar", dialogNotFound: "Este card não está mais no quadro.", dialogOpenGithub: "abrir no GitHub",
+    dialogAgents: "Agentes que trabalharam", dialogNoAgents: "Nenhum agente trabalhou neste card ainda.",
+    dialogAgent: "Agente", dialogRunsCount: "Execuções", dialogPlans: "Planos", dialogCost: "Custo", dialogTotal: "Total do card",
+    dialogCostNote: "“—” significa que não há custo registrado para esse agente.",
+    dialogDiagnosis: "Diagnóstico", dialogState: "Situação", dialogOnBoard: "Aparece no quadro por",
+    dialogReasonLabel: "rótulo agent:ready", dialogReasonPr: "PR de agente aberta", dialogMarker: "Último marcador do agente",
+    dialogLabels: "Rótulos", dialogNoResult: "Execuções sem resultado", dialogRunning: "Em andamento",
+    dialogLastRun: "Última execução", dialogDuration: "Duração da última execução", dialogPrCount: "PRs do card",
+    dialogLastPr: "PR mais recente", dialogCreated: "Criado em", dialogUpdated: "Atualizado em",
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
     help: "Help",
     inbox: "Pending", inboxEmpty: "Nothing is waiting for you.", notifications: "Notifications",
+    noteFilterCard: "Card #{n} is not on the board: the card filter was ignored.",
+    noteDeepLinkCard: "Card #{n} is not on the board (no agent:ready label and no open agent PR).",
+    noteHiddenCard: "Card #{n} is outside the current filters (period, executor or status).",
     enableNotify: "Enable notifications", disableNotify: "Disable notifications",
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
     kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
@@ -1690,6 +1880,15 @@ const I18N = {
     connFailed: "Could not save the connection.", provKind_cli: "CLI", provKind_ai: "AI", provKind_repository: "Repository",
     act_secret_set: "set a secret", act_secret_replace: "replaced a secret",
     act_secret_remove: "removed a secret", act_set_connection: "changed a connection",
+    closeDialog: "Close", dialogNotFound: "This card is no longer on the board.", dialogOpenGithub: "open on GitHub",
+    dialogAgents: "Agents that worked on it", dialogNoAgents: "No agent has worked on this card yet.",
+    dialogAgent: "Agent", dialogRunsCount: "Runs", dialogPlans: "Plans", dialogCost: "Cost", dialogTotal: "Card total",
+    dialogCostNote: "“—” means no cost was recorded for that agent.",
+    dialogDiagnosis: "Diagnosis", dialogState: "State", dialogOnBoard: "Shown on the board because of",
+    dialogReasonLabel: "agent:ready label", dialogReasonPr: "open agent PR", dialogMarker: "Agent's last marker",
+    dialogLabels: "Labels", dialogNoResult: "Runs without result", dialogRunning: "Running now",
+    dialogLastRun: "Last run", dialogDuration: "Last run duration", dialogPrCount: "Card PRs",
+    dialogLastPr: "Newest PR", dialogCreated: "Created", dialogUpdated: "Updated",
   },
 };
 
@@ -1985,7 +2184,6 @@ async function fillActivity(root, number, withCard) {
   }
 }
 
-const openCards = new Set();
 let recentState = { status: "idle", items: [] }; // idle | loading | ok | ratelimit | error
 let recentToken = 0;
 
@@ -2094,7 +2292,7 @@ function renderNewCard() {
   return box;
 }
 
-function renderBoard(issues, prs, agentRuns, backlog) {
+function renderBoard(issues, prs, agentRuns, backlog, runs) {
   const root = document.getElementById("board");
   root.replaceChildren();
   root.classList.toggle("with-backlog", !!backlog);
@@ -2114,6 +2312,7 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     card.id = "card-" + issue.number;
     card.tabIndex = 0;
     card.setAttribute("role", "button");
+    card.setAttribute("aria-haspopup", "dialog");
     const a = el("a", issue.title);
     a.href = issue.html_url;
     a.target = "_blank"; a.rel = "noopener";
@@ -2124,41 +2323,13 @@ function renderBoard(issues, prs, agentRuns, backlog) {
       card.append(el("div", "$" + cost.usd.toFixed(4) + " · " + formatTokens(cost.in + cost.out + cost.cache) +
         " tokens · " + t("costLabel"), "cost"));
     }
-    const panel = el("div", null, "activity");
-    panel.hidden = true;
-    panel.addEventListener("click", (e) => e.stopPropagation());
-    const toggle = () => {
-      const open = panel.hidden;
-      panel.hidden = !open;
-      card.setAttribute("aria-expanded", String(open));
-      if (open) {
-        openCards.add(issue.number);
-        panel.replaceChildren(el("h4", t("activity")), el("div"));
-        fillActivity(panel.lastChild, issue.number, false);
-        const audit = el("div");
-        panel.append(audit);
-        fillAudit(audit, issue.number);
-        const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
-        if (pr && myRights()) {
-          const pull = el("div");
-          panel.append(pull);
-          renderPull(pull, pr.number);
-        }
-      } else openCards.delete(issue.number);
-    };
-    card.addEventListener("click", toggle);
+    // The card shows only which agent types worked on it; the details open in the card dialog.
+    const agents = cardAgents(issue, prs, runs);
+    if (agents.length) card.append(agentChips(agents));
+    card.addEventListener("click", () => openCardDialog(issue.number));
     card.addEventListener("keydown", (e) => {
-      if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(); }
+      if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCardDialog(issue.number); }
     });
-    card.append(panel);
-    const mine = myRights();
-    // While the agent waits for the answer its run is still in progress, so the card shows as
-    // AGENT_WORKING: offer the answer there too. renderApproval adds controls only when the
-    // server says the agent's last comment is the plan.
-    if ((s === "WAITING_HUMAN" || s === "AGENT_WORKING") && mine && mine.can_approve) {
-      renderApproval(card, issue.number);
-    }
-    if (openCards.has(issue.number)) { panel.hidden = true; toggle(); }
     cols[s].append(card);
   }
   STATES.forEach((s) => {
@@ -2167,6 +2338,211 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     if (!counts[s]) cols[s].append(el("div", t("emptyCards"), "sub"));
   });
 }
+
+/* ---------- Card agents and card dialog ---------- */
+
+// Chips with the agent types that worked on a card; the details are in the card dialog.
+function agentChips(agents) {
+  const box = el("div", null, "agents");
+  for (const a of agents) {
+    const planner = a.role === "planner";
+    const name = planner ? t("role_planner") : EXECUTORS[EXECUTOR_WORKFLOW[a.executor]];
+    const chip = el("span", name, "agent-chip " + (planner ? "planner" : a.executor));
+    chip.title = planner ? t("role_planner") : t("role_executor") + ": " + name;
+    box.append(chip);
+  }
+  return box;
+}
+
+// The card dialog shows one card: `dialogCard` is its number (null while closed). Its GitHub
+// sections live in `dialogRemote` and reload only when the card changes, so the board's refreshes
+// cost the dialog no requests.
+let dialogCard = null;
+let dialogRemote = null;
+let dialogRemoteKey = null;
+
+const usdText = (v) => (v == null ? "—" : "$" + v.toFixed(4));
+const tokenText = (v) => (v == null ? "—" : formatTokens(v));
+
+function openCardDialog(n) {
+  dialogCard = n;
+  dialogRemote = el("div", null, "dialog-remote");
+  dialogRemoteKey = null;
+  document.getElementById("card-dialog").hidden = false;
+  renderCardDialog(true);
+  document.getElementById("card-dialog-close").focus();
+}
+
+function closeCardDialog() {
+  if (dialogCard === null) return;
+  const n = dialogCard;
+  dialogCard = null;
+  dialogRemote = null;
+  dialogRemoteKey = null;
+  document.getElementById("card-dialog").hidden = true;
+  const back = document.getElementById("card-" + n);
+  if (back) back.focus();
+}
+
+// Rebuilds the dialog from the data on screen; a refresh rebuilds only the local parts. It waits
+// while the user is typing (unless `force`), so a reply in progress is not wiped.
+function renderCardDialog(force) {
+  if (dialogCard === null || !data) return;
+  if (currentView() !== "panel") { closeCardDialog(); return; }
+  if (!force && isEditing()) return;
+  const n = dialogCard;
+  const issue = data.issues.find((i) => i.number === n);
+  const title = document.getElementById("card-dialog-title");
+  const body = document.getElementById("card-dialog-body");
+  if (!issue) {
+    title.textContent = "#" + n;
+    body.replaceChildren(el("div", t("dialogNotFound"), "msg"));
+    dialogRemoteKey = null;
+    return;
+  }
+  const state = deriveCardState(issue, data.prs, data.agentRuns);
+  title.textContent = "#" + n + " " + issue.title;
+  const href = safeGithubUrl(issue.html_url);
+  if (href) {
+    const link = el("a", t("dialogOpenGithub"));
+    link.href = href; link.target = "_blank"; link.rel = "noopener";
+    title.append(" ", link);
+  }
+  body.replaceChildren(agentsSection(issue), diagnosisSection(issue, state), dialogRemote);
+  const prKey = data.prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, n))
+    .map((p) => p.number + ":" + p.state + ":" + (p.merged_at ? "m" : ""))
+    .join(",");
+  const key = [n, issue.updated_at || "", state, prKey].join("|");
+  if (force || key !== dialogRemoteKey) {
+    dialogRemoteKey = key;
+    fillDialogRemote(n, state, data.prs);
+  }
+}
+
+// One row per agent, and the card's total.
+function agentsSection(issue) {
+  const sec = el("section");
+  sec.append(el("h3", t("dialogAgents")));
+  const agents = cardAgents(issue, data.prs, data.runs);
+  if (!agents.length) {
+    sec.append(el("div", t("dialogNoAgents"), "when"));
+    return sec;
+  }
+  const table = el("table");
+  const head = el("tr");
+  [t("dialogAgent"), t("dialogRunsCount"), t("dialogPlans"), t("tokensIn"), t("tokensOut"), t("tokensCache"), t("dialogCost")]
+    .forEach((h) => head.append(el("th", h)));
+  table.append(head);
+  const dash = (v) => (v == null ? "—" : String(v));
+  const row = (name, a, cls) => {
+    const tr = el("tr", null, cls || null);
+    tr.append(el("td", name), el("td", dash(a.runs)), el("td", dash(a.plans)),
+      el("td", tokenText(a.in)), el("td", tokenText(a.out)), el("td", tokenText(a.cache)), el("td", usdText(a.usd)));
+    table.append(tr);
+  };
+  agents.forEach((a) => row(a.role === "planner" ? t("role_planner") : EXECUTORS[EXECUTOR_WORKFLOW[a.executor]], a));
+  const total = cardCosts(issue, issue.tradvia_plan_cost, data.prs);
+  if (total) {
+    row(t("dialogTotal"), { runs: null, plans: total.plans, in: total.in, out: total.out, cache: total.cache, usd: total.usd }, "total");
+  }
+  const wrap = el("div", null, "tablewrap");
+  wrap.append(table);
+  sec.append(wrap, el("div", t("dialogCostNote"), "note"));
+  return sec;
+}
+
+// Facts that explain the card's state: why it is on the board, its runs and its PRs.
+function diagnosisSection(issue, state) {
+  const d = cardDiagnostics(issue, state, data.prs, data.runs);
+  const sec = el("section");
+  sec.append(el("h3", t("dialogDiagnosis")));
+  const dl = el("dl", null, "facts");
+  const fact = (label, value) => {
+    const dd = el("dd");
+    if (value instanceof Node) dd.append(value); else dd.textContent = value;
+    dl.append(el("dt", label), dd);
+  };
+  const link = (text, url) => {
+    const href = safeGithubUrl(url);
+    if (!href) return text;
+    const a = el("a", text);
+    a.href = href; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  };
+  fact(t("dialogState"), t("COL_" + d.state));
+  fact(t("dialogOnBoard"), d.labels.includes("agent:ready") ? t("dialogReasonLabel") : t("dialogReasonPr"));
+  fact(t("dialogMarker"), d.marker || "—");
+  fact(t("dialogLabels"), d.labels.length ? d.labels.join(", ") : "—");
+  fact(t("dialogRunsCount"), String(d.runs.total));
+  fact(t("dialogNoResult"), String(d.runs.noResult));
+  fact(t("dialogRunning"), String(d.runs.running));
+  if (d.last) {
+    const [status] = statusInfo({ status: d.last.status, conclusion: d.last.conclusion });
+    const when = d.last.started ? fmtTime(d.last.started) : "—";
+    fact(t("dialogLastRun"), link(EXECUTORS[EXECUTOR_WORKFLOW[d.last.executor]] + " · " + status + " · " + when, d.last.url));
+    fact(t("dialogDuration"), formatDuration(d.last.durationMs));
+  } else {
+    fact(t("dialogLastRun"), "—");
+  }
+  fact(t("dialogPrCount"), String(d.prs.total));
+  const newest = d.prs.newest;
+  fact(t("dialogLastPr"), newest ? link("#" + newest.number + " · " + t("pr_" + newest.state), newest.url) : "—");
+  fact(t("dialogCreated"), d.created ? fmtTime(d.created) : "—");
+  fact(t("dialogUpdated"), d.updated ? fmtTime(d.updated) : "—");
+  sec.append(dl);
+  return sec;
+}
+
+// The GitHub-backed sections: approval (for who may answer it), the open PR, the timeline and the
+// audit. The agent is still running while it waits for the answer, so AGENT_WORKING offers it too.
+function fillDialogRemote(n, state, prs) {
+  const host = dialogRemote;
+  host.replaceChildren();
+  const mine = myRights();
+  if ((state === "WAITING_HUMAN" || state === "AGENT_WORKING") && mine && mine.can_approve) {
+    const box = el("section");
+    host.append(box);
+    renderApproval(box, n);
+  }
+  const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, n));
+  if (pr && mine) {
+    const box = el("section");
+    host.append(box);
+    renderPull(box, pr.number);
+  }
+  const activity = el("section");
+  activity.append(el("h3", t("activity")));
+  const list = el("div");
+  activity.append(list);
+  host.append(activity);
+  fillActivity(list, n, false);
+  const audit = el("section");
+  host.append(audit);
+  fillAudit(audit, n);
+}
+
+// Tab stays inside the open dialog.
+function trapFocus(e) {
+  const box = document.querySelector("#card-dialog .dialog-box");
+  const items = [...box.querySelectorAll("a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled])")];
+  if (!items.length) { e.preventDefault(); return; }
+  const first = items[0], last = items[items.length - 1];
+  const active = document.activeElement;
+  const inside = box.contains(active);
+  if (e.shiftKey && (!inside || active === first)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (!inside || active === last)) { e.preventDefault(); first.focus(); }
+}
+
+document.getElementById("card-dialog-close").addEventListener("click", closeCardDialog);
+document.getElementById("card-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeCardDialog();
+});
+document.addEventListener("keydown", (e) => {
+  if (dialogCard === null) return;
+  if (e.key === "Escape") { e.preventDefault(); closeCardDialog(); }
+  else if (e.key === "Tab") trapFocus(e);
+});
 
 function renderRuns(runs) {
   const root = document.getElementById("runs");
@@ -2488,12 +2864,16 @@ function render() {
   content.hidden = fetchState !== "ok" || !data;
   if (!content.hidden) {
     renderRecent();
-    const view = applyFilters(data, filters, Date.now());
+    // A card filter for a card the board does not hold would empty it: it is ignored, and the panel says so.
+    const missing = cardFilterMissing(filters, data.issues);
+    const view = applyFilters(data, missing ? { ...filters, card: null } : filters, Date.now());
     renderFilters();
     renderKpis(view);
     renderCharts(view);
     // Card states are derived from every PR and run, not only the filtered ones.
-    renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
+    renderBoard(view.issues, data.prs, data.agentRuns, data.backlog, data.runs);
+    showBoardNote(missing ? t("noteFilterCard").replace("{n}", String(filters.card)) : deepLinkNote());
+    renderCardDialog(false);
     renderDeploys();
     renderChat();
     loadChat();
