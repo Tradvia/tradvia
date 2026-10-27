@@ -57,6 +57,7 @@
   <nav>
     <a href="#capabilities" data-i18n="navCapabilities"></a>
     <a href="#guide" data-i18n="guideTitle"></a>
+    <a href="#troubleshooting" data-i18n="navTroubleshoot"></a>
     <a href="#technical" data-i18n="navTechnical"></a>
   </nav>
   <p class="sub"><span class="pt">Status reais, espelhando a ADR 0007 e o README. Só o que está Shipped está disponível; In progress, Partial e Planned não são descritos como disponíveis.</span><span class="en">Real status, mirroring ADR 0007 and the README. Only Shipped means available; In progress, Partial and Planned are never described as available.</span></p>
@@ -129,6 +130,34 @@
     </ol>
   </section>
 
+  <section id="troubleshooting">
+    <h2 data-i18n="troubleshootTitle"></h2>
+    <p><span class="pt">Se o painel aparecer vazio ou sem cards, confira nesta ordem:</span><span class="en">If the panel is empty or shows no cards, check these in order:</span></p>
+    <ol class="steps">
+      <li>
+        <strong><span class="pt">Confirme o endereço</span><span class="en">Check the address</span></strong>
+        <p><span class="pt">Use o painel publicado em app.tradvia.org. Em cópia local ou em outro endereço, o painel lê o GitHub sem login, e o GitHub libera só 60 requisições por hora para o seu IP. Se aparecer “GitHub API rate limit reached”, espere até uma hora ou abra app.tradvia.org.</span><span class="en">Use the panel published at app.tradvia.org. In a local copy or at another address, the panel reads GitHub without signing in, and GitHub allows only 60 requests per hour for your IP. If “GitHub API rate limit reached” appears, wait up to an hour or open app.tradvia.org.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Saia e entre de novo</span><span class="en">Sign out and back in</span></strong>
+        <p><span class="pt">Se você estiver conectado, clique em <code>Sair</code> no topo da página, entre de novo com o GitHub e recarregue. Uma sessão antiga pode deixar a tela sem dados.</span><span class="en">If you are signed in, click <code>Sign out</code> at the top of the page, sign in again with GitHub and reload. An old session can leave the screen without data.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Confira o endereço da página</span><span class="en">Check the page address</span></strong>
+        <p><span class="pt">Se o endereço terminar em <code>#settings</code> ou <code>#help</code>, essa tela aparece no lugar do painel. Os filtros na URL (<code>from</code>, <code>to</code>, <code>executor</code>, <code>fcard</code>, <code>status</code>) reduzem os cards: abra o endereço sem eles para ver tudo.</span><span class="en">If the address ends in <code>#settings</code> or <code>#help</code>, that screen shows instead of the panel. The filters in the URL (<code>from</code>, <code>to</code>, <code>executor</code>, <code>fcard</code>, <code>status</code>) narrow the cards: open the address without them to see everything.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Leia a mensagem de erro</span><span class="en">Read the error message</span></strong>
+        <p><span class="pt">Falhas aparecem na barra de status, acima do quadro. Sem mensagem, abra o console do navegador (F12, aba Console) e anote o primeiro erro em vermelho.</span><span class="en">Failures appear in the status bar, above the board. If there is no message, open the browser console (F12, Console tab) and note the first red error.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Recarregue sem cache</span><span class="en">Reload without cache</span></strong>
+        <p><span class="pt">Use Ctrl+Shift+R (Cmd+Shift+R no Mac) para carregar a versão mais recente da página.</span><span class="en">Press Ctrl+Shift+R (Cmd+Shift+R on Mac) to load the latest version of the page.</span></p>
+      </li>
+    </ol>
+    <p class="sub"><span class="pt">Se uma função descrita nesta página não aparecer no painel, a versão publicada é anterior: o painel só é atualizado depois do merge em <code>main</code> e da aprovação do deploy em <code>production</code>.</span><span class="en">If a feature described on this page is missing from the panel, the published version is older: the panel is updated only after the change is merged into <code>main</code> and the <code>production</code> deploy is approved.</span></p>
+  </section>
+
   <section id="technical">
     <h2 data-i18n="navTechnical"></h2>
     <p><span class="pt"><code>core/</code> (FSL-1.1-ALv2) nunca importa de <code>ee/</code> (licença comercial); <code>make boundary</code> verifica. A API fica em <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) e este painel estático em <code>/runs/</code>. O estado dos cards segue <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. As interações por projeto são configuradas em <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">exemplo</a>).</span><span class="en"><code>core/</code> (FSL-1.1-ALv2) never imports from <code>ee/</code> (commercial license); <code>make boundary</code> checks it. The API lives under <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) and this static dashboard under <code>/runs/</code>. Card state follows <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. Per-project interactions are configured in <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">example</a>).</span></p>
@@ -171,9 +200,11 @@
 <script>
 const I18N = {
   pt: { title: "Documentação", back: "← Voltar ao painel", navCapabilities: "Funcionalidades e status",
-    guideTitle: "Como executar uma tarefa no Tradvia", navTechnical: "Documentação técnica" },
+    guideTitle: "Como executar uma tarefa no Tradvia", navTroubleshoot: "Painel vazio",
+    troubleshootTitle: "Painel vazio ou sem cards", navTechnical: "Documentação técnica" },
   en: { title: "Documentation", back: "← Back to the dashboard", navCapabilities: "Capabilities and status",
-    guideTitle: "How to run a task in Tradvia", navTechnical: "Technical docs" },
+    guideTitle: "How to run a task in Tradvia", navTroubleshoot: "Empty panel",
+    troubleshootTitle: "Empty panel or no cards", navTechnical: "Technical docs" },
 };
 let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
 try { const saved = localStorage.getItem("tradvia.lang"); if (saved === "pt" || saved === "en") lang = saved; } catch (err) { /* ignore */ }
