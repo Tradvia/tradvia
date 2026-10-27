@@ -69,7 +69,7 @@ from .auth import (
 )
 from . import pending, push
 from .backlog import READY_LABEL, backlog_status
-from . import orchestrator
+from . import mcp_server, orchestrator
 from .connections import Connections, ConnectionInputError
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
@@ -93,6 +93,10 @@ CHAT_HISTORY = 100
 VIA_API_TOKEN = "api_token"
 # What a bearer API token may do (ADR 0009); everything else needs a signed-in session.
 TOKEN_ACTIONS = ("create_card", "start_card")
+# The policy interaction each agent tool needs (ADR 0012). Reads have none of their own and need
+# the triage floor of starting a card; adjusting a plan needs `write`, as in the panel.
+AGENT_INTERACTION = {"create_card": "start_card", "start_card": "start_card",
+                     "reply_plan": "approve_plan"}
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -1374,6 +1378,111 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    # --- agents (ADR 0012): the orchestrator's tools, for an API token of this project -------
+
+    def work_agent_tool(session: Any, repo: str, tool: str, args: dict[str, Any],
+                        key: str | None) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            ctx = orchestrator.ToolContext(
+                store=db, project_id=project_id_of(repo), repo=repo, github=auth.github,
+                token=token, login=session.login, clock=clock, actor=session.login,
+                via=orchestrator.AGENT_VIA, key=key,
+            )
+            out = orchestrator.call_tool(ctx, tool, args)
+            if "error" in out:
+                raise ActionError(str(out["error"]))
+            number = args.get("number")
+            return Done(number if isinstance(number, int) else None, tool, {"result": out["result"]})
+        return work
+
+    async def agent_session(request: Request) -> tuple[str, Any, Response | None]:
+        """(repo, session, failure): an API token issued for that very project, and only one."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return repo, None, _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return repo, None, failure
+        scope = session.rec.get("api_token")
+        if not scope:
+            return repo, None, private(JSONResponse(
+                {"error": "Agents use an API token."}, status_code=403))
+        if scope["project_id"] != project_id_of(repo):
+            return repo, None, private(JSONResponse(
+                {"error": "This token was issued for another project."}, status_code=403))
+        return repo, session, None
+
+    async def agent_tools(request: Request) -> Response:
+        _, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        return private(JSONResponse({"tools": orchestrator.agent_catalog()}))
+
+    async def agent_call(request: Request) -> Response:
+        repo, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        key = request.headers.get(IDEMPOTENCY_HEADER)
+        if key is not None and not _KEY_RE.fullmatch(key):
+            return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+        try:
+            data = await request.json()
+        except ValueError:
+            data = None
+        if (not isinstance(data, dict) or not isinstance(data.get("tool"), str)
+                or not isinstance(data.get("args", {}), dict)):
+            return private(JSONResponse(
+                {"error": 'send {"tool": "name", "args": {...}}'}, status_code=400))
+        tool, args = data["tool"], data.get("args", {})
+        number = args.get("number")
+        try:
+            out = await run_in_threadpool(
+                perform, session, repo, "agent_call", AGENT_INTERACTION.get(tool, "start_card"),
+                number if isinstance(number, int) and not isinstance(number, bool) else None,
+                key, work_agent_tool(session, repo, tool, args, key),
+            )
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    class AgentCalls:
+        """The tools of one agent request, for MCP over HTTP: the same guards as `agent_call`."""
+
+        def __init__(self, session: Any, repo: str, key: str | None):
+            self.session, self.repo, self.key = session, repo, key
+
+        def tools(self) -> list[dict[str, Any]]:
+            return orchestrator.agent_catalog()
+
+        def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            number = args.get("number")
+            outcome = perform(
+                self.session, self.repo, "agent_call", AGENT_INTERACTION.get(name, "start_card"),
+                number if isinstance(number, int) and not isinstance(number, bool) else None,
+                self.key, work_agent_tool(self.session, self.repo, name, args, self.key),
+            )
+            if outcome.status >= 400:
+                raise mcp_server.ToolFailed(str(outcome.body.get("error") or "the call failed"))
+            return outcome.body
+
+    async def agent_mcp(request: Request) -> Response:
+        """MCP over HTTP (ADR 0012), for clients that only reach a URL, such as Manus."""
+        repo, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        key = request.headers.get(IDEMPOTENCY_HEADER)
+        if key is not None and not _KEY_RE.fullmatch(key):
+            return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+        try:
+            message = await request.json()
+        except ValueError:
+            message = None
+        reply = await run_in_threadpool(mcp_server.handle, message,
+                                        AgentCalls(session, repo, key))
+        if reply is None:  # a notification is accepted, with nothing to answer
+            return private(Response(status_code=202))
+        return private(JSONResponse(reply))
+
     # --- project connections (connections.py, ADR 0009) --------------------------------------
     # Never log or echo the request body here: it carries the secret.
 
@@ -1626,6 +1735,9 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/agent/tools", agent_tools, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/agent/call", agent_call, methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/mcp", agent_mcp, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
