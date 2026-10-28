@@ -452,18 +452,30 @@ function mergePulls(...lists) {
   return [...byNumber.values()];
 }
 
-// The cards the board shows: the ones started with agent:ready, plus any other open card whose
-// agent PR is still open. The bell counts those too (pending.py, PR_OPENED), so the board must
-// show them as well. Closed cards without the label are left out.
+// The cards the board shows: every open issue of the repository (the real backlog, whether or
+// not it was ever started), plus the closed ones that were started with agent:ready. Closed
+// cards without the label are left out. `prs` is kept for callers; open cards with an agent PR
+// are open issues, so they are in.
 function boardCards(labeled, openIssues, prs) {
   const byNumber = new Map();
   for (const issue of labeled) if (!issue.pull_request) byNumber.set(issue.number, issue);
   for (const issue of openIssues) {
     if (issue.pull_request || issue.state !== "open" || byNumber.has(issue.number)) continue;
-    const agentPr = prs.some((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
-    if (agentPr) byNumber.set(issue.number, issue);
+    byNumber.set(issue.number, issue);
   }
   return [...byNumber.values()];
+}
+
+// The Done column shows the most recently closed cards only; the rest stay one click away.
+const DONE_SHOWN = 15;
+
+function recentDone(issues, n) {
+  return issues.slice().sort((a, b) => Date.parse(b.closed_at || 0) - Date.parse(a.closed_at || 0)).slice(0, n);
+}
+
+// True when a backlog card already asked for the agent (agent:ready) and no run started yet.
+function isQueued(issue) {
+  return (issue.labels || []).some((l) => (l && l.name ? l.name : l) === "agent:ready");
 }
 
 // True when the card filter names a card the board does not hold: applied, it would empty the board.
@@ -1899,6 +1911,7 @@ const I18N = {
     backlog: "Backlog do projeto", position: "Posição", dependsOn: "Depende de",
     st_pronto: "pronto", st_bloqueado: "bloqueado", st_andamento: "em andamento", st_concluido: "concluído",
     newCard: "Novo card", cardTitle: "Título", cardDescription: "Descrição", create: "Criar", cancel: "Cancelar",
+    queued: "na fila do agente", doneMore: "+{n} concluídos no GitHub",
     startCard: "Iniciar", moveUp: "Subir", moveDown: "Descer", approve: "Aprovar", reject: "Rejeitar",
     adjustBtn: "Ajustar", adjustHint: "Descreva o ajuste pedido ao plano", actionFailed: "Não foi possível concluir a ação.",
     auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
@@ -2048,6 +2061,7 @@ const I18N = {
     backlog: "Project backlog", position: "Position", dependsOn: "Depends on",
     st_pronto: "ready", st_bloqueado: "blocked", st_andamento: "in progress", st_concluido: "done",
     newCard: "New card", cardTitle: "Title", cardDescription: "Description", create: "Create", cancel: "Cancel",
+    queued: "queued for the agent", doneMore: "+{n} more done on GitHub",
     startCard: "Start", moveUp: "Move up", moveDown: "Move down", approve: "Approve", reject: "Reject",
     adjustBtn: "Adjust", adjustHint: "Describe the adjustment to the plan", actionFailed: "The action could not be completed.",
     auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
@@ -2633,9 +2647,18 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     root.append(c);
   }
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
+  // The ordered backlog column (store mode) already holds its cards: not twice on the board.
+  const ordered = new Set((backlog || []).map((b) => b.issue_number));
+  const me = myRights();
+  const canStart = !!(me && me.can_start);
+  const states = new Map(issues.map((i) => [i.number, deriveCardState(i, prs, agentRuns)]));
+  const done = issues.filter((i) => states.get(i.number) === "DONE");
+  const shownDone = new Set(recentDone(done, DONE_SHOWN).map((i) => i.number));
   for (const issue of issues) {
-    const s = deriveCardState(issue, prs, agentRuns);
+    const s = states.get(issue.number);
+    if (s === "BACKLOG" && ordered.has(issue.number)) continue;
     counts[s]++;
+    if (s === "DONE" && !shownDone.has(issue.number)) continue;
     const card = el("div", null, "card");
     card.id = "card-" + issue.number;
     card.tabIndex = 0;
@@ -2663,6 +2686,14 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     // The card shows only which agent types worked on it; the details open in the card dialog.
     const agents = cardAgents(issue, prs, runs);
     if (agents.length) card.append(agentChips(agents));
+    if (s === "BACKLOG" && !isClaimed(issue)) {
+      if (isQueued(issue)) card.append(el("div", t("queued"), "sub"));
+      else if (canStart) {
+        const acts = el("div", null, "acts");
+        acts.append(actionButton(card, t("startCard"), "/cards/" + issue.number + "/start", {}));
+        card.append(acts);
+      }
+    }
     card.addEventListener("click", () => openCardDialog(issue.number));
     card.addEventListener("keydown", (e) => {
       if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCardDialog(issue.number); }
@@ -2674,6 +2705,14 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     h.append(el("span", t("COL_" + s)), el("span", String(counts[s])));
     if (!counts[s]) cols[s].append(el("div", t("emptyCards"), "sub"));
   });
+  if (counts.DONE > shownDone.size) {
+    const more = el("a", t("doneMore").replace("{n}", String(counts.DONE - shownDone.size)));
+    more.href = "https://github.com/" + getRepo() + "/issues?q=is%3Aissue+is%3Aclosed";
+    more.target = "_blank"; more.rel = "noopener";
+    const line = el("div", null, "sub done-more");
+    line.append(more);
+    cols.DONE.append(line);
+  }
 }
 
 /* ---------- Card agents and card dialog ---------- */
