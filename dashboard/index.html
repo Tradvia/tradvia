@@ -231,6 +231,7 @@
         <div class="log" id="chat-log" aria-live="polite"></div>
         <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
         <div class="sub" id="chat-cost"></div>
+        <div class="msg" id="chat-off" role="status" hidden data-i18n="chatNoApiKey"></div>
         <form id="chat-form" hidden>
           <textarea id="chat-input" rows="2" maxlength="2000" data-i18n-placeholder="chatHint"></textarea>
           <button type="submit" id="chat-send" data-i18n="chatSend"></button>
@@ -1157,7 +1158,10 @@ async function renderDeploys() {
 // Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
 // only). The agent never approves, merges or deploys: those arrive as "pending" messages with
 // a button that calls the same panel action, so the server checks the role again.
-let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+// canChat: may send and an AI provider with an API key answers (ADR 0013). canAct: may use the
+// buttons of pending items, which do not need the chat model. offReason: why the chat is off.
+let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false,
+                  canAct: false, offReason: null, at: 0 };
 let chatToken = 0;
 const CHAT_POLL_MS = 3000;
 const CHAT_IDLE_MS = 20000;
@@ -1207,10 +1211,11 @@ function renderChat() {
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.replaceChildren();
   if (!chatState.messages.length) log.append(el("div", t("chatEmpty"), "sub"));
-  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canChat)));
+  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canAct)));
   if (atEnd) log.scrollTop = log.scrollHeight;
   document.getElementById("chat-working").hidden = !chatState.working;
   document.getElementById("chat-form").hidden = !chatState.canChat;
+  document.getElementById("chat-off").hidden = chatState.offReason !== "no_api_key";
   document.getElementById("chat-send").disabled = chatState.working;
   const c = chatState.cost;
   document.getElementById("chat-cost").textContent =
@@ -1224,7 +1229,9 @@ async function loadChat() {
   const res = await panelRequest("GET", "/chat");
   if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
   chatState = { repo, messages: res.data.messages, working: !!res.data.working,
-                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+                cost: res.data.cost, canChat: !!res.data.can_chat,
+                canAct: !!res.data.can_chat || !!res.data.chat_off_reason,
+                offReason: res.data.chat_off_reason || null, at: Date.now() };
   renderChat();
 }
 
@@ -1558,6 +1565,7 @@ const I18N = {
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
     chatHint: "Peça ao orquestrador: criar um card, revisar um PR, ajustar um plano…", chatSend: "Enviar",
+    chatNoApiKey: "O chat está desligado: falta uma IA com chave de API. Um admin configura em Conexões o papel orchestrator (Anthropic, OpenAI ou Gemini) e a chave desse provedor.",
     chatEmpty: "Nenhuma mensagem ainda.", chatCost: "Custo do orquestrador neste projeto",
     chatApprovePlan: "Aprovar plano", chatRejectPlan: "Rejeitar plano", chatMerge: "Fazer merge",
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
@@ -1652,6 +1660,7 @@ const I18N = {
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
     chatHint: "Ask the orchestrator: create a card, review a PR, adjust a plan…", chatSend: "Send",
+    chatNoApiKey: "The chat is off: it needs an AI provider with an API key. An admin sets the orchestrator role (Anthropic, OpenAI or Gemini) and that provider's key in Connections.",
     chatEmpty: "No messages yet.", chatCost: "Orchestrator cost in this project",
     chatApprovePlan: "Approve plan", chatRejectPlan: "Reject plan", chatMerge: "Merge",
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",

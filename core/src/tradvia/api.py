@@ -1144,9 +1144,10 @@ def create_app(
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
     def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
-        """The project's own `orchestrator` connection (ADR 0009), or None to keep today's
-        single Claude Code model. Never raises: an unreadable policy or a connections lookup
-        failure just falls back, the same as an unset connection, rather than failing the chat.
+        """The project's own `orchestrator` connection (ADR 0009): an AI provider with its API
+        key, or None, and then the chat is off for the project (ADR 0013: no Claude Code or
+        subscription fallback). Never raises: an unreadable policy or a connections lookup
+        failure is None too, the same as an unset connection.
         """
         if connections is None:
             return None
@@ -1158,10 +1159,10 @@ def create_app(
             defaults = access.policy.providers if access.policy else {}
             chosen = resolve_connections(defaults, db.list_connection_roles(pid)).get("orchestrator", {})
             provider, model_name = chosen.get("provider"), chosen.get("model")
-            secret = None
-            if provider not in (None, "claude-code") and provider in BY_KEY:
-                secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
-            return orchestrator.model_for_connection(provider, model_name, secret, chat_runner or subprocess.run)
+            if provider not in orchestrator.LITELLM_PROVIDERS or provider not in BY_KEY:
+                return None
+            secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
+            return orchestrator.model_for_connection(provider, model_name, secret)
         except Exception:
             return None
 
@@ -1169,6 +1170,10 @@ def create_app(
         def work(token: str) -> Done:
             text, refs = orchestrator.parse_message(data)
             pid = project_id_of(repo)
+            # `chat_model` (test injection) always wins; production resolves per project.
+            model = chat_model or chat_model_for(session, repo, pid)
+            if model is None:  # no AI provider with an API key: the chat is off (ADR 0013)
+                raise Conflict(orchestrator.NO_API_KEY)
             with chat_lock:
                 if pid in chat_working:
                     raise Conflict("The orchestrator is still working on the previous message.")
@@ -1178,8 +1183,6 @@ def create_app(
                 login=session.login, runner=chat_runner or subprocess.run,
                 cwd=orchestrator.runner_dir(repo), clock=clock,
             )
-            # `chat_model` (test injection) always wins; production resolves per project.
-            model = chat_model or chat_model_for(session, repo, pid)
 
             def job() -> None:
                 try:
@@ -1241,11 +1244,16 @@ def create_app(
         if role is None:
             return Outcome(403, {"error": f"You need at least the 'read' role in {repo}."})
         pid = project_id_of(repo)
+        can_start = panel_rights(session, repo, role)["can_start"]
+        # Only someone who may chat needs to know why it is off; ready means an AI provider
+        # with an API key answers it (ADR 0013).
+        ready = can_start and (chat_model is not None or chat_model_for(session, repo, pid) is not None)
         return Outcome(200, {
             "messages": db.list_messages(pid, CHAT_HISTORY),
             "working": pid in chat_working,
             "cost": db.project_cost(pid),
-            "can_chat": panel_rights(session, repo, role)["can_start"],
+            "can_chat": ready,
+            "chat_off_reason": "no_api_key" if can_start and not ready else None,
         })
 
     async def chat_history(request: Request) -> Response:

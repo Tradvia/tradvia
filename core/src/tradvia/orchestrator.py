@@ -43,7 +43,7 @@ from .actions import (
     required_checks,
 )
 from .backlog import READY_LABEL
-from .claude_code import _cost, _positive_env, run_claude
+from .claude_code import _cost, _positive_env
 from .events import issue_record
 from .llm import _parse_json
 from .store import Store
@@ -61,21 +61,21 @@ DEFAULT_MAX_TURNS = 10
 DEFAULT_TIMEOUT = 300
 DEFAULT_BUDGET_USD = 1.0
 DEFAULT_MAX_TOKENS = 200_000
-# No file or shell tool at all: the model only talks. Claude Code runs in an empty directory.
-MODEL_TOOLS = "Read"
-MODEL_DENIED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
-# The only variables the model process sees. Its own login to Claude is not a GitHub credential.
-MODEL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN",
+# The only variables `make check` sees in review_pr: no GitHub token, no AI login or key.
+MODEL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR",
              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS")
 
-Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> `claude -p`-shaped JSON:
+Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> JSON of the shape
 # {"result": <text>, "total_cost_usd": <float>, "usage": {"input_tokens", "output_tokens"},
-#  "duration_ms": <float>}. `default_model()` gets this from Claude Code directly; `litellm_model()`
-# builds the same shape from a LiteLLM response so `_cost()` and `run()` need not know which.
+#  "duration_ms": <float>}. `litellm_model()` builds it from a LiteLLM response, so `_cost()`
+# and `run()` need not know which provider answered.
 LITELLM_MAX_TOKENS = 4_000
-# The chat is a prompt completion, so only API providers can answer it. A coding-agent CLI
-# (gemini-cli, codex-cli) shares their key but is not a LiteLLM provider name.
+# The chat runs only on an AI provider called with the project's own API key (ADR 0013):
+# no subscription login and no CLI. A coding-agent CLI (gemini-cli, codex-cli) shares a key
+# with one of these but is not a LiteLLM provider name.
 LITELLM_PROVIDERS = ("anthropic", "openai", "gemini")
+NO_API_KEY = ("The chat needs an AI provider with an API key. An admin sets it in Connections: "
+              "the orchestrator role (Anthropic, OpenAI or Gemini) and that provider's key.")
 
 
 class Refused(Exception):
@@ -155,9 +155,8 @@ def model_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def review_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment of `make check` on a PR branch: no token, no Claude login, offline tests."""
+    """Environment of `make check` on a PR branch: no token, no AI login, offline tests."""
     out = model_env(env)
-    out.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     out["TRADVIA_OFFLINE"] = "1"
     return out
 
@@ -583,17 +582,6 @@ def build_prompt(repo: str, messages: list[dict[str, Any]],
     return PROMPT.format(repo=repo, tools=tools, history=_history(messages), steps=_steps(transcript))
 
 
-def default_model(runner: Callable = subprocess.run) -> Model:
-    """Claude Code headless in an empty directory, with no tools and a scrubbed environment."""
-    def model(prompt: str, timeout: int) -> dict:
-        if os.getenv("TRADVIA_OFFLINE") == "1":
-            raise RuntimeError("the orchestrator needs Claude Code and is off in offline mode")
-        with tempfile.TemporaryDirectory(prefix="tradvia-orch-") as scratch:
-            return run_claude(prompt, scratch, MODEL_TOOLS, max_turns=3, runner=runner,
-                              timeout=timeout, env=model_env(), disallowed_tools=MODEL_DENIED)
-    return model
-
-
 def litellm_model(model_name: str, api_key: str) -> Model:
     """One of ADR 0009's AI providers (anthropic, openai, gemini) called through LiteLLM.
 
@@ -634,18 +622,17 @@ def litellm_model(model_name: str, api_key: str) -> Model:
     return model
 
 
-def model_for_connection(provider: str | None, model_name: str | None, secret: str | None,
-                         runner: Callable = subprocess.run) -> Model:
+def model_for_connection(provider: str | None, model_name: str | None,
+                         secret: str | None) -> Model | None:
     """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0009).
 
-    Unset, `claude-code`, or a chosen AI provider with no secret saved yet all keep today's
-    path: Claude Code on the subscription token (`default_model`, #104). Any other configured
-    provider (`anthropic`, `openai`, `gemini`) is called through LiteLLM instead. This never
-    raises: an unusable choice falls back rather than failing a chat message outright, and the
-    fallback's own errors (missing CLI, missing token) still surface as today's warning message.
+    Only an AI provider (`anthropic`, `openai`, `gemini`) with a model and a saved API key
+    answers the chat, through LiteLLM. Anything else (unset, a coding-agent CLI, a provider
+    with no key yet) gives None: the chat is off for that project, and there is no fallback to
+    Claude Code or to any subscription login (ADR 0013). This never raises.
     """
     if provider not in LITELLM_PROVIDERS or not model_name or not secret:
-        return default_model(runner)
+        return None
     return litellm_model(f"{provider}/{model_name}", secret)
 
 
@@ -679,10 +666,13 @@ def run(ctx: ToolContext, model: Model | None = None, budget: Budget | None = No
         monotonic: Callable[[], float] = time.monotonic) -> None:
     """One orchestrator run for the newest message of the project. Always stores a last message.
 
-    The reply (or a warning when a limit was hit) is stored with the run's cost.
+    The reply (or a warning when a limit was hit) is stored with the run's cost. Without a
+    model (no AI provider with an API key) the run only stores that warning.
     """
-    budget, model = budget or Budget.from_env(), model or default_model()
-    spent, transcript = Spent(), []
+    budget, spent, transcript = budget or Budget.from_env(), Spent(), []
+    if model is None:
+        _finish(ctx, "warning", NO_API_KEY, [], spent)
+        return
     deadline = monotonic() + budget.timeout_s
     messages = ctx.store.list_messages(ctx.project_id, HISTORY)
     stop = f"the turn limit ({budget.max_turns})"

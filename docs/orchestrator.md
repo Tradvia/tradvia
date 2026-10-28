@@ -4,7 +4,9 @@ Status: 🟦 Partial. The conversation, the closed tool set, the budget, the cos
 the audit are implemented and tested offline with a scripted model. Not yet shipped: durable
 execution of a run across API restarts (#40; a run lost in a restart leaves the message
 without a reply), a pending-items inbox shared with the rest of the panel (#47; for now
-pending items live in the conversation) and a live check against real Claude Code (#104).
+pending items live in the conversation) and a live check against a real provider. The chat
+runs only on an AI provider with the project's own API key ([ADR
+0013](adr/0013-chat-needs-an-api-key.md)): without one it is off and the panel says why.
 Part of [ADR 0007](adr/0007-tradvia-as-the-single-interaction-surface.md) and
 [ADR 0009](adr/0009-project-connections.md) (the `orchestrator` role, below).
 
@@ -17,22 +19,23 @@ input box and an "orchestrator working…" indicator while a run is in progress.
 refreshes by polling, faster while the orchestrator is working.
 
 - `GET /api/projects/{owner}/{repo}/chat` returns `messages`, `working`, `cost` (total
-  recorded for the project) and `can_chat`. It needs the `read` role.
+  recorded for the project), `can_chat` and `chat_off_reason`. It needs the `read` role.
+  `can_chat` is true only for someone with `start_card` **and** when an AI provider with an
+  API key answers the chat; otherwise, for someone with `start_card`, `chat_off_reason` is
+  `"no_api_key"` and the panel shows how to configure it.
 - `POST /api/projects/{owner}/{repo}/chat` with `{"text": "...", "refs": [{"type": "card",
   "number": 7}]}` stores the message, starts a run in the background and answers `202`. It
   has the same session, CSRF, idempotency key and audit as every panel action, and it needs
   the `start_card` interaction of `.tradvia.yml` (ADR 0004; `triage` by default). While a run
-  is working a second message gets `409`.
+  is working a second message gets `409`; without an AI provider and its API key it gets `409`
+  too, and nothing is stored.
 
 A run is a loop. The model receives the project's recent conversation and the results of the
 tools it already used, and answers one JSON object: `{"tool": "...", "args": {...}}` to use a
 tool or `{"reply": "...", "refs": [...]}` to finish. Tradvia executes the tool and loops; the
 reply is stored in the conversation. The model has no shell, no file and no network tool of
-its own either way (see "Which model answers", below, for what "either way" means): when it is
-Claude Code, that is `--allowedTools Read` with `Bash`, `Edit`, `Write` and the web tools
-explicitly disallowed, started in an empty scratch directory; when it is a plain chat
-completion through LiteLLM, there simply is no tool for it to call beyond answering the one
-JSON object Tradvia expects.
+its own: it is a plain chat completion through LiteLLM, so there is no tool for it to call
+beyond answering the one JSON object Tradvia expects.
 
 ## Which model answers
 
@@ -41,14 +44,15 @@ The `orchestrator` row of the project's connections (`dashboard` → Connections
 (`.tradvia.yml`'s `providers` section is the default, a value set on the Connections screen
 overrides it):
 
-- **Unset, or `claude-code`:** today's original path — Claude Code headless (`claude -p`),
-  on the subscription token (`CLAUDE_CODE_OAUTH_TOKEN`; see "Credentials" and #104).
-- **`anthropic`, `openai` or `gemini`, with a secret saved:** a plain chat completion through
-  LiteLLM (already a `core` dependency — the planner, `llm.py`, uses it the same way), with the
-  project's own stored key passed on the call itself. Nothing is shelled out, so none of this
-  needs Node.js or the CLI.
-- **An AI provider is chosen but no secret is saved yet:** falls back to the `claude-code` path
-  above rather than failing the message outright (`orchestrator.model_for_connection`).
+- **`anthropic`, `openai` or `gemini`, with its API key saved:** a plain chat completion
+  through LiteLLM (already a `core` dependency — the planner, `llm.py`, uses it the same way),
+  with the project's own stored key passed on the call itself. Nothing is shelled out, so none
+  of this needs Node.js or a CLI. Each message is billed to that key (per use).
+- **Anything else — unset, no key saved yet, or a coding-agent CLI:** the chat is off for the
+  project (`orchestrator.model_for_connection` gives no model). There is no fallback to Claude
+  Code and no subscription login for the chat (ADR 0013): the `claude-code` connection runs
+  only the executor. The orchestrator role refuses CLI providers on the screen and in
+  `.tradvia.yml` alike.
 
 This is per project, not a server-wide setting: two projects on the same Tradvia deployment can
 answer through two different providers, and switching providers needs no redeploy — only a
@@ -93,10 +97,7 @@ the closed tool set limits what a prompt injection can do.
 No credential is put in the prompt. The user's GitHub token stays inside the API process and
 is used only by the tools.
 
-- **Claude Code path:** the model process gets an allow-listed environment (`PATH`, `HOME`,
-  locale, proxy and CA settings and `CLAUDE_CODE_OAUTH_TOKEN`, which is its own login to
-  Claude): no `GITHUB_TOKEN`, no `DATABASE_URL`, no `TRADVIA_SECRET_KEY`.
-- **LiteLLM path:** the project's decrypted connection secret (ADR 0009) is passed as the
+- The project's decrypted connection secret (ADR 0009) is passed as the
   `api_key` argument of the one completion call, never through an environment variable of the
   API process. Several projects' chat runs can be in flight at once, each in its own thread of
   the same process (`api.py`'s `start_thread`); an environment variable would be shared by all
@@ -124,7 +125,7 @@ warning message saying which limit was hit (what was already done is in the audi
 The cost and tokens of every run (replies and warnings) are stored on its last message, and
 the conversation shows the project's total. Invalid values fall back to the default. In
 offline mode (`TRADVIA_OFFLINE=1`) the orchestrator answers with a warning instead of calling
-Claude Code.
+the provider.
 
 ## Audit
 

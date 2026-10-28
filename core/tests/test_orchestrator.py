@@ -288,33 +288,37 @@ def test_a_failing_model_ends_with_a_warning_not_a_crash(store, gh):
 # --- no credentials in the agent's context ---------------------------------------------------
 
 
-def test_no_token_or_secret_reaches_the_prompt_or_the_environment(store, gh, monkeypatch):
+def test_no_token_or_secret_reaches_the_model_call(store, gh, monkeypatch):
     monkeypatch.delenv("TRADVIA_OFFLINE")
     monkeypatch.setenv("GITHUB_TOKEN", SERVER_TOKEN)
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:dbpass@h/db")
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "claude-login")
-    seen = []
-
-    def fake_claude(cmd, **kw):
-        seen.append((cmd, kw))
-        reply = {"result": json.dumps({"reply": "ok"}), "total_cost_usd": 0.01}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
-
+    litellm = fake_litellm(monkeypatch, json.dumps({"reply": "ok"}))
     ctx = make_ctx(store, gh, cwd="/runner/checkout")
-    send(ctx, "hello", orchestrator.default_model(runner=fake_claude))
-    (cmd, kw), = seen
-    blob = json.dumps(cmd) + json.dumps(kw["env"])
+    send(ctx, "hello", orchestrator.litellm_model("anthropic/claude-sonnet-5-5", "sk-project"))
+    (call,) = litellm.calls
+    blob = json.dumps(call, default=str)
     assert TOKEN not in blob and SERVER_TOKEN not in blob and "dbpass" not in blob
-    assert "GITHUB_TOKEN" not in kw["env"] and "DATABASE_URL" not in kw["env"]
-    assert "TRADVIA_SECRET_KEY" not in kw["env"] and kw["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "claude-login"
-    assert cmd[cmd.index("--allowedTools") + 1] == "Read"
-    assert "Bash" in cmd[cmd.index("--disallowedTools") + 1]
-    assert kw["cwd"] != "/runner/checkout"
+    assert call["api_key"] == "sk-project"
 
 
 def test_the_orchestrator_is_off_in_offline_mode(store, gh):
-    last = send(make_ctx(store, gh), "hi", orchestrator.default_model())[-1]
+    model = orchestrator.litellm_model("anthropic/claude-sonnet-5-5", "sk-test")
+    last = send(make_ctx(store, gh), "hi", model)[-1]
     assert last["kind"] == "warning" and "offline" in last["text"]
+
+
+def test_a_run_without_a_model_only_says_the_chat_needs_an_api_key(store, gh):
+    ctx = make_ctx(store, gh)
+    store.append_message(ctx.project_id, {"author": "ana", "kind": "message", "text": "hi"})
+    orchestrator.run(ctx, None)
+    last = store.list_messages(ctx.project_id, 10)[-1]
+    assert last["kind"] == "warning" and last["text"] == orchestrator.NO_API_KEY
+
+
+def test_the_chat_has_no_claude_code_or_subscription_path():
+    assert not hasattr(orchestrator, "default_model")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in orchestrator.MODEL_ENV
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in orchestrator.review_env({"CLAUDE_CODE_OAUTH_TOKEN": "x"})
 
 
 # --- multi-provider model selection (ADR 0009's `orchestrator` role) -------------------------
@@ -379,35 +383,23 @@ def test_litellm_model_is_off_in_offline_mode(monkeypatch):
 
 def test_model_for_connection_uses_litellm_for_a_configured_ai_provider(monkeypatch):
     monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
-    fake_litellm(monkeypatch, json.dumps({"reply": "ok"}))
-
-    def cli_runner(cmd, **kw):
-        raise AssertionError("should not shell out to Claude Code when an AI provider is configured")
-
-    model = orchestrator.model_for_connection(
-        "anthropic", "claude-sonnet-5-5", "project-secret", runner=cli_runner)
-    model("hi", 30)  # does not raise: never reaches cli_runner
+    litellm = fake_litellm(monkeypatch, json.dumps({"reply": "ok"}))
+    model = orchestrator.model_for_connection("anthropic", "claude-sonnet-5-5", "project-secret")
+    model("hi", 30)
+    assert litellm.calls[0]["model"] == "anthropic/claude-sonnet-5-5"
 
 
 @pytest.mark.parametrize("provider, model_name, secret", [
     (None, None, None),
     ("claude-code", None, None),
-    ("anthropic", "claude-sonnet-5-5", None),  # chosen, but no secret saved yet
+    ("claude-code", None, "oauth-token"),  # a subscription login never answers the chat
+    ("anthropic", "claude-sonnet-5-5", None),  # chosen, but no API key saved yet
+    ("anthropic", None, "key"),
     ("gemini-cli", "gemini-2.5-pro", "key"),  # a coding-agent CLI, not a LiteLLM provider
     ("codex-cli", "gpt-5", "key"),
 ])
-def test_model_for_connection_falls_back_to_claude_code_otherwise(monkeypatch, provider, model_name, secret):
-    monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
-    seen = []
-
-    def cli_runner(cmd, **kw):
-        seen.append(cmd)
-        reply = {"result": json.dumps({"reply": "ok"}), "total_cost_usd": 0.0}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
-
-    model = orchestrator.model_for_connection(provider, model_name, secret, runner=cli_runner)
-    model("hi", 30)
-    assert seen  # the Claude Code CLI ran
+def test_model_for_connection_is_none_without_an_ai_provider_and_its_key(provider, model_name, secret):
+    assert orchestrator.model_for_connection(provider, model_name, secret) is None
 
 
 # --- review_pr ------------------------------------------------------------------------------
@@ -515,7 +507,7 @@ def test_a_crash_in_the_run_leaves_a_warning_and_clears_the_flag(store, gh, cloc
         raise ValueError("secret detail")
 
     monkeypatch.setattr(orchestrator, "run", boom)
-    c = chat_client(store, gh, clock)
+    c = chat_client(store, gh, clock, ScriptedModel([]))
     assert post(c, CHAT, {"text": "hi"}).status_code == 202
     body = c.get(CHAT).json()
     assert body["working"] is False and body["messages"][-1]["kind"] == "warning"
@@ -599,22 +591,43 @@ def test_production_chat_uses_the_projects_own_orchestrator_connection_not_only_
     assert c.get(CHAT).json()["messages"][-1]["text"] == "via anthropic"
 
 
-def test_production_chat_falls_back_to_claude_code_when_no_connection_is_configured(
-    store, gh, clock, monkeypatch,
-):
-    """Same production path, nothing configured in Tradvia: today's behavior (#104) is
-    unchanged, not silently replaced."""
+def test_production_chat_is_off_without_an_api_key_and_says_why(store, gh, clock, monkeypatch):
+    """Same production path, no AI provider with a key: the chat does not run at all (ADR 0013).
+    No fallback to Claude Code, even with its subscription token in the environment."""
     monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
-    seen = []
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "owner-subscription")
+    gh.perm[A] = ("admin", "admin")
+    litellm = fake_litellm(monkeypatch, json.dumps({"reply": "never"}))
 
     def cli_runner(cmd, **kw):
-        seen.append(cmd)
-        reply = {"result": json.dumps({"reply": "via claude code"}), "total_cost_usd": 0.0}
-        return SimpleNamespace(returncode=0, stdout=json.dumps(reply), stderr="")
+        raise AssertionError("the chat must never shell out to Claude Code")
 
     app = create_app(store=store, identity=gh, clock=clock, chat_runner=cli_runner, spawn=lambda job: job())
     c = TestClient(app, base_url=ORIGIN, follow_redirects=False)
     login(c)
+    body = c.get(CHAT).json()
+    assert body["can_chat"] is False and body["chat_off_reason"] == "no_api_key"
 
-    assert post(c, CHAT, {"text": "status?"}).status_code == 202
-    assert seen and c.get(CHAT).json()["messages"][-1]["text"] == "via claude code"
+    r = post(c, CHAT, {"text": "status?"})
+    assert r.status_code == 409 and r.json()["error"] == orchestrator.NO_API_KEY
+    assert store.list_messages(store.ensure_project(A), 10) == [] and not litellm.calls
+
+    # a model chosen but no key saved yet: still off
+    r = c.put(f"{BASE}/connections/roles/orchestrator",
+              json={"provider": "anthropic", "model": "claude-sonnet-5-5"}, headers=csrf_headers(c))
+    assert r.status_code == 200
+    assert c.get(CHAT).json()["can_chat"] is False
+    assert post(c, CHAT, {"text": "status?"}).status_code == 409
+
+    # with the key the chat is on, and the reason is gone
+    r = c.put(f"{BASE}/connections/secrets/anthropic",
+              json={"value": "sk-ant-project-own-secret"}, headers=csrf_headers(c))
+    assert r.status_code == 200
+    body = c.get(CHAT).json()
+    assert body["can_chat"] is True and body["chat_off_reason"] is None
+
+
+def test_a_reader_gets_no_chat_off_reason(store, gh, clock):
+    c = as_role(store, gh, clock, "read")
+    body = c.get(CHAT).json()
+    assert body["can_chat"] is False and body["chat_off_reason"] is None

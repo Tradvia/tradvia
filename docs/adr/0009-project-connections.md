@@ -64,7 +64,9 @@ coming back to a browser.
   - *Claude Code*: a subscription login, not an API key. Get the token either by running
     `claude setup-token` (prints a long-lived token to paste) or `claude login` once on your
     own machine (opens a browser to sign in, same OAuth flow; the resulting token is what
-    `setup-token` also produces) — both land in the same `claude-code` secret field.
+    `setup-token` also produces) — both land in the same `claude-code` secret field. It runs
+    the executor only: the orchestrator chat needs an AI provider with an API key and has no
+    subscription path ([ADR 0013](0013-chat-needs-an-api-key.md)).
   - *Anthropic (API key)*, *Gemini*, *OpenAI*: pasting an API key is the only method. OpenAI
     has since announced "Sign in with ChatGPT" — a subscription login comparable to Claude
     Code's, letting an *approved partner app* spend a subscriber's ChatGPT plan allowance
@@ -80,7 +82,7 @@ coming back to a browser.
 | Provider | Status | What it means today |
 |---|---|---|
 | GitHub | Shipped | Sign in, roles and actions through the GitHub App; Actions secrets written on save (needs the *Secrets* permission) |
-| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The `orchestrator` role reads its own choice (#107; [orchestrator.md](../orchestrator.md)); `planner`/`executor`/`reviewer` still do not |
+| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The `orchestrator` role reads its own choice (#107; [orchestrator.md](../orchestrator.md)) and the chat runs only with the Anthropic API key, never the Claude Code token (ADR 0013); `planner`/`executor`/`reviewer` still do not |
 | Google Gemini | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
 | OpenAI | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
 | GitLab | Planned | Issue #60 |

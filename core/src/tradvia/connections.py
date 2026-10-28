@@ -47,14 +47,14 @@ PROVIDERS: tuple[Provider, ...] = (
         "anthropic", "Anthropic", "ai", "Partial", "ANTHROPIC_API_KEY",
         ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
         "The planner and the orchestrator chat call it today (API key, pay per use); "
-        "executor/reviewer still read the choice only. No subscription login for this one: "
-        "use Claude Code (OAuth token) below if you want to pay through a Claude subscription "
-        "instead of a metered API key.",
+        "executor/reviewer still read the choice only. No subscription login for this one. "
+        "The chat runs only on an API key like this one (ADR 0013).",
     ),
     Provider(
         "claude-code", "Claude Code (OAuth token)", "cli", "Shipped", "CLAUDE_CODE_OAUTH_TOKEN",
-        (), "Runs the executor (claude.yml) and, when no AI provider is chosen above, the "
-        "orchestrator chat, on your Claude subscription rather than a metered API key. Get the "
+        (), "Runs the executor (claude.yml) on your Claude subscription rather than a metered "
+        "API key. The orchestrator chat never uses it: the chat needs an AI provider with an "
+        "API key above (ADR 0013). Get the "
         "token either way: `claude setup-token` prints a long-lived one to paste here, or run "
         "`claude login` once on your own machine (opens a browser to sign in) and copy the "
         "token it leaves behind — see docs/deploy-oci.md.",
