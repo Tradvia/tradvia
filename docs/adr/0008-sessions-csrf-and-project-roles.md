@@ -50,8 +50,13 @@ it, and ADR 0006 makes the project the unit of scope. The panel at
 - **Audit log**: table `audit_log` (project, actor, action, card, result, detail,
   idempotency key, time). Every attempt is recorded, whether it succeeded
   (`ok`), was refused (`denied`) or failed (`failed`). It is read only through
-  `GET .../cards/{n}/audit`, which needs a session and at least the `read` role in
-  the project and is sent with `Cache-Control: no-store`; it is never public.
+  `GET .../cards/{n}/audit` and `GET .../audit`, which need a session and at least
+  the `read` role in the project and are sent with `Cache-Control: no-store`; it is
+  never public. The project route pages by period (`from` inclusive, `to` exclusive,
+  `limit` up to 1000, `offset`) and exports as JSON, CSV or JSON Lines
+  (`format=json|csv|jsonl`). Every text value goes through `redact`, so no key or
+  token shape leaves the panel, and CSV cells that start with `=`, `+`, `-` or `@`
+  get a leading quote against formula injection.
 - **Idempotency**: the panel sends `X-Tradvia-Idempotency-Key` on every action. A
   repeat of the same key by the same user within 5 s after a successful action (or
   while it is still running) is ignored and answers `{"ok": true, "duplicate": true}`.

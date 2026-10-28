@@ -66,6 +66,9 @@
   .soon-badge { font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 6px; color: var(--muted); }
   .view[hidden] { display: none; }
   .settings-section, .help-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s4); margin-bottom: var(--s4); }
+  .budget-form { display: grid; gap: 8px; max-width: 460px; }
+  .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .budget-row input { width: 9em; }
   .settings-section h3, .help-section h3 { margin: 0 0 var(--s2); font-size: var(--fs-md); }
   .settings-section p { margin: var(--s1) 0; }
   .settings-section label { display: flex; gap: var(--s3); align-items: center; margin: var(--s2) 0; }
@@ -74,7 +77,6 @@
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
   .controls { display: flex; gap: 8px; align-items: center; }
-  #help-link { border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
   button, select {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
@@ -105,6 +107,12 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s3); }
   .kpi .v { font-size: var(--fs-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi .bar { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .kpi .bar > span { display: block; height: 100%; background: var(--ok); }
+  .kpi.warn .bar > span { background: var(--warn); }
+  .kpi.stop .bar > span { background: var(--bad); }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.stop .v { color: var(--bad); }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
   .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
@@ -124,8 +132,6 @@
   .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; overflow-wrap: anywhere; cursor: pointer; }
   .card:focus-visible { outline: 2px solid var(--info); }
   .card .cost { color: var(--muted); font-size: 12px; }
-  .activity { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; cursor: default; font-size: 12px; }
-  .activity h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .acts button, .approval button, .newcard button { padding: 2px 8px; font-size: 12px; }
   .newcard { display: grid; gap: 4px; margin-bottom: 8px; }
@@ -161,11 +167,37 @@
   .chat form { display: grid; gap: 4px; }
   .chat textarea { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; padding: 6px; }
   .chat button { padding: 2px 8px; font-size: 12px; justify-self: start; }
-  .activity ul, .recent ul { list-style: none; margin: 0; padding: 0; }
-  .activity li, .recent li { padding: 3px 0; }
+  .recent ul { list-style: none; margin: 0; padding: 0; }
+  .recent li { padding: 3px 0; }
   .when { color: var(--muted); }
-  .activity ol { margin: 4px 0 0 18px; padding: 0; }
+  .dialog ol { margin: 4px 0 0 18px; padding: 0; }
   .card .n { color: var(--muted); font-size: 12px; }
+  .agents { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .agent-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; white-space: nowrap; }
+  .agent-chip.planner { color: var(--info); }
+  .dialog { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .45); display: grid; place-items: center; padding: 16px; }
+  .dialog[hidden] { display: none; }
+  .dialog-box { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); width: min(880px, 100%); max-height: 90vh; overflow-y: auto; padding: var(--s3); display: grid; gap: 14px; }
+  .dialog-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  .dialog-head h2 { margin: 0; font-size: 16px; color: var(--text); text-transform: none; letter-spacing: normal; overflow-wrap: anywhere; }
+  .dialog-head h2 a { font-size: 12px; font-weight: 400; }
+  .dialog section { display: grid; gap: 6px; }
+  .dialog h3, .dialog h4 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .dialog ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .dialog li { padding: 3px 0; overflow-wrap: anywhere; }
+  .dialog table { font-size: 12px; }
+  .dialog tr.total td { font-weight: 600; }
+  .dialog .note { margin-top: 0; }
+  .dialog-remote { display: grid; gap: 12px; font-size: 12px; }
+  .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: 13px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 600px) {
+    .dialog { padding: 0; }
+    .dialog-box { width: 100%; max-height: 100vh; border-radius: 0; }
+    .facts { grid-template-columns: 1fr; }
+    .dialog th, .dialog td { white-space: normal; }
+  }
   .col.AGENT_WORKING h3 { color: var(--info); }
   .col.WAITING_HUMAN h3 { color: var(--warn); }
   .col.BLOCKED h3 { color: var(--bad); }
@@ -201,7 +233,6 @@
       <button id="deploy-alert" type="button" hidden><span aria-hidden="true">⏳</span> <span id="deploy-alert-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
-      <a id="help-link" href="docs.html" data-i18n="help"></a>
       <select id="lang" aria-label="Language">
         <option value="pt">PT-BR</option>
         <option value="en">EN</option>
@@ -229,6 +260,7 @@
     <div class="charts" id="charts"></div>
     <div class="note" data-i18n="costNote"></div>
     <h2 data-i18n="board"></h2>
+    <div class="msg" id="board-note" hidden></div>
     <div class="board" id="board"></div>
     <div id="chat-section" hidden>
       <h2 data-i18n="chat"></h2>
@@ -236,6 +268,7 @@
         <div class="log" id="chat-log" aria-live="polite"></div>
         <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
         <div class="sub" id="chat-cost"></div>
+        <div class="msg" id="chat-off" role="status" hidden data-i18n="chatNoApiKey"></div>
         <form id="chat-form" hidden>
           <textarea id="chat-input" rows="2" maxlength="2000" data-i18n-placeholder="chatHint"></textarea>
           <button type="submit" id="chat-send" data-i18n="chatSend"></button>
@@ -259,6 +292,15 @@
   <section id="view-settings" class="view" hidden></section>
   <section id="view-help" class="view" hidden></section>
 </main>
+<div id="card-dialog" class="dialog" hidden>
+  <div class="dialog-box" role="dialog" aria-modal="true" aria-labelledby="card-dialog-title">
+    <div class="dialog-head">
+      <h2 id="card-dialog-title"></h2>
+      <button type="button" id="card-dialog-close" data-i18n="closeDialog"></button>
+    </div>
+    <div id="card-dialog-body"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -281,6 +323,16 @@ function branchMatchesIssue(ref, n) {
   return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
 }
 
+// True while a run of this card that started after `since` (ISO time) is still going. The
+// marker before it is from an earlier attempt, so the board shows the card as worked on.
+function runningSince(title, agentRuns, since) {
+  const t = Date.parse(since);
+  if (isNaN(t)) return false;
+  return agentRuns.some((r) => r.status !== "completed"
+    && (r.display_title || r.name) === title
+    && Date.parse(r.run_started_at) > t);
+}
+
 // agentRuns: runs of agent.yml only.
 function deriveCardState(issue, prs, agentRuns) {
   if (issue.state === "closed") return "DONE";
@@ -295,7 +347,12 @@ function deriveCardState(issue, prs, agentRuns) {
   // (BLOCKED); any other marker means something is waiting on a human right now, whatever
   // the run status says.
   if (issue.tradvia_last_marker) {
-    return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    // A run still going that started after the marker (tradvia_last_marker_at, #152) is a
+    // new attempt: the marker belongs to the attempt before it.
+    if (!runningSince(issue.title, agentRuns, issue.tradvia_last_marker_at)) {
+      return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    }
+    return "AGENT_WORKING";
   }
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
@@ -304,6 +361,33 @@ function deriveCardState(issue, prs, agentRuns) {
   const latest = mine.find((r) => r.status === "completed");
   if (latest) return FAILED_CONCLUSIONS.includes(latest.conclusion) ? "BLOCKED" : "WAITING_HUMAN";
   return "BACKLOG";
+}
+
+// Pull requests from several fetches, one entry per PR number (the first copy wins).
+function mergePulls(...lists) {
+  const byNumber = new Map();
+  for (const list of lists) for (const p of list) if (!byNumber.has(p.number)) byNumber.set(p.number, p);
+  return [...byNumber.values()];
+}
+
+// The cards the board shows: the ones started with agent:ready, plus any other open card whose
+// agent PR is still open. The bell counts those too (pending.py, PR_OPENED), so the board must
+// show them as well. Closed cards without the label are left out.
+function boardCards(labeled, openIssues, prs) {
+  const byNumber = new Map();
+  for (const issue of labeled) if (!issue.pull_request) byNumber.set(issue.number, issue);
+  for (const issue of openIssues) {
+    if (issue.pull_request || issue.state !== "open" || byNumber.has(issue.number)) continue;
+    const agentPr = prs.some((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
+    if (agentPr) byNumber.set(issue.number, issue);
+  }
+  return [...byNumber.values()];
+}
+
+// True when the card filter names a card the board does not hold: applied, it would empty the board.
+function cardFilterMissing(filters, issues) {
+  const n = filters ? filters.card : null;
+  return !!n && !(issues || []).some((i) => i.number === n);
 }
 
 // Duration in ms, or null when timestamps are missing.
@@ -540,7 +624,7 @@ function totalAndMedianCost(prs) {
 
 const DAY_MS = 86400000;
 const PRESET_DAYS = { "7d": 7, "30d": 30, "90d": 90 };
-const FILTER_KEYS = ["from", "to", "executor", "card", "status"];
+const FILTER_KEYS = ["from", "to", "executor", "fcard", "status"];
 const EXECUTOR_BRANCH = { agent: "tradvia/", claude: "claude/" };
 const EXECUTOR_WORKFLOW = { agent: "agent.yml", claude: "claude.yml" };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -563,10 +647,12 @@ function formatTokens(n) {
 }
 
 // Filters from the query string. `from` is 7d | 30d | 90d | YYYY-MM-DD (null = everything).
+// `fcard` narrows the board to one card. `card` is not a filter: it opens that card on load
+// (the link from notifications and the inbox), so it never hides the rest of the board.
 function parseFilters(search) {
   const q = new URLSearchParams(search || "");
   const from = q.get("from"), to = q.get("to"), executor = q.get("executor"), status = q.get("status");
-  const card = parseInt(q.get("card"), 10);
+  const card = parseInt(q.get("fcard"), 10);
   return {
     from: from && (PRESET_DAYS[from] || DATE_RE.test(from)) ? from : null,
     to: to && DATE_RE.test(to) ? to : null,
@@ -584,7 +670,7 @@ function filtersToSearch(filters, base) {
   if (f.from) q.set("from", f.from);
   if (f.to) q.set("to", f.to);
   if (f.executor && f.executor !== "all") q.set("executor", f.executor);
-  if (f.card) q.set("card", String(f.card));
+  if (f.card) q.set("fcard", String(f.card));
   if (f.status && f.status !== "all") q.set("status", f.status);
   const s = q.toString();
   return s ? "?" + s : "";
@@ -723,6 +809,97 @@ function cardCosts(issue, comments, prs) {
   const all = parts.plans.concat(parts.exec || [], parts.fallback || []);
   const sum = (k) => all.reduce((a, p) => a + p[k], 0);
   return { usd: sum("usd"), in: sum("in"), out: sum("out"), cache: sum("cache"), plans: parts.plans.length };
+}
+
+// Runs that did work on a card. A skipped run did none, so it does not count.
+function workedRuns(issue, runs) {
+  return runs.filter((r) => r.conclusion !== "skipped" && runIssue(r, [issue]));
+}
+
+// The workflow a run belongs to, as the executor kind it stands for.
+function runExecutor(r) {
+  return r.workflowFile === "claude.yml" ? "claude" : "agent";
+}
+
+// One agent's cost fields ({usd, in, out, cache}), all null when no cost was recorded for it.
+function costFields(p) {
+  return p ? { usd: p.usd, in: p.in, out: p.out, cache: p.cache } : { usd: null, in: null, out: null, cache: null };
+}
+
+// Sum of cost parts ({usd, in, out, cache}), or null when there are none.
+function sumParts(list) {
+  if (!list.length) return null;
+  return list.reduce((a, p) => ({ usd: a.usd + p.usd, in: a.in + p.in, out: a.out + p.out, cache: a.cache + p.cache }),
+    { usd: 0, in: 0, out: 0, cache: 0 });
+}
+
+// The agents that worked on a card: the planner first, then each executor (Tradvia agent or Claude
+// Code) that ran for it or opened its PR. The planner is listed when plans were recorded, or when the
+// Tradvia agent ran, since it plans before it executes. Each entry is {role, executor, runs, prs,
+// plans, usd, in, out, cache}: runs, prs and plans are null where they do not apply, and the cost
+// fields are null when no cost was recorded for that agent.
+function cardAgents(issue, prs, runs) {
+  const cardPrs = prs.filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number));
+  const cardRuns = workedRuns(issue, runs);
+  const kindRuns = (k) => cardRuns.filter((r) => runExecutor(r) === k).length;
+  const kindPrs = (k) => cardPrs.filter((p) => branchExecutor(p.head.ref) === k).length;
+  const plans = planCostsOf(issue.tradvia_plan_cost);
+  // cardCostParts reads the newest PR that has a cost; that PR's executor owns the executor cost.
+  const parts = cardCostParts(issue, issue.tradvia_plan_cost, prs);
+  const newest = cardPrs.slice().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const costed = newest.find((p) => prCost(p));
+  const execKind = parts && parts.exec && costed ? branchExecutor(costed.head.ref) : null;
+  const agents = [];
+  if (plans.length || kindRuns("agent") || kindPrs("agent")) {
+    agents.push({ role: "planner", executor: null, runs: null, prs: null, plans: plans.length,
+      ...costFields(sumParts(plans)) });
+  }
+  for (const k of ["agent", "claude"]) {
+    if (!kindRuns(k) && !kindPrs(k)) continue;
+    agents.push({ role: "executor", executor: k, runs: kindRuns(k), prs: kindPrs(k), plans: null,
+      ...costFields(execKind === k ? parts.exec : null) });
+  }
+  return agents;
+}
+
+// What a card's runs and PRs say, for the card dialog. `state` is the card's state on the board.
+// The last run is the newest one that did work, whichever workflow ran it.
+function cardDiagnostics(issue, state, prs, runs) {
+  const started = (r) => Date.parse(r.run_started_at || r.created_at) || 0;
+  const cardRuns = workedRuns(issue, runs).sort((a, b) => started(b) - started(a));
+  const cardPrs = prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, issue.number))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const last = cardRuns[0] || null;
+  const newest = cardPrs[0] || null;
+  return {
+    state,
+    marker: issue.tradvia_last_marker || null,
+    labels: (issue.labels || []).map((l) => (typeof l === "string" ? l : l && l.name)).filter(Boolean),
+    created: issue.created_at || null,
+    updated: issue.updated_at || null,
+    runs: {
+      total: cardRuns.length,
+      noResult: cardRuns.filter((r) => r.status === "completed" && FAILED_CONCLUSIONS.includes(r.conclusion)).length,
+      running: cardRuns.filter((r) => r.status !== "completed").length,
+    },
+    last: last && {
+      executor: runExecutor(last),
+      status: last.status,
+      conclusion: last.conclusion || null,
+      started: last.run_started_at || last.created_at || null,
+      durationMs: last.status === "completed" ? runDuration(last) : null,
+      url: last.html_url || null,
+    },
+    prs: {
+      total: cardPrs.length,
+      newest: newest && {
+        number: newest.number,
+        state: newest.merged_at ? "merged" : newest.state === "open" ? "open" : "closed",
+        url: newest.html_url || null,
+      },
+    },
+  };
 }
 
 // Indicators over an already filtered view: {cards, withCost, totalUsd, medianUsd, tokens, medianTokens,
@@ -1006,10 +1183,10 @@ async function fillAudit(root, number) {
   root.append(el("h4", t("auditLog")), ul);
 }
 
-function renderApproval(card, number) {
+function renderApproval(host, number) {
   const box = el("div", null, "approval");
   box.addEventListener("click", (e) => e.stopPropagation());
-  card.append(box);
+  host.append(box);
   loadCardInfo(number).then((info) => {
     if (!info || !info.awaiting_plan || !info.plan) return;
     const text = el("textarea");
@@ -1179,7 +1356,10 @@ async function renderDeploys() {
 // Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
 // only). The agent never approves, merges or deploys: those arrive as "pending" messages with
 // a button that calls the same panel action, so the server checks the role again.
-let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+// canChat: may send and an AI provider with an API key answers (ADR 0013). canAct: may use the
+// buttons of pending items, which do not need the chat model. offReason: why the chat is off.
+let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false,
+                  canAct: false, offReason: null, at: 0 };
 let chatToken = 0;
 const CHAT_POLL_MS = 3000;
 const CHAT_IDLE_MS = 20000;
@@ -1229,10 +1409,11 @@ function renderChat() {
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.replaceChildren();
   if (!chatState.messages.length) log.append(el("div", t("chatEmpty"), "sub"));
-  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canChat)));
+  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canAct)));
   if (atEnd) log.scrollTop = log.scrollHeight;
   document.getElementById("chat-working").hidden = !chatState.working;
   document.getElementById("chat-form").hidden = !chatState.canChat;
+  document.getElementById("chat-off").hidden = chatState.offReason !== "no_api_key";
   document.getElementById("chat-send").disabled = chatState.working;
   const c = chatState.cost;
   document.getElementById("chat-cost").textContent =
@@ -1246,7 +1427,9 @@ async function loadChat() {
   const res = await panelRequest("GET", "/chat");
   if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
   chatState = { repo, messages: res.data.messages, working: !!res.data.working,
-                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+                cost: res.data.cost, canChat: !!res.data.can_chat,
+                canAct: !!res.data.can_chat || !!res.data.chat_off_reason,
+                offReason: res.data.chat_off_reason || null, at: Date.now() };
   renderChat();
 }
 
@@ -1315,23 +1498,57 @@ async function loadBacklog(repo) {
 
 const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em andamento": "andamento", "concluído": "concluido" };
 
+// A card can have real in-flight work (an open PR on its own branch) without ever carrying the
+// agent:ready label: the label starts a run (agent.yml), it does not mark one as under way. Left
+// alone, such a card was reachable only from the "Pendências" inbox, never as a card in its own
+// column (deriveCardState already places it correctly — it never looked at the label). Fetched
+// one issue at a time: there is no "give me these N issues" endpoint.
+function orphanedIssueNumbers(labeledIssues, prs) {
+  const known = new Set(labeledIssues.map((i) => i.number));
+  const found = new Set();
+  for (const p of prs) {
+    if (p.state !== "open") continue;
+    const n = issueOfBranch(p.head && p.head.ref);
+    if (n != null && !known.has(n)) found.add(n);
+  }
+  return [...found];
+}
+
+async function withOrphanedCards(repo, labeledIssues, prs) {
+  const numbers = orphanedIssueNumbers(labeledIssues, prs);
+  if (numbers.length === 0) return labeledIssues;
+  const fetched = await Promise.all(
+    numbers.map((n) => getData(repo, "/issues/" + n).catch(() => null))
+  );
+  const extra = fetched.filter((i) => i && !i.pull_request);
+  return labeledIssues.concat(extra);
+}
+
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
-  const [agent, claude, issues, prs] = await Promise.all([
+  const [agent, claude, labeled, openIssues, prs, openPrs] = await Promise.all([
     getData(repo, "/actions/workflows/agent.yml/runs?per_page=30"),
     getData(repo, "/actions/workflows/claude.yml/runs?per_page=30"),
     getData(repo, "/issues?labels=agent:ready&state=all&per_page=50"),
+    getData(repo, "/issues?state=open&per_page=100"),
     getData(repo, "/pulls?state=all&per_page=50"),
+    getData(repo, "/pulls?state=open&per_page=100"),
   ]);
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
-  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
+  // Open PRs are read in full: the 50 most recent PRs alone can leave out an old open one.
+  const allPrs = mergePulls(openPrs, prs);
+  // Cards with an open agent PR among the open issues, then any such card still missing (an
+  // issue beyond the first 100 open ones), fetched one by one.
+  const cards = await withOrphanedCards(repo, boardCards(labeled, openIssues, allPrs), allPrs);
+  return { agentRuns, runs, issues: cards, prs: allPrs, backlog: await loadBacklog(repo) };
 }
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
 
-const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit"];
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+  "deploy_stuck", "cost_outlier", "run_dead"];
 let inboxOpen = false;
 let inboxData = []; // [{ repo, items }] of the projects that have something pending
 let pushKey = null; // VAPID public key; null while unknown or when notifications are off
@@ -1489,15 +1706,37 @@ let cardToOpen = (() => {
   const n = Number(new URLSearchParams(location.search).get("card"));
   return Number.isInteger(n) && n > 0 ? n : null;
 })();
+const deepLinkCard = cardToOpen; // kept for the note; cardToOpen is consumed once tried
+
+// A one-line note above the board: a card that the filter or a link names is not on it.
+function showBoardNote(text) {
+  const note = document.getElementById("board-note");
+  note.textContent = text || "";
+  note.hidden = !text;
+}
+
+// The note for the ?card=N link while that card is not on the board. Derived on every render
+// (a later render must not clear it), and gone as soon as the card is shown.
+function deepLinkNote() {
+  const n = deepLinkCard;
+  if (!n || !data || document.getElementById("card-" + n)) return "";
+  const onBoard = data.issues.some((i) => i.number === n);
+  return t(onBoard ? "noteHiddenCard" : "noteDeepLinkCard").replace("{n}", String(n));
+}
 
 function openRequestedCard() {
   if (cardToOpen === null) return;
-  const node = document.getElementById("card-" + cardToOpen);
-  if (!node) return;
   const n = cardToOpen;
-  cardToOpen = null;
+  cardToOpen = null; // one attempt: by the time this runs, data.issues has already loaded
+  const node = document.getElementById("card-" + n);
+  if (!node) {
+    // A pending item the board cannot show (pending.py flags any open agent PR, labeled or not)
+    // is still something to act on (ADR 0007): open the GitHub issue rather than do nothing.
+    window.open("https://github.com/" + getRepo() + "/issues/" + n, "_blank", "noopener");
+    return;
+  }
   node.scrollIntoView({ block: "center" });
-  if (!openCards.has(n)) node.click();
+  if (dialogCard !== n) node.click();
 }
 
 /* ---------- i18n ---------- */
@@ -1505,13 +1744,17 @@ function openRequestedCard() {
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
-    help: "Ajuda",
+    docs: "Documentação", docsTitle: "README e guias de uso (abre em outra aba)",
     inbox: "Pendências", inboxEmpty: "Nada aguardando você.", notifications: "Notificações",
+    noteFilterCard: "O card #{n} não está no quadro: o filtro por card foi ignorado.",
+    noteDeepLinkCard: "O card #{n} não está no quadro (sem o rótulo agent:ready e sem PR aberta do agente).",
+    noteHiddenCard: "O card #{n} está fora dos filtros atuais (período, executor ou status).",
     enableNotify: "Ativar notificações", disableNotify: "Desativar notificações",
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
     kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
     kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
-    kind_adjust_limit: "limite de ajustes",
+    kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
+    kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1544,6 +1787,7 @@ const I18N = {
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
     chatHint: "Peça ao orquestrador: criar um card, revisar um PR, ajustar um plano…", chatSend: "Enviar",
+    chatNoApiKey: "O chat está desligado: falta uma IA com chave de API. Um admin configura em Conexões o papel orchestrator (Anthropic, OpenAI ou Gemini) e a chave desse provedor.",
     chatEmpty: "Nenhuma mensagem ainda.", chatCost: "Custo do orquestrador neste projeto",
     chatApprovePlan: "Aprovar plano", chatRejectPlan: "Rejeitar plano", chatMerge: "Fazer merge",
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
@@ -1566,12 +1810,25 @@ const I18N = {
     ST_WAITING_HUMAN: "aguardando humano", ST_BLOCKED: "bloqueado",
     ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
     noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
+    monthlyBudget: "Orçamento mensal (UTC)",
+    monthlyNone: "Sem teto mensal: defina budget.monthly_usd em .tradvia.yml.",
+    monthlyUnknown: "Não foi possível ler o gasto do mês.",
     costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
     planPlusExec: "planejamento + execução", chartCost: "Custo por dia (US$)", chartTokens: "Tokens por dia",
     "nav.panel": "Painel", "nav.connections": "Conexões", "nav.settings": "Configurações", "nav.help": "Ajuda",
     soon: "em breve",
+    "budget.title": "Orçamento do projeto", "budget.intro": "Vale só para este projeto (repositório):",
+    "budget.thisMonth": "Gasto neste mês (UTC)", "budget.noCeiling": "sem teto",
+    "budget.warn": "acima de 80%", "budget.stop": "teto atingido, nenhum card novo inicia",
+    "budget.monthly": "Teto mensal (US$, vazio = sem teto)", "budget.maxUsd": "Por card: custo máximo (US$)",
+    "budget.maxMinutes": "Por card: minutos de trabalho", "budget.maxSteps": "Por card: passos (iterações)",
+    "budget.save": "Salvar orçamento", "budget.saved": "Orçamento salvo.",
+    "budget.note": "Em 80% de qualquer limite o agente é avisado; em 100% ele para e o card espera uma pessoa. O teto mensal impede que cards novos iniciem.",
+    "budget.readOnly": "Só quem tem o papel exigido neste projeto (admin, por padrão) altera o orçamento.",
+    "budget.updated": "Última alteração por",
+    "budget.fileIgnored": "O .tradvia.yml deste repositório ainda tem uma seção budget: ela é ignorada. O orçamento vale só como definido aqui.",
     "settings.title": "Configurações", "settings.project": "Projeto",
     "settings.roles": "Papéis e permissões", "settings.yourRole": "Seu papel neste projeto",
     "settings.canStart": "Pode iniciar cards", "settings.canApprove": "Pode aprovar planos",
@@ -1596,16 +1853,29 @@ const I18N = {
     connFailed: "Não foi possível salvar a conexão.", provKind_cli: "CLI", provKind_ai: "IA", provKind_repository: "Repositório",
     act_secret_set: "configurou um segredo", act_secret_replace: "substituiu um segredo",
     act_secret_remove: "removeu um segredo", act_set_connection: "alterou uma conexão",
+    closeDialog: "Fechar", dialogNotFound: "Este card não está mais no quadro.", dialogOpenGithub: "abrir no GitHub",
+    dialogAgents: "Agentes que trabalharam", dialogNoAgents: "Nenhum agente trabalhou neste card ainda.",
+    dialogAgent: "Agente", dialogRunsCount: "Execuções", dialogPlans: "Planos", dialogCost: "Custo", dialogTotal: "Total do card",
+    dialogCostNote: "“—” significa que não há custo registrado para esse agente.",
+    dialogDiagnosis: "Diagnóstico", dialogState: "Situação", dialogOnBoard: "Aparece no quadro por",
+    dialogReasonLabel: "rótulo agent:ready", dialogReasonPr: "PR de agente aberta", dialogMarker: "Último marcador do agente",
+    dialogLabels: "Rótulos", dialogNoResult: "Execuções sem resultado", dialogRunning: "Em andamento",
+    dialogLastRun: "Última execução", dialogDuration: "Duração da última execução", dialogPrCount: "PRs do card",
+    dialogLastPr: "PR mais recente", dialogCreated: "Criado em", dialogUpdated: "Atualizado em",
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
-    help: "Help",
+    docs: "Documentation", docsTitle: "README and usage guides (opens in a new tab)",
     inbox: "Pending", inboxEmpty: "Nothing is waiting for you.", notifications: "Notifications",
+    noteFilterCard: "Card #{n} is not on the board: the card filter was ignored.",
+    noteDeepLinkCard: "Card #{n} is not on the board (no agent:ready label and no open agent PR).",
+    noteHiddenCard: "Card #{n} is outside the current filters (period, executor or status).",
     enableNotify: "Enable notifications", disableNotify: "Disable notifications",
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
     kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
     kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
-    kind_adjust_limit: "adjustment limit",
+    kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
+    kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -1638,6 +1908,7 @@ const I18N = {
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
     chatHint: "Ask the orchestrator: create a card, review a PR, adjust a plan…", chatSend: "Send",
+    chatNoApiKey: "The chat is off: it needs an AI provider with an API key. An admin sets the orchestrator role (Anthropic, OpenAI or Gemini) and that provider's key in Connections.",
     chatEmpty: "No messages yet.", chatCost: "Orchestrator cost in this project",
     chatApprovePlan: "Approve plan", chatRejectPlan: "Reject plan", chatMerge: "Merge",
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
@@ -1651,8 +1922,8 @@ const I18N = {
     loadingDiff: "Loading diff…", noDiff: "No text diff for this file.",
     check_passed: "passed", check_failed: "failed", check_pending: "in progress", check_missing: "missing",
     ignoreCla: "ignore the CLA", merge: "Merge (squash)", updateBranch: "Update branch",
-    COL_BACKLOG: "BACKLOG", COL_AGENT_WORKING: "AGENT_WORKING", COL_WAITING_HUMAN: "WAITING_HUMAN",
-    COL_BLOCKED: "BLOCKED", COL_IN_REVIEW_PR: "IN_REVIEW_PR", COL_DONE: "DONE",
+    COL_BACKLOG: "Backlog", COL_AGENT_WORKING: "Agent working", COL_WAITING_HUMAN: "Waiting for a human",
+    COL_BLOCKED: "Blocked", COL_IN_REVIEW_PR: "In review (PR)", COL_DONE: "Done",
     fPeriod: "Period", fAll: "all", f7d: "7 days", f30d: "30 days", f90d: "90 days", fCustom: "custom",
     fFrom: "from", fTo: "to", fExecutor: "Executor", fAgent: "Tradvia agent (agent.yml)",
     fClaude: "Claude Code (claude.yml)", fCard: "Card", fStatus: "Status", fAllM: "all",
@@ -1660,12 +1931,25 @@ const I18N = {
     ST_WAITING_HUMAN: "waiting for human", ST_BLOCKED: "blocked",
     ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
     noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
+    monthlyBudget: "Monthly budget (UTC)",
+    monthlyNone: "No monthly ceiling: set budget.monthly_usd in .tradvia.yml.",
+    monthlyUnknown: "Could not read this month's spend.",
     costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
     planPlusExec: "planning + execution", chartCost: "Cost per day (US$)", chartTokens: "Tokens per day",
     "nav.panel": "Dashboard", "nav.connections": "Connections", "nav.settings": "Settings", "nav.help": "Help",
     soon: "soon",
+    "budget.title": "Project budget", "budget.intro": "Applies to this project (repository) only:",
+    "budget.thisMonth": "Spent this month (UTC)", "budget.noCeiling": "no ceiling",
+    "budget.warn": "above 80%", "budget.stop": "ceiling reached, no new card starts",
+    "budget.monthly": "Monthly ceiling (US$, empty = no ceiling)", "budget.maxUsd": "Per card: maximum cost (US$)",
+    "budget.maxMinutes": "Per card: minutes of work", "budget.maxSteps": "Per card: steps (iterations)",
+    "budget.save": "Save budget", "budget.saved": "Budget saved.",
+    "budget.note": "At 80% of any limit the agent is warned; at 100% it stops and the card waits for a person. The monthly ceiling keeps new cards from starting.",
+    "budget.readOnly": "Only someone with the required role in this project (admin by default) changes the budget.",
+    "budget.updated": "Last changed by",
+    "budget.fileIgnored": "This repository's .tradvia.yml still has a budget section: it is ignored. The budget is only what is set here.",
     "settings.title": "Settings", "settings.project": "Project",
     "settings.roles": "Roles and permissions", "settings.yourRole": "Your role in this project",
     "settings.canStart": "Can start cards", "settings.canApprove": "Can approve plans",
@@ -1690,6 +1974,15 @@ const I18N = {
     connFailed: "Could not save the connection.", provKind_cli: "CLI", provKind_ai: "AI", provKind_repository: "Repository",
     act_secret_set: "set a secret", act_secret_replace: "replaced a secret",
     act_secret_remove: "removed a secret", act_set_connection: "changed a connection",
+    closeDialog: "Close", dialogNotFound: "This card is no longer on the board.", dialogOpenGithub: "open on GitHub",
+    dialogAgents: "Agents that worked on it", dialogNoAgents: "No agent has worked on this card yet.",
+    dialogAgent: "Agent", dialogRunsCount: "Runs", dialogPlans: "Plans", dialogCost: "Cost", dialogTotal: "Card total",
+    dialogCostNote: "“—” means no cost was recorded for that agent.",
+    dialogDiagnosis: "Diagnosis", dialogState: "State", dialogOnBoard: "Shown on the board because of",
+    dialogReasonLabel: "agent:ready label", dialogReasonPr: "open agent PR", dialogMarker: "Agent's last marker",
+    dialogLabels: "Labels", dialogNoResult: "Runs without result", dialogRunning: "Running now",
+    dialogLastRun: "Last run", dialogDuration: "Last run duration", dialogPrCount: "Card PRs",
+    dialogLastPr: "Newest PR", dialogCreated: "Created", dialogUpdated: "Updated",
   },
 };
 
@@ -1702,8 +1995,16 @@ const VIEWS = ["panel", "settings", "help"];
 function navItems(rights) {
   return [
     { id: "panel", labelKey: "nav.panel", status: "ready" },
-    { id: "connections", labelKey: "nav.connections", status: "soon" }, // #58
+    // #58/ADR 0009: shipped (roles, secrets, GitHub Actions delivery), rendered inline at the
+    // bottom of the panel view (#connections-section) rather than as its own routed view.
+    // "soon" only for someone who cannot use the screen yet (no admin role on this project);
+    // for an admin the link is live and scrolls there (see scrollToConnectionsIfLinked()).
+    { id: "connections", labelKey: "nav.connections", status: rights && rights.can_manage_connections ? "ready" : "soon" },
     { id: "settings", labelKey: "nav.settings", status: "ready", limited: !rights },
+    // Two different things used to both say "Ajuda" in the header: this one leaves the app for
+    // the full README/guides page, the next opens the in-app help view. Keeping them side by
+    // side in the same menu, with distinct labels, makes clear they're not the same link twice.
+    { id: "docs", labelKey: "docs", status: "ready", href: "docs.html", external: true, titleKey: "docsTitle" },
     { id: "help", labelKey: "nav.help", status: "ready" },
   ];
 }
@@ -1826,6 +2127,32 @@ function renderKpis(view) {
     d.append(val, el("div", l, "l"));
     root.append(d);
   }
+  root.append(monthlyBudgetKpi());
+}
+
+// Project ceiling vs. spend of the UTC month, from /auth/me; "—" with a tooltip without a ceiling.
+function monthlyBudgetKpi() {
+  const p = authState && authState.authenticated === true
+    ? (authState.projects || []).find((x) => x.external_id === getRepo()) : null;
+  const mb = p && p.monthly_budget;
+  const d = el("div", null, "kpi");
+  if (!mb || mb.cap_usd == null) {
+    const val = el("div", "—", "v");
+    val.title = t("monthlyNone");
+    d.append(val, el("div", t("monthlyBudget"), "l"));
+    return d;
+  }
+  const spent = mb.spent_usd;
+  const val = el("div", (spent == null ? "—" : "$" + spent.toFixed(2)) + " / $" + mb.cap_usd.toFixed(2), "v");
+  if (spent == null) val.title = t("monthlyUnknown");
+  d.append(val, el("div", t("monthlyBudget"), "l"));
+  const bar = el("div", null, "bar");
+  const fill = document.createElement("span");
+  fill.style.width = (spent == null ? 0 : Math.min(100, (spent / mb.cap_usd) * 100)) + "%";
+  bar.append(fill);
+  d.append(bar);
+  if (mb.level === "warn" || mb.level === "stop") d.classList.add(mb.level);
+  return d;
 }
 
 function svgEl(tag, attrs) {
@@ -1985,7 +2312,6 @@ async function fillActivity(root, number, withCard) {
   }
 }
 
-const openCards = new Set();
 let recentState = { status: "idle", items: [] }; // idle | loading | ok | ratelimit | error
 let recentToken = 0;
 
@@ -2094,7 +2420,7 @@ function renderNewCard() {
   return box;
 }
 
-function renderBoard(issues, prs, agentRuns, backlog) {
+function renderBoard(issues, prs, agentRuns, backlog, runs) {
   const root = document.getElementById("board");
   root.replaceChildren();
   root.classList.toggle("with-backlog", !!backlog);
@@ -2114,6 +2440,7 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     card.id = "card-" + issue.number;
     card.tabIndex = 0;
     card.setAttribute("role", "button");
+    card.setAttribute("aria-haspopup", "dialog");
     const a = el("a", issue.title);
     a.href = issue.html_url;
     a.target = "_blank"; a.rel = "noopener";
@@ -2124,41 +2451,13 @@ function renderBoard(issues, prs, agentRuns, backlog) {
       card.append(el("div", "$" + cost.usd.toFixed(4) + " · " + formatTokens(cost.in + cost.out + cost.cache) +
         " tokens · " + t("costLabel"), "cost"));
     }
-    const panel = el("div", null, "activity");
-    panel.hidden = true;
-    panel.addEventListener("click", (e) => e.stopPropagation());
-    const toggle = () => {
-      const open = panel.hidden;
-      panel.hidden = !open;
-      card.setAttribute("aria-expanded", String(open));
-      if (open) {
-        openCards.add(issue.number);
-        panel.replaceChildren(el("h4", t("activity")), el("div"));
-        fillActivity(panel.lastChild, issue.number, false);
-        const audit = el("div");
-        panel.append(audit);
-        fillAudit(audit, issue.number);
-        const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
-        if (pr && myRights()) {
-          const pull = el("div");
-          panel.append(pull);
-          renderPull(pull, pr.number);
-        }
-      } else openCards.delete(issue.number);
-    };
-    card.addEventListener("click", toggle);
+    // The card shows only which agent types worked on it; the details open in the card dialog.
+    const agents = cardAgents(issue, prs, runs);
+    if (agents.length) card.append(agentChips(agents));
+    card.addEventListener("click", () => openCardDialog(issue.number));
     card.addEventListener("keydown", (e) => {
-      if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(); }
+      if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCardDialog(issue.number); }
     });
-    card.append(panel);
-    const mine = myRights();
-    // While the agent waits for the answer its run is still in progress, so the card shows as
-    // AGENT_WORKING: offer the answer there too. renderApproval adds controls only when the
-    // server says the agent's last comment is the plan.
-    if ((s === "WAITING_HUMAN" || s === "AGENT_WORKING") && mine && mine.can_approve) {
-      renderApproval(card, issue.number);
-    }
-    if (openCards.has(issue.number)) { panel.hidden = true; toggle(); }
     cols[s].append(card);
   }
   STATES.forEach((s) => {
@@ -2167,6 +2466,211 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     if (!counts[s]) cols[s].append(el("div", t("emptyCards"), "sub"));
   });
 }
+
+/* ---------- Card agents and card dialog ---------- */
+
+// Chips with the agent types that worked on a card; the details are in the card dialog.
+function agentChips(agents) {
+  const box = el("div", null, "agents");
+  for (const a of agents) {
+    const planner = a.role === "planner";
+    const name = planner ? t("role_planner") : EXECUTORS[EXECUTOR_WORKFLOW[a.executor]];
+    const chip = el("span", name, "agent-chip " + (planner ? "planner" : a.executor));
+    chip.title = planner ? t("role_planner") : t("role_executor") + ": " + name;
+    box.append(chip);
+  }
+  return box;
+}
+
+// The card dialog shows one card: `dialogCard` is its number (null while closed). Its GitHub
+// sections live in `dialogRemote` and reload only when the card changes, so the board's refreshes
+// cost the dialog no requests.
+let dialogCard = null;
+let dialogRemote = null;
+let dialogRemoteKey = null;
+
+const usdText = (v) => (v == null ? "—" : "$" + v.toFixed(4));
+const tokenText = (v) => (v == null ? "—" : formatTokens(v));
+
+function openCardDialog(n) {
+  dialogCard = n;
+  dialogRemote = el("div", null, "dialog-remote");
+  dialogRemoteKey = null;
+  document.getElementById("card-dialog").hidden = false;
+  renderCardDialog(true);
+  document.getElementById("card-dialog-close").focus();
+}
+
+function closeCardDialog() {
+  if (dialogCard === null) return;
+  const n = dialogCard;
+  dialogCard = null;
+  dialogRemote = null;
+  dialogRemoteKey = null;
+  document.getElementById("card-dialog").hidden = true;
+  const back = document.getElementById("card-" + n);
+  if (back) back.focus();
+}
+
+// Rebuilds the dialog from the data on screen; a refresh rebuilds only the local parts. It waits
+// while the user is typing (unless `force`), so a reply in progress is not wiped.
+function renderCardDialog(force) {
+  if (dialogCard === null || !data) return;
+  if (currentView() !== "panel") { closeCardDialog(); return; }
+  if (!force && isEditing()) return;
+  const n = dialogCard;
+  const issue = data.issues.find((i) => i.number === n);
+  const title = document.getElementById("card-dialog-title");
+  const body = document.getElementById("card-dialog-body");
+  if (!issue) {
+    title.textContent = "#" + n;
+    body.replaceChildren(el("div", t("dialogNotFound"), "msg"));
+    dialogRemoteKey = null;
+    return;
+  }
+  const state = deriveCardState(issue, data.prs, data.agentRuns);
+  title.textContent = "#" + n + " " + issue.title;
+  const href = safeGithubUrl(issue.html_url);
+  if (href) {
+    const link = el("a", t("dialogOpenGithub"));
+    link.href = href; link.target = "_blank"; link.rel = "noopener";
+    title.append(" ", link);
+  }
+  body.replaceChildren(agentsSection(issue), diagnosisSection(issue, state), dialogRemote);
+  const prKey = data.prs
+    .filter((p) => branchMatchesIssue(p.head && p.head.ref, n))
+    .map((p) => p.number + ":" + p.state + ":" + (p.merged_at ? "m" : ""))
+    .join(",");
+  const key = [n, issue.updated_at || "", state, prKey].join("|");
+  if (force || key !== dialogRemoteKey) {
+    dialogRemoteKey = key;
+    fillDialogRemote(n, state, data.prs);
+  }
+}
+
+// One row per agent, and the card's total.
+function agentsSection(issue) {
+  const sec = el("section");
+  sec.append(el("h3", t("dialogAgents")));
+  const agents = cardAgents(issue, data.prs, data.runs);
+  if (!agents.length) {
+    sec.append(el("div", t("dialogNoAgents"), "when"));
+    return sec;
+  }
+  const table = el("table");
+  const head = el("tr");
+  [t("dialogAgent"), t("dialogRunsCount"), t("dialogPlans"), t("tokensIn"), t("tokensOut"), t("tokensCache"), t("dialogCost")]
+    .forEach((h) => head.append(el("th", h)));
+  table.append(head);
+  const dash = (v) => (v == null ? "—" : String(v));
+  const row = (name, a, cls) => {
+    const tr = el("tr", null, cls || null);
+    tr.append(el("td", name), el("td", dash(a.runs)), el("td", dash(a.plans)),
+      el("td", tokenText(a.in)), el("td", tokenText(a.out)), el("td", tokenText(a.cache)), el("td", usdText(a.usd)));
+    table.append(tr);
+  };
+  agents.forEach((a) => row(a.role === "planner" ? t("role_planner") : EXECUTORS[EXECUTOR_WORKFLOW[a.executor]], a));
+  const total = cardCosts(issue, issue.tradvia_plan_cost, data.prs);
+  if (total) {
+    row(t("dialogTotal"), { runs: null, plans: total.plans, in: total.in, out: total.out, cache: total.cache, usd: total.usd }, "total");
+  }
+  const wrap = el("div", null, "tablewrap");
+  wrap.append(table);
+  sec.append(wrap, el("div", t("dialogCostNote"), "note"));
+  return sec;
+}
+
+// Facts that explain the card's state: why it is on the board, its runs and its PRs.
+function diagnosisSection(issue, state) {
+  const d = cardDiagnostics(issue, state, data.prs, data.runs);
+  const sec = el("section");
+  sec.append(el("h3", t("dialogDiagnosis")));
+  const dl = el("dl", null, "facts");
+  const fact = (label, value) => {
+    const dd = el("dd");
+    if (value instanceof Node) dd.append(value); else dd.textContent = value;
+    dl.append(el("dt", label), dd);
+  };
+  const link = (text, url) => {
+    const href = safeGithubUrl(url);
+    if (!href) return text;
+    const a = el("a", text);
+    a.href = href; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  };
+  fact(t("dialogState"), t("COL_" + d.state));
+  fact(t("dialogOnBoard"), d.labels.includes("agent:ready") ? t("dialogReasonLabel") : t("dialogReasonPr"));
+  fact(t("dialogMarker"), d.marker || "—");
+  fact(t("dialogLabels"), d.labels.length ? d.labels.join(", ") : "—");
+  fact(t("dialogRunsCount"), String(d.runs.total));
+  fact(t("dialogNoResult"), String(d.runs.noResult));
+  fact(t("dialogRunning"), String(d.runs.running));
+  if (d.last) {
+    const [status] = statusInfo({ status: d.last.status, conclusion: d.last.conclusion });
+    const when = d.last.started ? fmtTime(d.last.started) : "—";
+    fact(t("dialogLastRun"), link(EXECUTORS[EXECUTOR_WORKFLOW[d.last.executor]] + " · " + status + " · " + when, d.last.url));
+    fact(t("dialogDuration"), formatDuration(d.last.durationMs));
+  } else {
+    fact(t("dialogLastRun"), "—");
+  }
+  fact(t("dialogPrCount"), String(d.prs.total));
+  const newest = d.prs.newest;
+  fact(t("dialogLastPr"), newest ? link("#" + newest.number + " · " + t("pr_" + newest.state), newest.url) : "—");
+  fact(t("dialogCreated"), d.created ? fmtTime(d.created) : "—");
+  fact(t("dialogUpdated"), d.updated ? fmtTime(d.updated) : "—");
+  sec.append(dl);
+  return sec;
+}
+
+// The GitHub-backed sections: approval (for who may answer it), the open PR, the timeline and the
+// audit. The agent is still running while it waits for the answer, so AGENT_WORKING offers it too.
+function fillDialogRemote(n, state, prs) {
+  const host = dialogRemote;
+  host.replaceChildren();
+  const mine = myRights();
+  if ((state === "WAITING_HUMAN" || state === "AGENT_WORKING") && mine && mine.can_approve) {
+    const box = el("section");
+    host.append(box);
+    renderApproval(box, n);
+  }
+  const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, n));
+  if (pr && mine) {
+    const box = el("section");
+    host.append(box);
+    renderPull(box, pr.number);
+  }
+  const activity = el("section");
+  activity.append(el("h3", t("activity")));
+  const list = el("div");
+  activity.append(list);
+  host.append(activity);
+  fillActivity(list, n, false);
+  const audit = el("section");
+  host.append(audit);
+  fillAudit(audit, n);
+}
+
+// Tab stays inside the open dialog.
+function trapFocus(e) {
+  const box = document.querySelector("#card-dialog .dialog-box");
+  const items = [...box.querySelectorAll("a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled])")];
+  if (!items.length) { e.preventDefault(); return; }
+  const first = items[0], last = items[items.length - 1];
+  const active = document.activeElement;
+  const inside = box.contains(active);
+  if (e.shiftKey && (!inside || active === first)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (!inside || active === last)) { e.preventDefault(); first.focus(); }
+}
+
+document.getElementById("card-dialog-close").addEventListener("click", closeCardDialog);
+document.getElementById("card-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeCardDialog();
+});
+document.addEventListener("keydown", (e) => {
+  if (dialogCard === null) return;
+  if (e.key === "Escape") { e.preventDefault(); closeCardDialog(); }
+  else if (e.key === "Tab") trapFocus(e);
+});
 
 function renderRuns(runs) {
   const root = document.getElementById("runs");
@@ -2350,6 +2854,15 @@ function currentView() {
   return parseView(location.hash);
 }
 
+// "#connections" is not a routed view (it falls back to "panel" in parseView): it is an
+// in-page anchor to #connections-section, which render()/renderConnections() already show or
+// hide by the time this runs. A no-op when the section is hidden (no admin role) or absent.
+function scrollToConnectionsIfLinked() {
+  if (location.hash !== "#connections") return;
+  const section = document.getElementById("connections-section");
+  if (section && !section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function navRights() {
   if (!authState || authState.authenticated !== true) return null;
   return myRights() || { role: null };
@@ -2364,6 +2877,11 @@ function renderNav() {
     if (it.status === "soon") {
       a.setAttribute("aria-disabled", "true");
       a.append(el("span", t("soon"), "soon-badge"));
+    } else if (it.external) {
+      a.href = it.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      if (it.titleKey) a.title = t(it.titleKey);
     } else {
       a.href = "#" + it.id;
       if (it.id === view) a.setAttribute("aria-current", "page");
@@ -2422,6 +2940,15 @@ function renderSettings() {
   if (navRights()) root.append(roles);
   else root.append(el("p", t("settings.signInHint"), "sub"));
 
+  // The project's budget (ADR 0018): set here, per project, never in .tradvia.yml.
+  if (myRights()) {
+    const budget = el("div", null, "settings-section");
+    budget.id = "settings-budget";
+    budget.append(el("h3", t("budget.title")), el("p", t("loading"), "sub"));
+    root.append(budget);
+    loadBudgetSettings(budget);
+  }
+
   if (navRights()) {
     const notif = el("div", null, "settings-section");
     const h = el("h3", t("settings.notifications") + " ");
@@ -2438,6 +2965,69 @@ function renderSettings() {
       PREF_THEMES.map((v) => [v, t("theme." + v)]), (v) => setPref("theme", v)),
   );
   root.append(pref);
+}
+
+const BUDGET_FIELDS = [
+  ["monthly_usd", "budget.monthly", "0.01"], ["max_usd", "budget.maxUsd", "0.01"],
+  ["max_minutes", "budget.maxMinutes", "1"], ["max_steps", "budget.maxSteps", "1"],
+];
+
+async function loadBudgetSettings(box) {
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/settings/budget");
+  if (repo !== getRepo() || !box.isConnected) return;
+  box.replaceChildren(el("h3", t("budget.title")));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  drawBudgetSettings(box, res.data);
+}
+
+function drawBudgetSettings(box, b) {
+  box.append(el("p", t("budget.intro") + " " + b.project, "sub"));
+  const m = b.month || {};
+  const spent = typeof m.spent_usd === "number" ? "$" + m.spent_usd.toFixed(2) : "—";
+  box.append(el("p", t("budget.thisMonth") + ": " + spent +
+    (b.monthly_usd ? " / $" + b.monthly_usd + (m.level === "warn" ? " · " + t("budget.warn") :
+      m.level === "stop" ? " · " + t("budget.stop") : "") : " · " + t("budget.noCeiling"))));
+  if (b.file_budget_ignored) box.append(el("p", t("budget.fileIgnored"), "msg"));
+  const form = el("form", null, "budget-form");
+  const inputs = {};
+  for (const [key, label, step] of BUDGET_FIELDS) {
+    const row = el("label", null, "budget-row");
+    const input = el("input");
+    Object.assign(input, { type: "number", min: step, step, value: b[key] == null ? "" : b[key] });
+    if (key === "monthly_usd") input.placeholder = t("budget.noCeiling");
+    input.disabled = !b.can_edit;
+    inputs[key] = input;
+    row.append(el("span", t(label)), input);
+    form.append(row);
+  }
+  const err = el("div", null, "msg error"); err.hidden = true;
+  if (b.can_edit) {
+    const save = el("button", t("budget.save"));
+    save.type = "submit";
+    form.append(save);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      save.disabled = true; err.hidden = true;
+      const body = {};
+      for (const [key] of BUDGET_FIELDS) {
+        const v = inputs[key].value.trim();
+        body[key] = v === "" ? null : Number(v);
+      }
+      const res = await panelRequest("PUT", "/settings/budget", body);
+      save.disabled = false;
+      if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+      box.replaceChildren(el("h3", t("budget.title")));
+      drawBudgetSettings(box, res.data);
+      box.append(el("p", t("budget.saved"), "sub"));
+    });
+  }
+  box.append(form, err);
+  box.append(el("p", b.can_edit ? t("budget.note") : t("budget.readOnly"), "note"));
+  if (b.updated_by) {
+    box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
+      new Date(b.updated_at * 1000).toLocaleString(), "sub"));
+  }
 }
 
 function renderHelp() {
@@ -2488,12 +3078,16 @@ function render() {
   content.hidden = fetchState !== "ok" || !data;
   if (!content.hidden) {
     renderRecent();
-    const view = applyFilters(data, filters, Date.now());
+    // A card filter for a card the board does not hold would empty it: it is ignored, and the panel says so.
+    const missing = cardFilterMissing(filters, data.issues);
+    const view = applyFilters(data, missing ? { ...filters, card: null } : filters, Date.now());
     renderFilters();
     renderKpis(view);
     renderCharts(view);
     // Card states are derived from every PR and run, not only the filtered ones.
-    renderBoard(view.issues, data.prs, data.agentRuns, data.backlog);
+    renderBoard(view.issues, data.prs, data.agentRuns, data.backlog, data.runs);
+    showBoardNote(missing ? t("noteFilterCard").replace("{n}", String(filters.card)) : deepLinkNote());
+    renderCardDialog(false);
     renderDeploys();
     renderChat();
     loadChat();
@@ -2598,9 +3192,9 @@ document.getElementById("lang").addEventListener("change", (e) => {
   // Mirrors the choice under the plain key docs.html (a separate page) reads.
   try { localStorage.setItem("tradvia.lang", e.target.value); } catch (err) { /* ignore */ }
 });
-window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
+window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); scrollToConnectionsIfLinked(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; runsPage = 0; render(); });
-detectApi().then(() => { loadAuth(); return refresh(); });
+detectApi().then(() => { loadAuth(); return refresh(); }).then(scrollToConnectionsIfLinked);
 </script>
 </body>
 </html>

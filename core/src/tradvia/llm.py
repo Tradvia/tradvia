@@ -8,6 +8,10 @@ import json
 import os
 import re
 
+from .connections import redact
+
+EXCERPT_CHARS = 200
+
 ARCHITECT_PROMPT = """You are @Agent-Architect in a software team.
 Read the GitHub issue and propose the smallest change that solves it, as ONE new file.
 Answer ONLY with JSON, no markdown fences:
@@ -30,11 +34,51 @@ def _offline_plan(title: str, body: str, number: int) -> dict:
     }
 
 
-def _parse_json(text: str) -> dict:
+class PlanError(ValueError):
+    """A planner answer that cannot be used as a plan.
+
+    `reason` says what is wrong, `excerpt` quotes the text around the problem, and `answer`
+    is the whole answer, which the repair prompt quotes.
+    """
+
+    def __init__(self, reason: str, answer: str, excerpt: str):
+        self.reason, self.answer, self.excerpt = reason, answer, excerpt
+        super().__init__(f"{reason}. {excerpt}")
+
+
+def _candidate(text: str) -> str:
+    """The JSON object inside a planner answer: markdown fences and prose around it are dropped."""
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
     start, end = text.find("{"), text.rfind("}")
-    return json.loads(text[start:end + 1])
+    return text[start:end + 1]
+
+
+def answer_excerpt(text: str, pos: int | None = None) -> str:
+    """About EXCERPT_CHARS of `text`: around `pos` when given, else from its start."""
+    if not text.strip():
+        return "The answer was empty"
+    begin = 0 if pos is None else max(0, pos - EXCERPT_CHARS // 2)
+    quoted = " ".join(redact(text[begin:begin + EXCERPT_CHARS]).split())
+    lead = "…" if begin > 0 else ""
+    tail = "…" if begin + EXCERPT_CHARS < len(text) else ""
+    where = "Near the error" if pos is not None else "The answer began"
+    return f"{where}: «{lead}{quoted}{tail}»"
+
+
+def parse_answer(text: str, what: str) -> dict:
+    """The JSON object of a planner answer; when it is not JSON, PlanError says what came back."""
+    answer = text or ""
+    candidate = _candidate(answer)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as e:
+        excerpt = answer_excerpt(candidate, e.pos) if candidate else answer_excerpt(answer)
+        raise PlanError(f"{what} is not valid JSON: {e}", answer, excerpt) from None
+
+
+def _parse_json(text: str) -> dict:
+    return json.loads(_candidate(text))
 
 
 def architect_plan(title: str, body: str, number: int) -> dict:
@@ -52,7 +96,8 @@ def architect_plan(title: str, body: str, number: int) -> dict:
                   {"role": "user", "content": f"Issue #{number}: {title}\n\n{body}"}],
         max_tokens=2000,
     )
-    plan = _parse_json(resp.choices[0].message.content)
+    content = resp.choices[0].message.content or ""
+    plan = parse_answer(content, "Planner response")
     usage = getattr(resp, "usage", None)
     try:
         usd = float(litellm.completion_cost(completion_response=resp))
@@ -66,5 +111,6 @@ def architect_plan(title: str, body: str, number: int) -> dict:
     }
     for key in ("file_path", "file_content", "question"):
         if not plan.get(key):
-            raise ValueError(f"Planner response is missing '{key}'")
+            raise PlanError(f"Planner response is missing '{key}'", content,
+                            answer_excerpt(content))
     return plan

@@ -17,10 +17,11 @@ from langgraph.types import Command
 from .checkpoints import LOCAL_PROJECT_ID, fork, list_checkpoints, make_checkpointer, thread_config
 from .agents import PROVIDERS as CODING_AGENTS, make_agent
 from .claude_code import ClaudeCodeExecutor, claude_code_plan
+from .budget import store_month_spend
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 from .llm import _offline_plan, architect_plan
-from .policy import Policy, PolicyError, load_policy, role_of
+from .policy import Policy, PolicyError, load_policy, role_of, with_budget
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -85,6 +86,32 @@ def project_id_of(repo: str) -> int:
     return PgStore(url).ensure_project(repo)
 
 
+def project_budget_setting(repo: str) -> object:
+    """The project's budget setting (ADR 0018) from the store; None without a database, which
+    means the defaults: per-card limits of Budget() and no monthly ceiling. Raises if a database
+    is configured but cannot be read, so a card never runs past the project's own limits."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    from .budget import SETTINGS_KEY
+    from .store import PgStore
+
+    store = PgStore(url)
+    row = store.get_setting(store.ensure_project(repo), SETTINGS_KEY)
+    return row["value"] if row else None
+
+
+def make_month_spend(repo: str):
+    """Callable with this month's spend of the project; None without a database (no history)."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    from .store import PgStore
+
+    store = PgStore(url)
+    return lambda: store_month_spend(store, store.ensure_project(repo))
+
+
 def _durable_command(argv: list[str], name: str) -> None:
     parser = argparse.ArgumentParser(prog=f"tradvia {name}")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
@@ -123,6 +150,13 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         github.comment(issue, f"Invalid .tradvia.yml on {github.base}: {e}. "
                               "The card was not started.")
         return not_started
+    try:
+        policy = with_budget(policy, project_budget_setting(env("TRADVIA_REPO")))
+    except Exception as e:  # never run without the project's own limits once a store exists
+        github.comment(issue, f"Could not read this project's budget from Tradvia "
+                              f"({type(e).__name__}). The card was not started; restart it once "
+                              "the store is reachable.")
+        return not_started
 
     actor = os.getenv("TRADVIA_ACTOR")
     if actor and not policy.allows("start_card", role_of(github, actor)):
@@ -134,7 +168,8 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     repo = env("TRADVIA_REPO")
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor(
         repeat_limit=policy.stagnation.repeat_limit, project_id=github.repo),
-                      checkpointer=make_checkpointer(), policy=policy, budget=policy.budget)
+                      checkpointer=make_checkpointer(), policy=policy, budget=policy.budget,
+                      month_spend=make_month_spend(repo))
 
     # Checkpoints and usage are keyed by project (repository) and never cross projects.
     config = thread_config(project_id_of(repo), repo, issue)
@@ -207,6 +242,8 @@ def main() -> None:
     print("history:")
     for h in card.get("history", []):
         print(f"  {h['at']}  {h['from']:>13} -> {h['to']:<13} by {h['by']}: {h['reason']}")
+    if card.get("plan_error"):  # no plan was published: fail the run, so Actions shows it red
+        sys.exit(f"Planning failed: {card['plan_error']}")
 
 
 if __name__ == "__main__":
