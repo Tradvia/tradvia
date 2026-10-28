@@ -43,6 +43,10 @@ the owner. What is missing is a way for those agents to use the same tools.
    token of role `read` cannot use the agent tools: reads need the role of starting a card
    (`triage`). Adjusting a plan needs `write`, as in the panel.
 4. **The allow-list is closed.**
+   - Collaboration (added with the first users): `read_briefing`, `claim_card`,
+     `release_card`, `comment_card`. A claim names the person and the agent (provider, model,
+     specialties), is exclusive until released, and uses the label `agent:claimed`, which no
+     workflow listens to, so Tradvia's own agent never runs on a claimed card.
    - Available to agents: `read_backlog`, `read_cards`, `read_card`, `read_plan`,
      `read_pulls`, `read_pull`, `read_checks`, `read_deploys`, `create_card`, `start_card`,
      and `reply_plan` with the decision `adjust` only.
@@ -88,6 +92,7 @@ the owner. What is missing is a way for those agents to use the same tools.
 | Capability | Status |
 |---|---|
 | Agent tools through the token API (read, create, start, adjust a plan) | In progress: offline tests only |
+| Collaboration tools (briefing, claim with agent identity, release, progress) and `AGENTS.md` | In progress: offline tests; the panel does not show claims yet |
 | stdio server (`tradvia mcp`) | In progress: offline tests; Claude Code CLI connected against a local API; not yet against production |
 | HTTP endpoint (`/mcp`) for URL clients | In progress: offline tests and `curl` against a local API; not yet run with Manus |
 | `review_pr` for agents | Planned: needs its own decision |

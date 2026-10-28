@@ -52,6 +52,7 @@ class AgentClient:
 
             http = requests
         self.token = token
+        self.client_name: str | None = None  # from `initialize` (clientInfo), names the agent
         self.base = f"{base_url.rstrip('/')}/api/projects/{project}/agent"
         self.http = http
 
@@ -101,6 +102,10 @@ def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
 
 def _dispatch(method: str, params: dict[str, Any], client: AgentClient) -> dict[str, Any]:
     if method == "initialize":
+        info = params.get("clientInfo")
+        if isinstance(info, dict) and isinstance(info.get("name"), str):
+            version = info.get("version") if isinstance(info.get("version"), str) else ""
+            client.client_name = f"{info['name']} {version}".strip()[:60]
         asked = params.get("protocolVersion")
         return {"protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                 "capabilities": {"tools": {"listChanged": False}},
@@ -113,6 +118,8 @@ def _dispatch(method: str, params: dict[str, Any], client: AgentClient) -> dict[
         name, args = params.get("name"), params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(args, dict):
             raise _RpcError(INVALID_PARAMS, "tools/call needs a name and an arguments object")
+        if name == "claim_card" and not args.get("agent") and client.client_name:
+            args = {**args, "agent": client.client_name}  # who took the card, if not said
         try:
             result = client.call(name, args)
         except ToolFailed as e:  # a failed tool is a result with isError, not a protocol error
