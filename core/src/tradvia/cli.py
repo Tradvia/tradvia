@@ -17,6 +17,7 @@ from langgraph.types import Command
 from .checkpoints import LOCAL_PROJECT_ID, fork, list_checkpoints, make_checkpointer, thread_config
 from .agents import PROVIDERS as CODING_AGENTS, make_agent
 from .claude_code import ClaudeCodeExecutor, claude_code_plan
+from .budget import store_month_spend
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 from .llm import _offline_plan, architect_plan
@@ -85,6 +86,17 @@ def project_id_of(repo: str) -> int:
     return PgStore(url).ensure_project(repo)
 
 
+def make_month_spend(repo: str):
+    """Callable with this month's spend of the project; None without a database (no history)."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    from .store import PgStore
+
+    store = PgStore(url)
+    return lambda: store_month_spend(store, store.ensure_project(repo))
+
+
 def _durable_command(argv: list[str], name: str) -> None:
     parser = argparse.ArgumentParser(prog=f"tradvia {name}")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number")
@@ -134,7 +146,8 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     repo = env("TRADVIA_REPO")
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor(
         repeat_limit=policy.stagnation.repeat_limit, project_id=github.repo),
-                      checkpointer=make_checkpointer(), policy=policy, budget=policy.budget)
+                      checkpointer=make_checkpointer(), policy=policy, budget=policy.budget,
+                      month_spend=make_month_spend(repo))
 
     # Checkpoints and usage are keyed by project (repository) and never cross projects.
     config = thread_config(project_id_of(repo), repo, issue)
@@ -201,6 +214,8 @@ def main() -> None:
     print("history:")
     for h in card.get("history", []):
         print(f"  {h['at']}  {h['from']:>13} -> {h['to']:<13} by {h['by']}: {h['reason']}")
+    if card.get("plan_error"):  # no plan was published: fail the run, so Actions shows it red
+        sys.exit(f"Planning failed: {card['plan_error']}")
 
 
 if __name__ == "__main__":

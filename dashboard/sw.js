@@ -8,12 +8,16 @@ const LABELS = {
   pt: {
     plan_ready: "plano pronto para aprovar", agent_question: "o agente fez uma pergunta",
     pr_opened: "PR aberto para revisão", budget_limit: "limite de orçamento atingido",
-    adjust_limit: "limite de ajustes atingido", fallback: "um card precisa de você",
+    adjust_limit: "limite de ajustes atingido", deploy_stuck: "deploy parado aguardando aprovação",
+    cost_outlier: "custo muito acima do normal", run_dead: "execução sem atualização",
+    fallback: "um card precisa de você",
   },
   en: {
     plan_ready: "plan ready to approve", agent_question: "the agent asked a question",
     pr_opened: "pull request ready for review", budget_limit: "budget limit reached",
-    adjust_limit: "adjustment limit reached", fallback: "a card needs you",
+    adjust_limit: "adjustment limit reached", deploy_stuck: "deploy stuck waiting for approval",
+    cost_outlier: "cost far above normal", run_dead: "run without updates",
+    fallback: "a card needs you",
   },
 };
 

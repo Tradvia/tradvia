@@ -27,6 +27,11 @@ budget:
   max_minutes: 30          # minutes of agent work
   max_steps: 40            # planner/executor iterations + reported tool calls
   max_usd: 5.0             # estimated cost (API-equivalent)
+  # Optional project ceiling per UTC month (plans + executor, same sums as the panel). No
+  # default: leave it out for no ceiling. Invalid values (text, 0, negative) are ignored, never
+  # a hidden ceiling. At 80% a warning is posted; at 100% no new card starts (a card already
+  # running finishes its own per-card budget).
+  # monthly_usd: 100
 
 # Default provider and model per role (ADR 0009). What an admin sets on the Connections
 # screen overrides these, per project. Roles: planner, executor, reviewer, orchestrator.

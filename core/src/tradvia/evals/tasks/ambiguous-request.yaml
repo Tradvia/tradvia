@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+id: ambiguous-request
+title: Make it better
+body: The dashboard is not good enough. Improve it.
+expect:
+  min_steps: 1
+  max_steps: 3
+  must_mention: ["?"]
+  forbidden_paths: [LICENSE.md, .github/]
