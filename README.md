@@ -168,6 +168,9 @@ it in the thread, and the agent opens the pull request. See
       approval gates in chat *(in progress)*
       Robustness stage *(in progress)*: command, credential and personal-data
       guardrails on cards and pull requests, regex only, Partial (ADR 0015)
+  - Stage 3 (robustness) — evals harness with golden tasks and per-model/prompt
+    regression: **Partial** (offline with a scripted model via `make evals`;
+    real model is manual only, `TRADVIA_EVALS_LIVE=1`)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose
