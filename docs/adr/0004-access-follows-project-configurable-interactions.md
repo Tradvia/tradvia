@@ -31,7 +31,8 @@ repository), but configuration can never **widen** it.
 ### 2. Interactions have a configurable minimum role
 
 Anything that changes state is an *interaction*. Each one has a minimum
-GitHub role, configured per project in `.tradvia.yml` at the repository root.
+GitHub role, configured per project. First in `.tradvia.yml` at the repository root; since
+ADR 0018 on Tradvia (Settings, Project roles and risk), and the file's section is ignored.
 Roles follow GitHub's order: `read < triage < write < maintain < admin`.
 Identity is always the person's GitHub account. Tradvia keeps no users or
 passwords of its own.
@@ -61,6 +62,9 @@ budget:                    # per-card execution limits (ADR 0006)
   max_steps: 40
   max_usd: 5.0
 ```
+
+The `interactions` section above, and the `risk` section of ADR 0006, are superseded the same
+way by ADR 0018: they are the project's setting on Tradvia, changed by an admin only.
 
 `.tradvia.yml` also had a `budget` section (execution budgets per card, ADR 0006).
 Superseded by ADR 0018: budgets are now a setting of the project on Tradvia (Settings, Project

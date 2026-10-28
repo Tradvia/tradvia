@@ -71,6 +71,9 @@ class Policy:
     monthly_usd: float | None = None  # project ceiling per UTC month; None = no ceiling
     # True when `.tradvia.yml` still has a `budget` section: ignored, and the panel says so.
     file_budget_ignored: bool = False
+    # Sections of `.tradvia.yml` that live on Tradvia now and were found (and ignored) in the
+    # file: "interactions" and/or "risk" (ADR 0018). The Settings screen says so.
+    file_policy_ignored: tuple[str, ...] = ()
     # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
     providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -198,8 +201,71 @@ def role_of(github: RoleSource, login: str | None) -> str | None:
 
 
 def load_policy(github: RoleSource) -> Policy:
-    """Read .tradvia.yml from the default branch only (never a PR branch or the working tree)."""
-    return parse_policy(github.get_file(POLICY_FILE, github.base))
+    """Read .tradvia.yml from the default branch only (never a PR branch or the working tree).
+
+    Roles per interaction and the risk policy are not read from it (ADR 0018): they are the
+    project's setting on Tradvia, applied with `with_policy_setting`.
+    """
+    return file_policy(github.get_file(POLICY_FILE, github.base))
+
+
+# --- roles and risk as the project's setting (ADR 0018) --------------------------------------
+
+POLICY_SETTING = "policy"
+PROJECT_SECTIONS = ("interactions", "risk")
+
+
+def file_policy(text: str | None) -> Policy:
+    """The policy of `.tradvia.yml` without the sections that live on Tradvia, which are ignored
+    (even when invalid) and named in `file_policy_ignored`. Everything else is validated as before."""
+    try:
+        data = yaml.safe_load(text) if text else None
+    except yaml.YAMLError as e:
+        raise PolicyError(f"invalid YAML: {e}") from e
+    if not isinstance(data, dict):
+        return parse_policy(text)
+    ignored = tuple(k for k in PROJECT_SECTIONS if k in data)
+    rest = {k: v for k, v in data.items() if k not in PROJECT_SECTIONS}
+    policy = parse_policy(yaml.safe_dump(rest) if rest else None)
+    from dataclasses import replace
+
+    return replace(policy, file_policy_ignored=ignored)
+
+
+def validate_policy_setting(data: object) -> dict[str, dict[str, str]]:
+    """The roles and risk setting to store, or PolicyError with a message safe to show.
+
+    Same rules as the file had: known keys only, a role of ROLES for each interaction,
+    'free' or a role for each risk level, and `manage_connections` fixed to admin. Missing keys
+    take the ADR 0004 defaults.
+    """
+    if not isinstance(data, dict):
+        raise PolicyError("send an object with 'interactions' and 'risk'")
+    unknown = sorted(str(k) for k in data if k not in PROJECT_SECTIONS)
+    if unknown:
+        raise PolicyError(f"unknown key(s): {', '.join(unknown)}")
+    policy = parse_policy(yaml.safe_dump({k: data[k] for k in PROJECT_SECTIONS if k in data}))
+    return policy_setting_view(policy)
+
+
+def policy_setting_view(policy: Policy) -> dict[str, dict[str, str]]:
+    return {"interactions": {f.name: getattr(policy.interactions, f.name) for f in fields(Interactions)},
+            "risk": {level: getattr(policy.risk, level) for level in RISK_LEVELS}}
+
+
+def with_policy_setting(policy: Policy, value: object) -> Policy:
+    """`policy` with the project's roles and risk in force. A missing or unreadable value keeps
+    the ADR 0004 defaults; never raises."""
+    from dataclasses import replace
+
+    if value is None:
+        return policy
+    try:
+        clean = validate_policy_setting(value)
+    except PolicyError:
+        return policy
+    return replace(policy, interactions=Interactions(**clean["interactions"]),
+                   risk=RiskPolicy(**clean["risk"]))
 
 
 def with_budget(policy: Policy, setting: object) -> Policy:

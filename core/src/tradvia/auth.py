@@ -24,7 +24,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import requests
 
 from .actions import GitHubError
-from .policy import ROLES, Policy, load_policy, role_from_github, role_of, role_rank
+from .policy import POLICY_SETTING, Policy, ROLES, load_policy, role_from_github, role_of, role_rank, with_policy_setting
 from .store import Store
 
 SESSION_COOKIE = "__Host-tradvia_session"
@@ -814,10 +814,19 @@ class Auth:
         if token is None:
             raise PolicyUnreadable(UNREADABLE_POLICY)
         policy = load_policy(_UserRoles(self.github, token, repo))
+        # Roles and risk are the project's setting on Tradvia (ADR 0018), per project. A store
+        # that cannot be read raises, and every caller fails closed.
+        row = self.store.get_setting(self.store.ensure_project(repo), POLICY_SETTING)
+        policy = with_policy_setting(policy, row["value"] if row else None)
         if len(self._policies) > 1000:
             self._policies.clear()
         self._policies[key] = (now, policy)
         return policy
+
+    def forget_policies(self, repo: str) -> None:
+        """Drop cached policies of `repo` (its settings changed), for every session."""
+        for key in [k for k in self._policies if k[1] == repo]:
+            del self._policies[key]
 
     def can(self, session: Session, repo: str, interaction: str, fresh: bool = True) -> Access:
         """Role, policy and whether the role meets the minimum for `interaction`."""
