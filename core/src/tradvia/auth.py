@@ -49,6 +49,11 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 API_TOKEN_PREFIX = "tvt_"
 API_TOKEN_DEFAULT_DAYS = 30
 API_TOKEN_MAX_DAYS = 90
+# ADR 0014: an `agent` token works cards; a `manager` token is an AI manager below the owner.
+TOKEN_KINDS = ("agent", "manager")
+# What the owner may let an AI manager do beyond its base, one grant each. Merge, deploy, budget,
+# connections and roles are not grantable at all.
+GRANTABLE = ("reorder_backlog", "approve_plan")
 _API_TOKEN_RE = re.compile(API_TOKEN_PREFIX + r"[A-Za-z0-9_-]{43}")
 
 
@@ -644,13 +649,18 @@ class Auth:
 
     # API tokens (ADR 0009)
     def create_api_token(
-        self, session: Session, repo: str, role: str, ttl_days: int
+        self, session: Session, repo: str, role: str, ttl_days: int, kind: str = "agent"
     ) -> tuple[int, str, float]:
         """New token for the signed-in user in one project. Returns `(id, token, expires_at)`.
 
         The token is shown once; only its hash is stored. It can never exceed the role the
-        user has in `repo` right now.
+        user has in `repo` right now. A `manager` token (ADR 0014) is an AI manager: only an
+        admin of the project makes one, and it always has the role `write`.
         """
+        if kind not in TOKEN_KINDS:
+            raise AuthError(f"kind must be one of {', '.join(TOKEN_KINDS)}")
+        if kind == "manager":
+            role = "write"
         if role not in ROLES:
             raise AuthError(f"role must be one of {', '.join(ROLES)}")
         if not 1 <= ttl_days <= API_TOKEN_MAX_DAYS:
@@ -660,15 +670,60 @@ class Auth:
             raise AuthError(f"You have no access to {repo}.", 403)
         if role_rank(role) > role_rank(own):
             raise AuthError(f"Your role in {repo} is '{own}': a token cannot have '{role}'.", 403)
+        if kind == "manager" and own != "admin":
+            raise AuthError("Only an admin of the project makes an AI manager token.", 403)
         now = self.now()
         raw = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
         expires_at = now + ttl_days * 86400
         token_id = self.store.create_api_token({
             "login": session.login, "project_id": self.store.ensure_project(repo), "role": role,
             "token_hash": hash_token(raw), "token_enc": session.rec["token_enc"],
-            "created_at": now, "expires_at": expires_at,
+            "created_at": now, "expires_at": expires_at, "kind": kind,
         })
         return token_id, raw, expires_at
+
+    # AI manager grants (ADR 0014)
+    def _own_manager_token(self, session: Session, repo: str, token_id: int) -> dict[str, Any]:
+        """The caller's own active manager token in `repo`, or AuthError. Only an admin."""
+        if self.role_of(session, repo) != "admin":
+            raise AuthError("Only an admin of the project grants or revokes an AI manager's "
+                            "permissions.", 403)
+        pid = self.store.ensure_project(repo)
+        tok = next((t for t in self.store.list_api_tokens(session.login, pid)
+                    if t["id"] == token_id), None)
+        if tok is None:
+            raise AuthError("Token not found.", 404)
+        if tok.get("kind") != "manager":
+            raise AuthError("Permissions are granted only to an AI manager token.", 400)
+        if tok["revoked_at"] is not None or tok["expires_at"] <= self.now():
+            raise AuthError("This token is expired or revoked.", 400)
+        return tok
+
+    def grant(self, session: Session, repo: str, token_id: int, permission: str,
+              ttl_days: int) -> tuple[int, float]:
+        """Lets one AI manager do one more thing for up to `ttl_days` (never past the token).
+        Returns `(grant_id, expires_at)`."""
+        if permission not in GRANTABLE:
+            raise AuthError(f"permission must be one of {', '.join(GRANTABLE)}")
+        if not 1 <= ttl_days <= API_TOKEN_MAX_DAYS:
+            raise AuthError(f"expires_in_days must be between 1 and {API_TOKEN_MAX_DAYS}")
+        tok = self._own_manager_token(session, repo, token_id)
+        now = self.now()
+        expires_at = min(now + ttl_days * 86400, tok["expires_at"])
+        grant_id = self.store.create_grant({
+            "token_id": token_id, "permission": permission, "granted_by": session.login,
+            "created_at": now, "expires_at": expires_at})
+        return grant_id, expires_at
+
+    def revoke_grant(self, session: Session, repo: str, token_id: int, grant_id: int) -> bool:
+        self._own_manager_token(session, repo, token_id)
+        return self.store.revoke_grant(grant_id, token_id, self.now())
+
+    def active_grants(self, token_id: int) -> frozenset[str]:
+        """The permissions an AI manager holds right now: granted, not expired, not revoked."""
+        now = self.now()
+        return frozenset(g["permission"] for g in self.store.list_grants(token_id)
+                         if g["revoked_at"] is None and g["expires_at"] > now)
 
     def revoke_api_token(self, session: Session, repo: str, token_id: int) -> bool:
         pid = self.store.ensure_project(repo)
@@ -690,7 +745,8 @@ class Auth:
         session_rec = {
             "id": f"api-token:{rec['id']}", "login": rec["login"], "token_enc": rec["token_enc"],
             "role_cache": {}, "expires_at": rec["expires_at"], "last_used_at": now,
-            "api_token": {"project_id": rec["project_id"], "role": rec["role"]},
+            "api_token": {"project_id": rec["project_id"], "role": rec["role"],
+                          "id": rec["id"], "kind": rec.get("kind") or "agent"},
         }
         return Session(raw, session_rec, max(1, int(rec["expires_at"] - now)))
 

@@ -221,6 +221,9 @@
   .agentc code.tok { overflow-wrap: anywhere; word-break: break-all; font-size: 12px; flex: 1 1 200px; min-width: 0; }
   .agentc .tablewrap { overflow-x: auto; max-width: 100%; }
   .agentc table { border-collapse: collapse; font-size: 12px; }
+  .agentc tr.grants td { padding-left: 24px; }
+  .agentc .grant { display: inline-flex; gap: 4px; align-items: center; margin-right: 10px; }
+  .agentc tr.grants input { width: 4em; }
   .agentc td, .agentc th { padding: 3px 8px; border-bottom: 1px solid var(--line); text-align: left; }
   .conn .roles { display: grid; gap: 6px; }
   .conn .role { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
@@ -1949,6 +1952,10 @@ const I18N = {
     agentInstall: "Instale o comando tradvia a partir de um checkout do repositório: pip install ./core",
     agentHttp: "MCP por HTTP (agentes na nuvem, como Manus)", agentMine: "Meus tokens neste projeto",
     agentNone: "Nenhum token ainda.", agentRevoke: "Revogar", agentActive: "ativo", agentInactive: "expirado ou revogado",
+    agentKind: "Tipo", kindAgent: "agente", kindManager: "IA gestora",
+    managerHelp: "IA gestora (só admin): acompanha e organiza pessoas e agentes — lê tudo, comenta, cria, inicia e pega cards, ajusta planos. Aprovar planos e reordenar o backlog só com a sua permissão, por prazo; merge, deploy, orçamento, conexões e papéis nunca.",
+    managerGrants: "Permissões concedidas", grantGive: "Conceder", grantDays: "dias", grantFor: "por",
+    perm_approve_plan: "aprovar planos", perm_reorder_backlog: "reordenar o backlog",
     agentExpires: "expira", agentRoleHelp: "triage lê, pega e comenta cards; write também ajusta planos. Nunca passa do seu papel.",
     connections: "Conexões", connRoles: "Provedor e modelo por papel", connProviders: "Provedores e segredos",
     role_planner: "Planejador", role_executor: "Executor", role_reviewer: "Revisor", role_orchestrator: "Orquestrador",
@@ -2081,6 +2088,10 @@ const I18N = {
     agentInstall: "Install the tradvia command from a checkout of the repository: pip install ./core",
     agentHttp: "MCP over HTTP (cloud agents such as Manus)", agentMine: "My tokens in this project",
     agentNone: "No token yet.", agentRevoke: "Revoke", agentActive: "active", agentInactive: "expired or revoked",
+    agentKind: "Kind", kindAgent: "agent", kindManager: "AI manager",
+    managerHelp: "AI manager (admins only): follows and organizes people and agents — reads everything, comments, creates, starts and takes cards, adjusts plans. Approving plans and reordering the backlog only with your grant, for a set time; merge, deploy, budget, connections and roles never.",
+    managerGrants: "Granted permissions", grantGive: "Grant", grantDays: "days", grantFor: "for",
+    perm_approve_plan: "approve plans", perm_reorder_backlog: "reorder the backlog",
     agentExpires: "expires", agentRoleHelp: "triage reads, takes and comments on cards; write also adjusts plans. Never above your own role.",
     connections: "Connections", connRoles: "Provider and model per role", connProviders: "Providers and secrets",
     role_planner: "Planner", role_executor: "Executor", role_reviewer: "Reviewer", role_orchestrator: "Orchestrator",
@@ -3036,19 +3047,30 @@ function drawAgentConnect(root) {
   days.setAttribute("aria-label", t("agentDays"));
   const go = el("button", t("agentCreate"));
   go.type = "submit";
+  // ADR 0014: an admin can make an AI manager token (role write, extra powers only by grant).
+  const kind = el("select");
+  kind.setAttribute("aria-label", t("agentKind"));
+  [["agent", t("kindAgent")], ["manager", t("kindManager")]].forEach(([v, label]) => {
+    const o = el("option", label); o.value = v; kind.append(o);
+  });
+  kind.addEventListener("change", () => { role.disabled = kind.value === "manager"; if (role.disabled) role.value = "write"; });
+  if (st.can_make_manager) form.append(el("span", t("agentKind"), "sub"), kind);
   form.append(el("span", t("agentRole"), "sub"), role, el("span", t("agentDays"), "sub"), days, go);
   const err = el("div", null, "msg error action-error"); err.hidden = true;
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     go.disabled = true; err.hidden = true;
-    const res = await panelRequest("POST", "/tokens", { role: role.value, expires_in_days: Number(days.value) });
+    const res = await panelRequest("POST", "/tokens", { role: role.value, expires_in_days: Number(days.value),
+                                                        kind: st.can_make_manager ? kind.value : "agent" });
     go.disabled = false;
     if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
     agentFresh = res.data.token;
     agentState = null;
     renderAgentConnect();
   });
-  root.append(form, el("div", t("agentRoleHelp"), "sub"), err);
+  root.append(form, el("div", t("agentRoleHelp"), "sub"));
+  if (st.can_make_manager) root.append(el("div", t("managerHelp"), "sub"));
+  root.append(err);
   if (agentFresh) {
     const box = el("div", null, "secret");
     box.append(el("div", t("agentOnce"), "msg"));
@@ -3070,7 +3092,8 @@ function drawAgentConnect(root) {
   st.tokens.forEach((tk) => {
     const tr = el("tr");
     const when = new Date(tk.expires_at * 1000).toLocaleDateString();
-    tr.append(el("td", "#" + tk.id), el("td", tk.role), el("td", t("agentExpires") + " " + when),
+    tr.append(el("td", "#" + tk.id), el("td", tk.kind === "manager" ? t("kindManager") : tk.role),
+              el("td", t("agentExpires") + " " + when),
               el("td", tk.active ? t("agentActive") : t("agentInactive")));
     const td = el("td");
     if (tk.active) {
@@ -3087,10 +3110,52 @@ function drawAgentConnect(root) {
     }
     tr.append(td);
     table.append(tr);
+    if (tk.kind === "manager" && tk.active && st.can_make_manager) table.append(grantRow(tk, err));
   });
   const wrap = el("div", null, "tablewrap");
   wrap.append(table);
   root.append(wrap);
+}
+
+// The permissions an admin grants an AI manager beyond its base (ADR 0014), each one with its
+// own expiry and revocable at once.
+function grantRow(tk, err) {
+  const tr = el("tr", null, "grants");
+  const td = el("td");
+  td.colSpan = 5;
+  td.append(el("span", t("managerGrants") + ": ", "sub"));
+  const days = el("input");
+  Object.assign(days, { type: "number", min: 1, max: agentState.max_days, value: 7 });
+  days.setAttribute("aria-label", t("grantDays"));
+  td.append(el("span", t("grantFor") + " ", "sub"), days, el("span", " " + t("grantDays") + " · ", "sub"));
+  for (const perm of agentState.grantable) {
+    const g = (tk.grants || []).find((x) => x.permission === perm && x.active);
+    const box = el("span", null, "grant");
+    box.append(el("span", t("perm_" + perm) + " "));
+    const b = el("button");
+    b.type = "button";
+    if (g) {
+      box.append(el("span", "(" + t("agentExpires") + " " + new Date(g.expires_at * 1000).toLocaleDateString() + ") ", "sub"));
+      b.textContent = t("agentRevoke");
+      b.addEventListener("click", () => grantAction(b, err, "DELETE", "/tokens/" + tk.id + "/grants/" + g.id));
+    } else {
+      b.textContent = t("grantGive");
+      b.addEventListener("click", () => grantAction(b, err, "POST", "/tokens/" + tk.id + "/grants",
+        { permission: perm, expires_in_days: Number(days.value) }));
+    }
+    box.append(b);
+    td.append(box, document.createTextNode(" "));
+  }
+  tr.append(td);
+  return tr;
+}
+
+async function grantAction(button, err, method, path, body) {
+  button.disabled = true;
+  const res = await panelRequest(method, path, body);
+  if (!res.ok) { button.disabled = false; err.textContent = res.error; err.hidden = false; return; }
+  agentState = null;
+  renderAgentConnect();
 }
 
 async function renderAgentConnect() {

@@ -69,6 +69,24 @@ card. A token never has more power than its owner has in the project.
 Keep the token out of git. Put it in `TRADVIA_TOKEN` or in your client's secret store.
 Revoke it with `tradvia token revoke --project owner/repo ID`.
 
+## An AI manager (admins only)
+
+An admin can make a token of kind **AI manager** ("IA gestora") on the Connect my AI screen
+([ADR 0014](adr/0014-ai-manager-below-the-owner.md)). It works below the owner:
+
+- **Base:** everything an agent does here: read everything, comment, create, start and take
+  cards, adjust plans. Its `read_briefing` says it is a manager.
+- **Only with your grant, for a set time:** approve or reject plans (`reply_plan` with `approve`
+  or `reject`) and reorder the backlog (`reorder_backlog`). Grant and revoke each one on the same
+  screen; a grant lasts at most 90 days and never past the token, and revoking takes effect on
+  the next call.
+- **Never:** merge, deploy, budget, connections, roles or invitations. Those stay pending items
+  for a person.
+
+From a terminal: `POST /api/projects/{owner}/{repo}/tokens` with `{"kind": "manager"}`, then
+`POST .../tokens/{id}/grants` with `{"permission": "approve_plan", "expires_in_days": 7}` and
+`DELETE .../tokens/{id}/grants/{grant_id}`, all with a signed-in admin session.
+
 ## Option A: stdio (a client on your machine)
 
 Install the `tradvia` command from a checkout of this repository:

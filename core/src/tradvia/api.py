@@ -58,6 +58,7 @@ from .actions import (
     required_checks,
 )
 from .auth import (
+    GRANTABLE,
     API_TOKEN_DEFAULT_DAYS,
     API_TOKEN_MAX_DAYS,
     CSRF_HEADER,
@@ -104,7 +105,8 @@ TOKEN_ACTIONS = ("create_card", "start_card")
 # The policy interaction each agent tool needs (ADR 0012). Reads have none of their own and need
 # the triage floor of starting a card; adjusting a plan needs `write`, as in the panel.
 AGENT_INTERACTION = {"create_card": "start_card", "start_card": "start_card",
-                     "reply_plan": "approve_plan"}
+                     "reply_plan": "approve_plan", "reorder_backlog": "start_card",
+                     "approve_plan": "approve_plan", "reject_plan": "approve_plan"}
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -1408,9 +1410,12 @@ def create_app(
                 return private(JSONResponse({"error": "invalid json"}, status_code=400))
             days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
             role = data.get("role", "triage")
-            if isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str):
+            kind = data.get("kind", "agent")
+            if (isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str)
+                    or not isinstance(kind, str)):
                 return private(JSONResponse(
-                    {"error": "role must be text and expires_in_days a number"}, status_code=400))
+                    {"error": "role and kind must be text and expires_in_days a number"},
+                    status_code=400))
 
             def work() -> Outcome:
                 pid = project_id_of(repo)
@@ -1422,15 +1427,16 @@ def create_app(
                         record_audit(pid, session.login, "revoke_token", None, "ok",
                                      f"token={number}", None)
                         return Outcome(200, {"ok": True})
-                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days)
+                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days, kind)
                 except AuthError as e:
                     record_audit(pid, session.login, "create_token", None, "denied", str(e), None)
                     return Outcome(e.status, {"error": str(e)})
+                role_set = "write" if kind == "manager" else role
                 record_audit(pid, session.login, "create_token", None, "ok",
-                             f"token={token_id} role={role} days={days}", None)
+                             f"token={token_id} kind={kind} role={role_set} days={days}", None)
                 return Outcome(201, {
-                    "id": token_id, "token": raw, "role": role, "expires_at": expires_at,
-                    "login": session.login, "project": repo,
+                    "id": token_id, "token": raw, "role": role_set, "kind": kind,
+                    "expires_at": expires_at, "login": session.login, "project": repo,
                 })
 
             try:
@@ -1455,13 +1461,19 @@ def create_app(
             if role is None:
                 return Outcome(403, {"error": f"You have no access to {repo}."})
             now = auth.now()
-            tokens = [{**t, "active": t["revoked_at"] is None and t["expires_at"] > now}
-                      for t in db.list_api_tokens(session.login, project_id_of(repo))]
+            tokens = []
+            for t in db.list_api_tokens(session.login, project_id_of(repo)):
+                row = {**t, "active": t["revoked_at"] is None and t["expires_at"] > now}
+                if t.get("kind") == "manager":
+                    row["grants"] = [{**g, "active": g["revoked_at"] is None and g["expires_at"] > now}
+                                     for g in db.list_grants(t["id"])]
+                tokens.append(row)
             return Outcome(200, {
                 "login": session.login, "project": repo, "role": role,
                 "roles": [r for r in ROLES if role_rank(r) <= role_rank(role)],
                 "default_days": API_TOKEN_DEFAULT_DAYS, "max_days": API_TOKEN_MAX_DAYS,
                 "mcp_http": f"/api/projects/{repo}/mcp", "tokens": tokens,
+                "can_make_manager": role == "admin", "grantable": list(GRANTABLE),
             })
 
         try:
@@ -1527,6 +1539,58 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    def grant_route(revoke: bool) -> Callable[[Request], Any]:
+        """Grant or revoke one permission of an AI manager token (ADR 0014): an admin's session
+        only (cookie + CSRF), never a bearer token, and only on the admin's own manager token."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            try:
+                data = {} if revoke else await request.json()
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            token_id = request.path_params["token_id"]
+            permission = data.get("permission")
+            days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
+            if not revoke and (not isinstance(permission, str) or isinstance(days, bool)
+                               or not isinstance(days, int)):
+                return private(JSONResponse(
+                    {"error": "permission must be text and expires_in_days a number"},
+                    status_code=400))
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                action = "revoke_grant" if revoke else "grant"
+                try:
+                    if revoke:
+                        grant_id = request.path_params["grant_id"]
+                        if not auth.revoke_grant(session, repo, token_id, grant_id):
+                            return Outcome(404, {"error": "Grant not found."})
+                        record_audit(pid, session.login, action, None, "ok",
+                                     f"token={token_id} grant={grant_id}", None)
+                        return Outcome(200, {"ok": True})
+                    grant_id, expires_at = auth.grant(session, repo, token_id, permission, days)
+                except AuthError as e:
+                    record_audit(pid, session.login, action, None, "denied", str(e), None)
+                    return Outcome(e.status, {"error": str(e)})
+                record_audit(pid, session.login, action, None, "ok",
+                             f"token={token_id} permission={permission} days={days}", None)
+                return Outcome(201, {"id": grant_id, "token_id": token_id,
+                                     "permission": permission, "expires_at": expires_at})
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
@@ -1583,7 +1647,7 @@ def create_app(
             ctx = orchestrator.ToolContext(
                 store=db, project_id=project_id_of(repo), repo=repo, github=auth.github,
                 token=token, login=session.login, clock=clock, actor=session.login,
-                via=orchestrator.AGENT_VIA, key=key,
+                via=orchestrator.AGENT_VIA, key=key, **manager_of(session),
             )
             out = orchestrator.call_tool(ctx, tool, args)
             if "error" in out:
@@ -1591,6 +1655,13 @@ def create_app(
             number = args.get("number")
             return Done(number if isinstance(number, int) else None, tool, {"result": out["result"]})
         return work
+
+    def manager_of(session: Any) -> dict[str, Any]:
+        """`manager` and its current `grants` for an AI manager token (ADR 0014), else nothing."""
+        scope = session.rec.get("api_token") or {}
+        if scope.get("kind") != "manager":
+            return {}
+        return {"manager": True, "grants": auth.active_grants(scope["id"])}
 
     async def agent_session(request: Request) -> tuple[str, Any, Response | None]:
         """(repo, session, failure): an API token issued for that very project, and only one."""
@@ -1613,7 +1684,8 @@ def create_app(
         _, session, failure = await agent_session(request)
         if session is None:
             return failure
-        return private(JSONResponse({"tools": orchestrator.agent_catalog()}))
+        catalog = await run_in_threadpool(lambda: orchestrator.agent_catalog(**manager_of(session)))
+        return private(JSONResponse({"tools": catalog}))
 
     async def agent_call(request: Request) -> Response:
         repo, session, failure = await agent_session(request)
@@ -1649,7 +1721,7 @@ def create_app(
             self.session, self.repo, self.key = session, repo, key
 
         def tools(self) -> list[dict[str, Any]]:
-            return orchestrator.agent_catalog()
+            return orchestrator.agent_catalog(**manager_of(self.session))
 
         def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
             number = args.get("number")
@@ -2071,6 +2143,10 @@ def create_app(
                   methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants", grant_route(False),
+                  methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants/{grant_id:int}",
+                  grant_route(True), methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),

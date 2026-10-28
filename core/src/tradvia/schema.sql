@@ -274,3 +274,19 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     expires_at   timestamptz NOT NULL,
     revoked_at   timestamptz
 );
+-- ADR 0014: an AI manager is an API token of kind 'manager', made by an admin of the project.
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'agent';
+
+-- What the owner lets an AI manager do beyond its base (ADR 0014): one permission per row, each
+-- with its own expiry (at most 90 days) and revocable at once. Never merge, deploy, budget,
+-- connections or roles: those are not grantable at all.
+CREATE TABLE IF NOT EXISTS manager_grants (
+    id           bigserial PRIMARY KEY,
+    token_id     bigint NOT NULL REFERENCES api_tokens (id),
+    permission   text NOT NULL,
+    granted_by   text NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    expires_at   timestamptz NOT NULL,
+    revoked_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS manager_grants_token_idx ON manager_grants (token_id);
