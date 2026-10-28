@@ -13,7 +13,7 @@ selects the adapter. With no provider, behavior is unchanged.
 | Claude Code (`claude-code`) | yes | yes | Shipped |
 | Gemini CLI (`gemini-cli`) | yes | yes | In progress (offline tests with a fake runner; not yet run against the real CLI in CI) |
 | OpenAI Codex CLI (`codex-cli`) | yes | yes | In progress (same) |
-| Kiro, Antigravity and other IDEs | no | no | Planned: no stable headless CLI/API yet, so no support is declared |
+| Kiro, Antigravity and other IDEs | no | no | Planned as executors: the non-interactive tool names are not documented yet. They can work on a card today through the Tradvia MCP ([mcp.md](mcp.md)) |
 
 The reviewer and orchestrator roles do not use these adapters yet.
 

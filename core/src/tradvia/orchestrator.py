@@ -135,6 +135,10 @@ class ToolContext:
     cwd: str | None = None  # the project's checkout on the runner, for review_pr
     clock: Callable[[], float] = time.time
     refs: list[dict[str, Any]] = field(default_factory=list)
+    # Agent calls (ADR 0012): audited as the token's owner, with the token marker and the key.
+    actor: str = ACTOR
+    via: str | None = None
+    key: str | None = None
 
     def add_ref(self, kind: str, number: int) -> None:
         ref = {"type": kind, "number": number}
@@ -206,9 +210,9 @@ def audit(ctx: ToolContext, tool: str, args: dict[str, Any], result: str, detail
         summary = ""
     try:
         ctx.store.append_audit(ctx.project_id, {
-            "actor_login": ACTOR, "action": f"orchestrator:{tool}"[:60], "issue_number": number,
+            "actor_login": ctx.actor, "action": f"orchestrator:{tool}"[:60], "issue_number": number,
             "result": result, "detail": f"for @{ctx.login}: {detail} {summary}".strip()[:200],
-            "idempotency_key": None, "created_at": ctx.clock(),
+            "idempotency_key": ctx.key, "created_at": ctx.clock(), "via": ctx.via,
         })
     except Exception:  # the tool already ran (or was refused): never turn that into a crash
         pass
@@ -510,12 +514,30 @@ TOOLS: dict[str, Tool] = {
 }
 
 
+# Agents (ADR 0012) call the same tools through the panel's API, with their token, and only these.
+# `review_pr` is left out on purpose: it runs `make check` on the server, on the code of the pull
+# request, so a token must never be able to start it. Approving, merging and deploying stay in
+# HUMAN_ONLY: an agent asking for them gets a pending item for the person instead.
+AGENT_VIA = "api_token"
+AGENT_TOOLS = ("read_backlog", "read_cards", "read_card", "read_plan", "read_pulls", "read_pull",
+               "read_checks", "read_deploys", "create_card", "start_card", "reply_plan")
+
+
+def agent_catalog() -> list[dict[str, Any]]:
+    """The tools an agent may call, with their arguments and what each one does."""
+    return [{"name": n, "args": list(TOOLS[n].args), "description": TOOLS[n].doc}
+            for n in AGENT_TOOLS]
+
+
 def call_tool(ctx: ToolContext, name: Any, args: Any) -> dict[str, Any]:
     """Run one tool. Never raises: whatever goes wrong is audited and returned to the model."""
     name = name if isinstance(name, str) else ""
     args = args if isinstance(args, dict) else {}
     if name in HUMAN_ONLY:
         return hand_to_human(ctx, name, args)
+    if ctx.via == AGENT_VIA and name not in AGENT_TOOLS:
+        audit(ctx, name[:40] or "?", args, "denied", "not available to agents (ADR 0012)")
+        return {"error": f"'{name}' is not available to agents; use one of: {', '.join(AGENT_TOOLS)}"}
     tool = TOOLS.get(name)
     if tool is None:
         audit(ctx, name[:40] or "?", {}, "denied", "unknown tool")

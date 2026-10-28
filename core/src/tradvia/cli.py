@@ -214,6 +214,12 @@ def main() -> None:
     if sys.argv[1:2] in (["history"], ["fork"]):
         _durable_command(sys.argv[2:], sys.argv[1])
         return
+    if sys.argv[1:2] == ["mcp"]:
+        from .mcp_server import main as mcp_main
+
+        load_dotenv()
+        mcp_main()
+        return
     if sys.argv[1:2] in (["token"], ["card"]) or sys.argv[1:2] == ["--url"]:
         from .remote import main as remote_main
 
