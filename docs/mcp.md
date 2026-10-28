@@ -1,7 +1,10 @@
 # Tradvia MCP for agents
 
-Status: **In progress**. Tested offline with fake HTTP and fake clients. Not yet run with a
-real client. See [ADR 0012](adr/0012-agent-communication-git-and-mcp.md).
+Status: **In progress**. Tested offline with fake HTTP and fake clients, and run once against
+a local Tradvia API (memory store, fake GitHub): Claude Code CLI 2.1.312 connects to
+`tradvia mcp` (`claude mcp list`: Connected), and a scripted stdio client and `curl` on the HTTP
+endpoint list the tools, create and read a card, and get a merge refused and queued for a
+person. Not yet run against production, nor with Kiro, Gemini CLI, Antigravity or Manus. See [ADR 0012](adr/0012-agent-communication-git-and-mcp.md).
 
 Agents read cards, start or create them, and answer a plan with an adjustment, through the
 same tools the orchestrator uses. Code goes through git as usual: a branch and a pull request

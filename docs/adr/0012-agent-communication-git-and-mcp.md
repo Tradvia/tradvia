@@ -88,8 +88,8 @@ the owner. What is missing is a way for those agents to use the same tools.
 | Capability | Status |
 |---|---|
 | Agent tools through the token API (read, create, start, adjust a plan) | In progress: offline tests only |
-| stdio server (`tradvia mcp`) | In progress: offline tests; not yet run with a real client |
-| HTTP endpoint (`/mcp`) for URL clients | In progress: offline tests; not yet run with Manus |
+| stdio server (`tradvia mcp`) | In progress: offline tests; Claude Code CLI connected against a local API; not yet against production |
+| HTTP endpoint (`/mcp`) for URL clients | In progress: offline tests and `curl` against a local API; not yet run with Manus |
 | `review_pr` for agents | Planned: needs its own decision |
 | Edit card and reorder backlog for agents | Planned |
 | Agent pull requests gated beyond CI (protected paths, `Closes #N`) | Planned |
