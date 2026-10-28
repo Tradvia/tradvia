@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
-"""Guardrails (ADR 0012), offline: no API keys, no network."""
+"""Guardrails (ADR 0015), offline: no API keys, no network."""
 
 from langgraph.types import Command
 

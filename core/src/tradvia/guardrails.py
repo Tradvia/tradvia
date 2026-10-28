@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
-"""Guardrails: blocked patterns in what an agent plans, writes or ships (ADR 0012).
+"""Guardrails: blocked patterns in what an agent plans, writes or ships (ADR 0015).
 
 `risk.py` decides who approves an action; this module decides what the agent may generate or
 run before that. Three kinds of pattern, all plain regular expressions (status: Partial):

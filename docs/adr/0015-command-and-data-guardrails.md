@@ -1,4 +1,4 @@
-# ADR 0012 — Command and data guardrails
+# ADR 0015 — Command and data guardrails
 
 Status: Accepted · Capability status: **Partial** (regex patterns only)
 
