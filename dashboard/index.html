@@ -105,6 +105,12 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s3); }
   .kpi .v { font-size: var(--fs-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi .bar { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .kpi .bar > span { display: block; height: 100%; background: var(--ok); }
+  .kpi.warn .bar > span { background: var(--warn); }
+  .kpi.stop .bar > span { background: var(--bad); }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.stop .v { color: var(--bad); }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
   .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
@@ -1566,6 +1572,9 @@ const I18N = {
     ST_WAITING_HUMAN: "aguardando humano", ST_BLOCKED: "bloqueado",
     ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
     noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
+    monthlyBudget: "Orçamento mensal (UTC)",
+    monthlyNone: "Sem teto mensal: defina budget.monthly_usd em .tradvia.yml.",
+    monthlyUnknown: "Não foi possível ler o gasto do mês.",
     costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
@@ -1660,6 +1669,9 @@ const I18N = {
     ST_WAITING_HUMAN: "waiting for human", ST_BLOCKED: "blocked",
     ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
     noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
+    monthlyBudget: "Monthly budget (UTC)",
+    monthlyNone: "No monthly ceiling: set budget.monthly_usd in .tradvia.yml.",
+    monthlyUnknown: "Could not read this month's spend.",
     costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
@@ -1826,6 +1838,32 @@ function renderKpis(view) {
     d.append(val, el("div", l, "l"));
     root.append(d);
   }
+  root.append(monthlyBudgetKpi());
+}
+
+// Project ceiling vs. spend of the UTC month, from /auth/me; "—" with a tooltip without a ceiling.
+function monthlyBudgetKpi() {
+  const p = authState && authState.authenticated === true
+    ? (authState.projects || []).find((x) => x.external_id === getRepo()) : null;
+  const mb = p && p.monthly_budget;
+  const d = el("div", null, "kpi");
+  if (!mb || mb.cap_usd == null) {
+    const val = el("div", "—", "v");
+    val.title = t("monthlyNone");
+    d.append(val, el("div", t("monthlyBudget"), "l"));
+    return d;
+  }
+  const spent = mb.spent_usd;
+  const val = el("div", (spent == null ? "—" : "$" + spent.toFixed(2)) + " / $" + mb.cap_usd.toFixed(2), "v");
+  if (spent == null) val.title = t("monthlyUnknown");
+  d.append(val, el("div", t("monthlyBudget"), "l"));
+  const bar = el("div", null, "bar");
+  const fill = document.createElement("span");
+  fill.style.width = (spent == null ? 0 : Math.min(100, (spent / mb.cap_usd) * 100)) + "%";
+  bar.append(fill);
+  d.append(bar);
+  if (mb.level === "warn" || mb.level === "stop") d.classList.add(mb.level);
+  return d;
 }
 
 function svgEl(tag, attrs) {

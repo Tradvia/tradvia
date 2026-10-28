@@ -73,6 +73,7 @@ from .auth import (
 from . import pending, push
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
+from .budget import monthly_check, store_month_spend
 from .connections import Connections, ConnectionInputError, redact
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
@@ -770,6 +771,7 @@ def create_app(
         counts = await run_in_threadpool(
             lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
         )
+        budgets = await run_in_threadpool(lambda: [monthly_budget(session, r) for r in repos])
         response = JSONResponse(
             {
                 "enabled": True,
@@ -780,8 +782,9 @@ def create_app(
                 "projects": [
                     {"slug": project_slug(r), "external_id": r, "role": role,
                      "role_reason": reason, "notice": role_refusal(reason),
-                     "pending_count": n, **rights}
-                    for r, (role, reason), rights, n in zip(repos, statuses, can, counts)
+                     "pending_count": n, "monthly_budget": mb, **rights}
+                    for r, (role, reason), rights, n, mb in zip(
+                        repos, statuses, can, counts, budgets)
                 ],
             }
         )
@@ -894,6 +897,26 @@ def create_app(
             "can_approve": policy.allows("approve_plan", role),
             "can_manage_connections": policy.allows("manage_connections", role),
         }
+
+    def monthly_budget(session: Any, repo: str) -> dict[str, Any]:
+        """Ceiling and spend of the UTC month for the panel; `cap_usd` is null without a ceiling.
+
+        `level` is ok, warn or stop; "unknown" when the spend cannot be read.
+        """
+        out: dict[str, Any] = {"cap_usd": None, "spent_usd": None, "level": "ok"}
+        try:
+            cap = auth.policy_for(session, repo, fresh=False).monthly_usd
+        except Exception:  # unreadable or invalid policy: no ceiling to show
+            return out
+        if cap is None or db is None:
+            return out
+        out["cap_usd"] = cap
+        try:
+            spent = store_month_spend(db, project_id_of(repo))
+        except Exception:
+            out["level"] = "unknown"
+            return out
+        return {"cap_usd": cap, "spent_usd": spent, "level": monthly_check(spent, cap)}
 
     class Done(NamedTuple):
         number: int | None

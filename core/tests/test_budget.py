@@ -2,12 +2,17 @@
 # Copyright (c) 2026 Anderson dos Santos Dutra
 """Execution budgets (ADR 0006): defaults, 80% notice, 100% stop, usage, per-project scope."""
 
+from datetime import datetime, timezone
+
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from tradvia.budget import Budget, check, format_usage, parse_budget, usage_ratio
+from tradvia.budget import (Budget, MonthlyBudget, check, format_monthly, format_usage,
+                            month_spend, monthly_check, parse_budget, parse_monthly_budget,
+                            parse_monthly_usd, usage_ratio)
 from tradvia.graph import build_graph
+from tradvia.policy import Policy, parse_policy
 from tradvia.state import add_usage
 
 
@@ -170,3 +175,124 @@ def test_usage_is_isolated_per_project():
     assert a["usage"]["steps"] == b["usage"]["steps"] == 5  # not 10: nothing leaks across
     state = app.get_state(cfg_a).values
     assert state["project_id"] == "Tradvia/a" and state["usage"]["steps"] == 5
+
+
+# --- monthly ceiling (#131) -------------------------------------------------------------------
+
+NOW = datetime(2026, 3, 15, 12, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("bad", [-1, 0, "10", True, False, None, float("nan"), float("inf"), [5]])
+def test_invalid_monthly_usd_means_no_ceiling(bad):
+    assert parse_monthly_usd({"monthly_usd": bad}) is None
+    assert parse_monthly_budget({"monthly_usd": bad}) == MonthlyBudget()
+
+
+def test_valid_monthly_usd_and_the_per_card_limits_stay_untouched():
+    section = {"monthly_usd": 20, "max_usd": 2}
+    assert parse_monthly_usd(section) == 20.0
+    assert parse_budget(section) == Budget(max_usd=2.0)
+    assert parse_monthly_usd(None) is None and parse_monthly_usd("x") is None
+    assert parse_policy("budget:\n  monthly_usd: 7.5\n").monthly_usd == 7.5
+    assert parse_policy("budget:\n  monthly_usd: abc\n").monthly_usd is None
+
+
+def test_month_spend_sums_plans_and_prs_of_the_current_utc_month_only():
+    plans = [{"created_at": "2026-03-01T00:00:00Z", "cost_usd": 1.0},
+             {"created_at": "2026-03-31T23:59:59Z", "cost_usd": 0.5},
+             {"created_at": "2026-02-28T23:59:59Z", "cost_usd": 9.0},
+             {"created_at": "2026-04-01T00:00:00Z", "cost_usd": 9.0}]
+    pulls = [{"created_at": "2026-03-10T00:00:00Z", "cost_usd": 2.0, "cost_so_far_usd": 3.5},
+             {"created_at": "2026-03-11T00:00:00Z", "cost_usd": None, "cost_so_far_usd": 7.0},
+             {"created_at": "2026-02-10T00:00:00Z", "cost_usd": 9.0}]
+    assert month_spend(plans, pulls, NOW) == pytest.approx(3.5)  # cost_so_far never added
+    assert month_spend([], [], NOW) == 0
+
+
+def test_month_spend_counts_a_row_with_an_unreadable_date():
+    assert month_spend([{"created_at": None, "cost_usd": 1.0}], [], NOW) == 1.0
+
+
+def test_monthly_check_thresholds():
+    assert monthly_check(7.99, 10) == "ok"
+    assert monthly_check(8.0, 10) == "warn"
+    assert monthly_check(9.99, 10) == "warn"
+    assert monthly_check(10.0, 10) == "stop"
+    assert monthly_check(1000, None) == "ok"
+    assert "$8.0000/$10" in format_monthly(8, 10)
+
+
+def monthly_app(spend, policy=None):
+    gh, chat = FakeGitHub(), FakeChat()
+    policy = Policy(monthly_usd=10.0) if policy is None else policy
+    return gh, chat, build_graph(gh, chat, planner=Planner(), policy=policy, month_spend=spend)
+
+
+def test_new_card_does_not_start_at_100_percent_of_the_month():
+    planner_calls = []
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=lambda *a: planner_calls.append(a),
+                      policy=Policy(monthly_usd=10.0), month_spend=lambda: 10.0)
+    result, _ = start(app)
+    assert planner_calls == [] and chat.messages == []
+    assert result["status"] == "BACKLOG"  # card-state.v1 has no BACKLOG -> WAITING_HUMAN
+    assert result["history"][-1]["reason"] == "Monthly budget exhausted"
+    assert len(gh.comments) == 1 and "$10.0000/$10" in gh.comments[0][1]
+
+
+def test_new_card_starts_with_a_warning_at_80_percent_once():
+    gh, chat, app = monthly_app(lambda: 8.0)
+    result, _ = start(app)
+    assert result["pending_question"]  # it planned
+    assert len(gh.comments) == 1 and "80%" in gh.comments[0][1]
+    start(app, issue=2)  # same month, same graph: no second warning
+    assert len(gh.comments) == 1
+
+
+def test_no_ceiling_or_no_spend_reader_changes_nothing():
+    for policy, spend in ((Policy(), lambda: 999.0), (Policy(monthly_usd=10.0), None)):
+        gh, _, app = monthly_app(spend, policy)
+        result, _ = start(app)
+        assert result["pending_question"] and gh.comments == []
+
+
+def test_unreadable_spend_stops_the_start_instead_of_loosening():
+    def boom():
+        raise RuntimeError("db down")
+
+    gh, _, app = monthly_app(boom)
+    result, _ = start(app)
+    assert result["status"] == "BACKLOG" and not result.get("pending_question")
+    assert len(gh.comments) == 1 and "could not read" in gh.comments[0][1]
+
+
+def test_card_in_progress_finishes_its_own_budget_when_the_month_runs_out(tmp_path):
+    spent = [0.0]
+    gh, chat, ex = FakeGitHub(), FakeChat(), Executor(tmp_path)
+    app = build_graph(gh, chat, planner=Planner(), executor=ex, cwd=str(tmp_path),
+                      policy=Policy(monthly_usd=10.0), month_spend=lambda: spent[0])
+    _, config = start(app)
+    spent[0] = 12.0  # the month is over the ceiling while the card waits for approval
+    replanned = reply(app, config, "change it")
+    assert replanned["pending_question"] and gh.comments == []  # plan still ran
+    reply(app, config, "approved")
+    assert len(ex.calls) == 1 and len(gh.prs) == 1  # open_pr still ran
+    assert not any("monthly" in c[1] for c in gh.comments)
+
+
+def test_dashboard_renders_the_monthly_budget_with_both_languages():
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[2] / "dashboard" / "index.html").read_text(
+        encoding="utf-8")
+    assert "monthlyBudgetKpi()" in html and "mb.cap_usd" in html and "mb.spent_usd" in html
+    assert html.count("monthlyBudget:") == 2  # pt and en
+
+
+def test_per_card_limit_is_unchanged_with_a_monthly_ceiling():
+    gh = FakeGitHub()
+    app = build_graph(gh, FakeChat(), planner=Planner(tool_calls=9), budget=Budget(max_steps=10),
+                      policy=Policy(monthly_usd=100.0), month_spend=lambda: 0.0)
+    _, config = start(app)
+    result = reply(app, config, "change it")
+    assert result["history"][-1]["reason"] == "Budget exhausted"
