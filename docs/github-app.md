@@ -39,7 +39,9 @@ for them. Design: ADR 0008.
      message naming this permission. Write: `PUT /pulls/{n}/merge` (squash) and
      `DELETE /git/refs/heads/{branch}` (delete the branch after the merge).
    - **Actions**: Read and write. `GET /actions/runs` (waiting deploys),
-     `POST /actions/runs/{id}/cancel` (replaced deploys) and
+     `POST /actions/runs/{id}/cancel` (replaced deploys),
+     `POST /actions/runs/{id}/approve` (a PR's workflows that GitHub holds, see the
+     last section of this page) and
      `POST /actions/workflows/deploy-oci.yml/dispatches` (post-deploy operation).
    - **Deployments**: Read and write. `GET` and
      `POST /actions/runs/{id}/pending_deployments` (approve or reject; the
@@ -102,6 +104,7 @@ for them. Design: ADR 0008.
 | `GET /api/projects/{owner}/{repo}/pulls/{n}/files/{path}/diff` | The text diff of one file, on demand. Needs `read`. |
 | `POST /api/projects/{owner}/{repo}/pulls/{n}/merge` | Squash merge with the PR's Conventional Commit title, then deletes the branch. Body `{"ignore_cla": true}` ignores only a failed `cla` check (recorded in the audit); any other failed required check refuses the merge. Needs `merge_pr`. |
 | `POST /api/projects/{owner}/{repo}/pulls/{n}/update-branch` | Brings the PR branch up to date with main. Needs `update_branch`. |
+| `POST /api/projects/{owner}/{repo}/pulls/{n}/approve-workflows` | Approves the runs GitHub holds for approval on the PR's head commit. Body `{"sha": "<head>"}`; 409 if the PR has new commits or nothing waits. Needs `merge_pr`. |
 | `GET /api/projects/{owner}/{repo}/deployments/pending` | Deploys waiting for approval (older ones in the same queue are `replaced`) and the backlog order stored in Tradvia. Needs `read`. |
 | `POST /api/projects/{owner}/{repo}/deployments/{run_id}/approve` and `/reject` | Reviews the pending deployment with the user's token; the user must be a reviewer of the environment. Needs `approve_deploy`. |
 | `POST /api/projects/{owner}/{repo}/deployments/{run_id}/cancel` | Cancels a replaced deploy (any other run is refused). Needs `approve_deploy`. |
@@ -120,8 +123,7 @@ accessible by integration`), the answer names it, e.g. *The GitHub App needs
 Actions: Read and write*; Contents for merge and delete branch, Pull requests for
 update-branch, Deployments for approve and reject. A refusal for the person
 reads *You are not a reviewer of the production environment.* Other clear
-messages: no role in the project, *Merge refused: the required check(s) failed*
-and *The branch is behind main*.
+messages: no role in the project, *Merge refused: the required check(s) failed*, *Merge refused: the required check(s) wait for their workflows to be approved*, and *The branch is behind main*.
 
 The new `.tradvia.yml` interactions are `merge_pr`, `update_branch` and
 `approve_deploy` (also approve, reject, cancel and the post-deploy operation);
@@ -144,3 +146,25 @@ all default to `maintain`. See `docs/tradvia.example.yml`.
   - GitHub's rate limit (403 or 429): wait a few minutes.
   - GitHub could not be reached, or answered in an unexpected way: try again.
   - GitHub says the person is not a collaborator (404, or `permission: none`): the plain answer, *You have no access* or *You need at least the 'read' role*.
+
+## Approving a pull request's waiting workflows
+
+GitHub holds the workflow runs of some pull requests until someone with write
+access approves them. That happens to runs from forks and, as observed on PR #95
+(issue #97), to runs of the agent's own pull requests. While they wait, the
+required checks read *awaiting approval* rather than failed, the merge is refused
+until they run, and the PR screen shows **Approve workflows** to a person who may
+merge (`merge_pr`, `maintain` by default).
+
+The button calls `POST /actions/runs/{id}/approve` for each run that GitHub holds
+on the PR's head commit, with the person's own token, and writes an
+`approve_workflows` audit entry. The panel sends the commit it showed: if the PR
+got a new commit since, nothing is approved and the answer is 409. Approving
+starts that commit's workflows with the repository's secrets, so approve only
+code you have read.
+
+Whether GitHub asks for this approval at all is decided by the repository's
+Actions settings (Settings → Actions → General, *Fork pull request workflows from
+outside collaborators*). Tradvia could not read those settings from the
+environment where this was built, so the repository owner should check them
+there.

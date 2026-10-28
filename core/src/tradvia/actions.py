@@ -24,7 +24,10 @@ REQUIRED_CHECKS = ("core-tests", "license-boundary", "cla")
 IGNORABLE_CHECK = "cla"  # the only required check a maintainer may ignore (and it is audited)
 DEPLOY_WORKFLOW = "deploy-oci.yml"
 DEPLOY_REF = "main"
-_FAILED = ("failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale")
+_FAILED = ("failure", "cancelled", "timed_out", "startup_failure", "stale")
+# A run GitHub holds until a maintainer approves it: runs from forks, and the agent's own PRs
+# (observed on PR #95, issue #97). Not a failure: the check has not run yet.
+AWAITING_APPROVAL = "action_required"
 _CONVENTIONAL_TITLE = re.compile(r"[a-z]+(\([^)\s][^)]*\))?!?: \S")
 _COST_RE = re.compile(
     r"Estimated cost \(API-equivalent\):\s*\$([0-9]+(?:\.[0-9]+)?)(?:\s*·\s*([0-9]+)s)?"
@@ -102,6 +105,10 @@ class GitHubActions(Protocol):
     ) -> None: ...
 
     def cancel_run(self, token: str, repo: str, run_id: int) -> None: ...
+
+    def approve_run(self, token: str, repo: str, run_id: int) -> None:
+        """Let a run that GitHub holds for approval start (its workflows then run)."""
+        ...
 
     def dispatch_workflow(
         self, token: str, repo: str, workflow: str, ref: str, inputs: dict[str, str],
@@ -224,12 +231,17 @@ def parse_pr_description(body: str | None) -> dict[str, Any]:
 
 
 def check_state(checks: list[dict[str, Any]], name: str) -> str:
-    """"passed", "failed", "pending" or "missing" for the check called `name`."""
+    """"passed", "failed", "awaiting", "pending" or "missing" for the check called `name`.
+
+    "awaiting": GitHub holds the run until someone approves its workflows.
+    """
     runs = [c for c in checks if c.get("name") == name]
     if not runs:
         return "missing"
     if any(c.get("conclusion") in _FAILED for c in runs):
         return "failed"
+    if any(c.get("conclusion") == AWAITING_APPROVAL for c in runs):
+        return "awaiting"
     if any(c.get("status") != "completed" for c in runs):
         return "pending"
     return "passed"
@@ -240,18 +252,33 @@ def required_checks(checks: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def merge_block(checks: list[dict[str, Any]], ignore_cla: bool = False) -> str | None:
-    """Why the merge is refused, or None. A failed required check refuses it.
+    """Why the merge is refused, or None. A failed or unapproved required check refuses it.
 
     Only the `cla` check can be ignored, and only when the user asked for it explicitly.
     """
-    failed = [
-        c["name"] for c in required_checks(checks)
-        if c["state"] == "failed" and not (ignore_cla and c["name"] == IGNORABLE_CHECK)
+    required = [
+        c for c in required_checks(checks)
+        if not (ignore_cla and c["name"] == IGNORABLE_CHECK)
     ]
-    if not failed:
-        return None
-    hint = "" if failed == [IGNORABLE_CHECK] else " Only the 'cla' check can be ignored."
-    return f"Merge refused: the required check(s) failed: {', '.join(failed)}.{hint}"
+    failed = [c["name"] for c in required if c["state"] == "failed"]
+    if failed:
+        hint = "" if failed == [IGNORABLE_CHECK] else " Only the 'cla' check can be ignored."
+        return f"Merge refused: the required check(s) failed: {', '.join(failed)}.{hint}"
+    waiting = [c["name"] for c in required if c["state"] == "awaiting"]
+    if waiting:
+        return (
+            "Merge refused: the required check(s) wait for their workflows to be approved: "
+            f"{', '.join(waiting)}. Approve the workflows first."
+        )
+    return None
+
+
+def runs_awaiting_approval(runs: list[dict[str, Any]], sha: str) -> list[int]:
+    """The ids of the runs of commit `sha` that GitHub holds until someone approves them."""
+    return [
+        r["id"] for r in runs
+        if r.get("conclusion") == AWAITING_APPROVAL and r.get("head_sha") == sha
+    ]
 
 
 def merge_title(pull: dict[str, Any]) -> str:

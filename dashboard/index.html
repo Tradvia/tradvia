@@ -237,7 +237,7 @@
   td.title { white-space: normal; min-width: 180px; overflow-wrap: anywhere; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   tr:last-child td { border-bottom: 0; }
-  .ok { color: var(--ok); } .bad { color: var(--bad); } .run { color: var(--info); } .neutral { color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .run { color: var(--info); } .wait { color: var(--warn); } .neutral { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -1282,7 +1282,7 @@ function renderApproval(host, number) {
 
 // Review and merge a pull request, with the user's own GitHub token (ADR 0007). Everything is
 // text (textContent only); the server checks role, checks and CSRF again on every write.
-const CHECK_CLASS = { passed: "ok", failed: "bad", pending: "run", missing: "neutral" };
+const CHECK_CLASS = { passed: "ok", failed: "bad", awaiting: "wait", pending: "run", missing: "neutral" };
 
 function encodePath(p) { return p.split("/").map(encodeURIComponent).join("/"); }
 
@@ -1294,6 +1294,23 @@ function toggleDiff(li, n, file) {
   panelRequest("GET", "/pulls/" + n + "/files/" + encodePath(file.filename) + "/diff").then((res) => {
     pre.textContent = !res.ok ? res.error : res.data.diff === null ? t("noDiff") : res.data.diff + (res.data.truncated ? "\n…" : "");
   });
+}
+
+// Approves the runs GitHub holds on this PR's head commit, then draws the panel again so the
+// button goes away with the new state (a second click would only answer 409).
+function approveWorkflowsButton(box, p) {
+  const b = el("button", t("approveWorkflows"));
+  b.type = "button";
+  b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    box.querySelectorAll(".action-error").forEach((n) => n.remove());
+    box.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+    const res = await panelRequest("POST", "/pulls/" + p.number + "/approve-workflows", { sha: p.head_sha });
+    if (res.ok) { await renderPull(box, p.number); return; }
+    box.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+    box.append(el("div", res.error, "msg error action-error"));
+  });
+  return b;
 }
 
 async function renderPull(box, n) {
@@ -1337,6 +1354,7 @@ async function renderPull(box, n) {
     checks.append(li);
   });
   box.append(checks);
+  if (p.workflows_waiting) box.append(el("div", t("workflowsWaiting"), "sub"));
 
   if (p.review_comments.length) {
     box.append(el("h4", t("reviewComments")));
@@ -1355,6 +1373,7 @@ async function renderPull(box, n) {
   const acts = el("div", null, "acts");
   let ignore = null;
   if (p.can.merge_pr) {
+    if (p.workflows_waiting) acts.append(approveWorkflowsButton(box, p));
     if (claFailed) {
       ignore = el("input");
       ignore.type = "checkbox";
@@ -1882,7 +1901,7 @@ const I18N = {
     auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
     act_reply_plan: "respondeu ao plano", act_reorder_backlog: "reordenou o backlog",
     res_ok: "ok", res_denied: "negado", res_failed: "falhou",
-    act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR",
+    act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR", act_approve_workflows: "aprovou os workflows do PR",
     act_approve_deploy: "aprovou o deploy", act_reject_deploy: "rejeitou o deploy",
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
@@ -1899,8 +1918,10 @@ const I18N = {
     executorSummary: "Resumo do executor", description: "Descrição", changedFiles: "Arquivos alterados",
     checks: "Checks", reviewComments: "Comentários de revisão", loadingPull: "Carregando PR…",
     loadingDiff: "Carregando diff…", noDiff: "Sem diff em texto para este arquivo.",
-    check_passed: "passou", check_failed: "falhou", check_pending: "em andamento", check_missing: "ausente",
+    check_passed: "passou", check_failed: "falhou", check_pending: "em andamento", check_awaiting: "aguardando aprovação", check_missing: "ausente",
     ignoreCla: "ignorar o CLA", merge: "Merge (squash)", updateBranch: "Atualizar branch",
+    approveWorkflows: "Aprovar workflows",
+    workflowsWaiting: "Os workflows deste commit esperam aprovação de quem pode fazer merge. Aprove só se confiar no código desta PR.",
     COL_BACKLOG: "Backlog", COL_AGENT_WORKING: "Agente trabalhando", COL_WAITING_HUMAN: "Aguardando humano",
     COL_BLOCKED: "Bloqueado", COL_IN_REVIEW_PR: "Em revisão (PR)", COL_DONE: "Concluído",
     fPeriod: "Período", fAll: "tudo", f7d: "7 dias", f30d: "30 dias", f90d: "90 dias", fCustom: "personalizado",
@@ -2018,7 +2039,7 @@ const I18N = {
     auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
     act_reply_plan: "answered the plan", act_reorder_backlog: "reordered the backlog",
     res_ok: "ok", res_denied: "denied", res_failed: "failed",
-    act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch",
+    act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch", act_approve_workflows: "approved the PR's workflows",
     act_approve_deploy: "approved the deploy", act_reject_deploy: "rejected the deploy",
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
@@ -2035,8 +2056,10 @@ const I18N = {
     executorSummary: "Executor summary", description: "Description", changedFiles: "Changed files",
     checks: "Checks", reviewComments: "Review comments", loadingPull: "Loading PR…",
     loadingDiff: "Loading diff…", noDiff: "No text diff for this file.",
-    check_passed: "passed", check_failed: "failed", check_pending: "in progress", check_missing: "missing",
+    check_passed: "passed", check_failed: "failed", check_pending: "in progress", check_awaiting: "awaiting approval", check_missing: "missing",
     ignoreCla: "ignore the CLA", merge: "Merge (squash)", updateBranch: "Update branch",
+    approveWorkflows: "Approve workflows",
+    workflowsWaiting: "This commit's workflows wait for someone who can merge to approve them. Approve only if you trust this pull request's code.",
     COL_BACKLOG: "Backlog", COL_AGENT_WORKING: "Agent working", COL_WAITING_HUMAN: "Waiting for a human",
     COL_BLOCKED: "Blocked", COL_IN_REVIEW_PR: "In review (PR)", COL_DONE: "Done",
     fPeriod: "Period", fAll: "all", f7d: "7 days", f30d: "30 days", f90d: "90 days", fCustom: "custom",

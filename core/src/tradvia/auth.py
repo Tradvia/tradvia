@@ -496,6 +496,10 @@ class HttpGitHub:
     def cancel_run(self, token: str, repo: str, run_id: int) -> None:
         self._call(token, "POST", f"/repos/{repo}/actions/runs/{run_id}/cancel")
 
+    def approve_run(self, token: str, repo: str, run_id: int) -> None:
+        # Starts a run GitHub holds for approval (fork PRs, first contributions): Actions write.
+        self._call(token, "POST", f"/repos/{repo}/actions/runs/{run_id}/approve")
+
     def dispatch_workflow(
         self, token: str, repo: str, workflow: str, ref: str, inputs: dict[str, str],
     ) -> None:
