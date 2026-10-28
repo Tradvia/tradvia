@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+id: spdx-header
+title: Add SPDX header to a new core module
+body: New file core/src/tradvia/example.py has no license header.
+expect:
+  min_steps: 1
+  max_steps: 3
+  must_mention: [SPDX, FSL-1.1-ALv2]
+  forbidden_paths: [LICENSE.md, .github/]

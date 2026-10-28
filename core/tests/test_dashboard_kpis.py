@@ -118,29 +118,79 @@ def test_parse_filters_defaults_and_values():
     assert js("parseFilters('')") == {"from": None, "to": None, "executor": "all",
                                       "card": None, "status": "all"}
     got = js("parseFilters(s)", s="?repo=A/b&from=2026-01-01&to=2026-02-01&executor=claude"
-                                  "&card=7&status=DONE")
+                                  "&fcard=7&status=DONE")
     assert got == {"from": "2026-01-01", "to": "2026-02-01", "executor": "claude",
                    "card": 7, "status": "DONE"}
     assert js("parseFilters(s)", s="?from=30d")["from"] == "30d"
+    # `card` opens a card (notifications, inbox links); only `fcard` filters the board.
+    assert js("parseFilters(s)", s="?card=97")["card"] is None
 
 
 def test_parse_filters_rejects_garbage():
-    got = js("parseFilters(s)", s="?from=yesterday&to=x&executor=other&card=-3&status=NOPE")
+    got = js("parseFilters(s)", s="?from=yesterday&to=x&executor=other&fcard=-3&status=NOPE")
     assert got == {"from": None, "to": None, "executor": "all", "card": None, "status": "all"}
 
 
-def test_url_keeps_repo_and_roundtrips_the_filter():
+def test_url_keeps_repo_and_deep_link_and_roundtrips_the_filter():
     f = {"from": "7d", "to": None, "executor": "agent", "card": 4, "status": "DONE"}
-    search = js("filtersToSearch(f, base)", f=f, base="?repo=Tradvia/tradvia&from=90d&card=9")
+    search = js("filtersToSearch(f, base)", f=f,
+                base="?repo=Tradvia/tradvia&from=90d&fcard=9&card=12")
     assert "repo=Tradvia%2Ftradvia" in search
     assert js("parseFilters(s)", s=search) == f
-    assert search.count("from=") == 1 and "card=4" in search
+    assert search.count("from=") == 1 and "fcard=4" in search and "fcard=9" not in search
+    assert "card=12" in search  # the deep link (opens a card) is kept
 
 
 def test_url_has_no_filter_params_by_default():
     base = {"from": None, "to": None, "executor": "all", "card": None, "status": "all"}
     assert js("filtersToSearch(f, '?repo=a/b&executor=claude')", f=base) == "?repo=a%2Fb"
     assert js("filtersToSearch(f, '')", f=base) == ""
+
+
+# --- the board, the inbox link and the bell -------------------------------------------------
+
+NOW_MS = "Date.parse('2026-03-31T12:00:00Z')"
+
+
+def test_an_inbox_link_opens_the_card_and_keeps_the_board_whole():
+    # The inbox links to ?card=N. It used to filter the board to N, which emptied the board
+    # whenever card N was not on it (the cards the bell counts but the board did not list).
+    got = js(f"applyFilters(data, parseFilters(s), {NOW_MS}).issues.map(i => i.number)",
+             data=SAMPLE, s="?repo=A/b&card=3")
+    assert sorted(got) == [1, 2, 3]
+
+
+def test_the_card_filter_narrows_the_board_to_that_card():
+    got = js(f"applyFilters(data, parseFilters(s), {NOW_MS}).issues.map(i => i.number)",
+             data=SAMPLE, s="?fcard=3")
+    assert got == [3]
+
+
+def test_the_board_also_shows_an_open_card_whose_agent_pr_is_open():
+    labeled = [issue(1, "2026-03-29T10:00:00Z")]
+    open_issues = [issue(1, "2026-03-29T10:00:00Z"), issue(7, "2026-03-20T10:00:00Z"),
+                   issue(8, "2026-03-21T10:00:00Z"), issue(9, "2026-03-22T10:00:00Z")]
+    prs = [pr(70, "2026-03-22T10:00:00Z", "tradvia/issue-7", state="open"),
+           pr(71, "2026-03-22T10:00:00Z", "docs/readme", state="open"),
+           pr(72, "2026-03-22T10:00:00Z", "tradvia/issue-8", state="closed"),
+           pr(73, "2026-03-22T10:00:00Z", "claude/issue-9-fix", state="open")]
+    got = js("boardCards(labeled, openIssues, prs).map(i => i.number).sort((a, b) => a - b)",
+             labeled=labeled, openIssues=open_issues, prs=prs)
+    # 1 has the label; 7 and 9 have an open agent PR; 8 only a closed one; 'docs/readme' is no agent PR.
+    assert got == [1, 7, 9]
+
+
+def test_merged_pulls_keep_one_copy_of_each_number():
+    got = js("mergePulls(a, b).map(p => p.number)",
+             a=[{"number": 2}, {"number": 1}], b=[{"number": 1}, {"number": 3}])
+    assert got == [2, 1, 3]
+
+
+def test_a_card_filter_for_a_card_off_the_board_is_reported_missing():
+    issues = [issue(1, "2026-03-29T10:00:00Z")]
+    assert js("cardFilterMissing(f, issues)", f={"card": 97}, issues=issues) is True
+    assert js("cardFilterMissing(f, issues)", f={"card": 1}, issues=issues) is False
+    assert js("cardFilterMissing(f, issues)", f={"card": None}, issues=issues) is False
 
 
 # --- period, executor, card, status ---------------------------------------------------------
@@ -252,6 +302,48 @@ def test_a_run_still_in_progress_is_agent_working_even_after_an_earlier_failure(
     ) == "AGENT_WORKING"
 
 
+def test_a_run_started_after_the_last_marker_is_a_new_attempt_and_shows_agent_working():
+    # #152: the marker was posted by the attempt before this run, so the run going now counts.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    card["tradvia_last_marker_at"] = "2026-03-29T10:30:00Z"
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "AGENT_WORKING"
+
+
+def test_a_run_that_started_before_the_marker_is_still_waiting_for_the_reply():
+    # #152: the marker came after this run started, so it is the same job polling for the reply.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F7E1"  # 🟡
+    card["tradvia_last_marker_at"] = "2026-03-29T12:00:00Z"
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "WAITING_HUMAN"
+
+
+def test_a_finished_newer_run_keeps_the_marker_until_the_agent_posts_again():
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    card["tradvia_last_marker_at"] = "2026-03-29T10:30:00Z"
+    assert js(
+        "deriveCardState(card, [], [run_])", card=card,
+        run_=run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"),
+    ) == "BLOCKED"
+
+
+def test_without_the_marker_time_the_marker_keeps_deciding():
+    # A server that does not send tradvia_last_marker_at behaves as before.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "BLOCKED"
+
+
 # --- cost per card --------------------------------------------------------------------------
 
 def test_card_cost_sums_every_plan_plus_the_executor():
@@ -348,3 +440,75 @@ def test_bar_chart_model_scales_to_the_largest_day():
     assert [b["h"] for b in bars] == [25, 50, 0]
     assert all(b["x"] >= 0 and b["x"] + b["w"] <= 100 for b in bars)
     assert js("barChartModel([], 'usd', 100, 50)") == []
+
+
+# --- agents and diagnostics of a card (the chips and the card dialog) ----------------------
+
+def test_planner_and_claude_executor_keep_their_own_tokens():
+    card = issue(1, "2026-03-29T10:00:00Z", plans=[plan("2026-03-29T10:05:00Z", 0.2, 1000, 200, 5000)])
+    prs = [pr(11, "2026-03-29T12:00:00Z", "claude/issue-1-x", usd=1.0,
+              tokens={"tokens_in": 2000, "tokens_out": 300, "tokens_cache": 8000})]
+    runs = [run("claude.yml", "#1 fix", "2026-03-29T11:00:00Z")]
+    assert js("cardAgents(i, prs, runs)", i=card, prs=prs, runs=runs) == [
+        {"role": "planner", "executor": None, "runs": None, "prs": None, "plans": 1,
+         "usd": 0.2, "in": 1000, "out": 200, "cache": 5000},
+        {"role": "executor", "executor": "claude", "runs": 1, "prs": 1, "plans": None,
+         "usd": 1.0, "in": 2000, "out": 300, "cache": 8000},
+    ]
+
+
+def test_tradvia_agent_implies_the_planner_even_without_plan_costs():
+    # Without the store no plan comments are read, but the agent's run planned before it executed.
+    card = issue(2, "2026-03-10T10:00:00Z")
+    prs = [pr(12, "2026-03-10T12:00:00Z", "tradvia/issue-2", usd=0.5, merged="2026-03-11T12:00:00Z",
+              tokens={"tokens_in": 1500, "tokens_out": 250, "tokens_cache": 0})]
+    runs = [run("agent.yml", "Card 2", "2026-03-10T10:01:00Z")]
+    got = js("cardAgents(i, prs, runs)", i=card, prs=prs, runs=runs)
+    assert [a["role"] for a in got] == ["planner", "executor"]
+    assert got[0]["plans"] == 0 and got[0]["usd"] is None
+    assert got[1] == {"role": "executor", "executor": "agent", "runs": 1, "prs": 1, "plans": None,
+                      "usd": 0.5, "in": 1500, "out": 250, "cache": 0}
+
+
+def test_a_claude_run_alone_counts_and_skipped_runs_do_not_count():
+    card = issue(4, "2026-03-20T10:00:00Z")
+    skipped = dict(run("agent.yml", "Card 4", "2026-03-20T10:01:00Z"), conclusion="skipped")
+    runs = [run("claude.yml", "#4 typo", "2026-03-20T11:00:00Z"), skipped]
+    assert js("cardAgents(i, [], runs)", i=card, runs=runs) == [
+        {"role": "executor", "executor": "claude", "runs": 1, "prs": 0, "plans": None,
+         "usd": None, "in": None, "out": None, "cache": None}]
+
+
+def test_a_card_nobody_worked_on_has_no_agents():
+    assert js("cardAgents(i, [], [])", i=issue(6, "2026-03-20T10:00:00Z")) == []
+
+
+def test_diagnostics_count_runs_and_name_the_last_one():
+    card = issue(7, "2026-03-01T10:00:00Z")
+    card["labels"] = [{"name": "agent:ready"}]
+    card["tradvia_last_marker"] = "❓"
+    runs = [
+        run("agent.yml", "Card 7", "2026-03-02T10:00:00Z"),
+        dict(run("agent.yml", "Card 7", "2026-03-03T10:00:00Z"), conclusion="failure"),
+        dict(run("claude.yml", "#7 retry", "2026-03-04T10:00:00Z"), status="in_progress", conclusion=None),
+        run("claude.yml", "#8 other card", "2026-03-05T10:00:00Z"),
+    ]
+    got = js("cardDiagnostics(i, 'AGENT_WORKING', [], runs)", i=card, runs=runs)
+    assert got["state"] == "AGENT_WORKING" and got["marker"] == "❓"
+    assert got["labels"] == ["agent:ready"]
+    assert got["runs"] == {"total": 3, "noResult": 1, "running": 1}
+    assert got["last"]["executor"] == "claude" and got["last"]["status"] == "in_progress"
+    assert got["last"]["durationMs"] is None
+
+
+def test_diagnostics_show_the_newest_pr_and_the_last_run_duration():
+    card = issue(9, "2026-03-01T10:00:00Z")
+    prs = [pr(30, "2026-03-02T10:00:00Z", "tradvia/issue-9", state="open"),
+           pr(31, "2026-03-05T10:00:00Z", "tradvia/issue-9", merged="2026-03-06T10:00:00Z")]
+    runs = [dict(run("agent.yml", "Card 9", "2026-03-04T10:00:00Z"), updated_at="2026-03-04T10:01:15Z")]
+    got = js("cardDiagnostics(i, 'DONE', prs, runs)", i=card, prs=prs, runs=runs)
+    assert got["prs"] == {"total": 2, "newest": {"number": 31, "state": "merged", "url": None}}
+    assert got["last"]["durationMs"] == 75000 and got["last"]["conclusion"] == "success"
+    assert got["runs"] == {"total": 1, "noResult": 0, "running": 0}
+    open_only = js("cardDiagnostics(i, 'IN_REVIEW_PR', [p], [])", i=card, p=prs[0])
+    assert open_only["prs"]["newest"]["state"] == "open" and open_only["last"] is None
