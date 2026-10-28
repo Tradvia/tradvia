@@ -55,6 +55,7 @@ from .actions import (
 )
 from .auth import (
     API_TOKEN_DEFAULT_DAYS,
+    API_TOKEN_MAX_DAYS,
     CSRF_HEADER,
     SESSION_COOKIE,
     STATE_COOKIE,
@@ -72,7 +73,7 @@ from .backlog import READY_LABEL, backlog_status
 from . import mcp_server, orchestrator
 from .connections import Connections, ConnectionInputError
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
-from .policy import Interactions, PolicyError
+from .policy import ROLES, Interactions, PolicyError, role_rank
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
@@ -1330,6 +1331,36 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    async def token_list(request: Request) -> Response:
+        """The signed-in person's own tokens in this project (never a token value), and what they
+        need to connect their agent: their role, the roles a token may have, the MCP addresses."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+
+        def work() -> Outcome:
+            role = auth.role_of(session, repo)
+            if role is None:
+                return Outcome(403, {"error": f"You have no access to {repo}."})
+            now = auth.now()
+            tokens = [{**t, "active": t["revoked_at"] is None and t["expires_at"] > now}
+                      for t in db.list_api_tokens(session.login, project_id_of(repo))]
+            return Outcome(200, {
+                "login": session.login, "project": repo, "role": role,
+                "roles": [r for r in ROLES if role_rank(r) <= role_rank(role)],
+                "default_days": API_TOKEN_DEFAULT_DAYS, "max_days": API_TOKEN_MAX_DAYS,
+                "mcp_http": f"/api/projects/{repo}/mcp", "tokens": tokens,
+            })
+
+        try:
+            out = await run_in_threadpool(work)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
@@ -1732,6 +1763,7 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),

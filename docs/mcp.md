@@ -47,6 +47,15 @@ Not available to agents:
 A token belongs to one project and one role, and it expires (30 days by default, 90 at most).
 It is shown once.
 
+**In the panel:** sign in, open the project, and use **Connect my AI** ("Conectar minha IA") at
+the bottom of the Dashboard. Choose the role and how many days, create the token, and copy it:
+it is shown once. The same screen gives the MCP setup to paste into your client, with the
+project and address filled in, and lists your tokens in this project with a Revoke button
+(never their values). `GET /api/projects/{owner}/{repo}/tokens` returns that list, with a
+signed-in session only.
+
+From a terminal, with the session cookie instead:
+
 ```bash
 export TRADVIA_URL=https://app.tradvia.org
 export TRADVIA_SESSION=...   # value of the __Host-tradvia_session cookie of your signed-in browser
