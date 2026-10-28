@@ -139,3 +139,13 @@ carries the project id.
   host larger than today's 1 GB machine.
 - More autonomy means more surface for mistakes: every capability ships with
   tests for its guardrail first, and the public site keeps stating real status.
+
+## Note: monthly project ceiling (#131)
+
+`budget.monthly_usd` in `.tradvia.yml` adds a ceiling per project and UTC month on top of the
+per-card budget, which is unchanged. The month's spend is the plan costs plus the executor
+cost of PRs (the PR "cost so far" is not added, it already includes the plans). At 80% a
+warning is posted once; at 100% no new card starts (it stays in `BACKLOG`, because
+card-state.v1 has no `BACKLOG -> WAITING_HUMAN`), while a card already running finishes its
+own per-card budget. An invalid value means no ceiling, never a hidden one; if the spend
+cannot be read while a ceiling is set, the card does not start.

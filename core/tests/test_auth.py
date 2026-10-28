@@ -30,6 +30,7 @@ SESSION = auth.SESSION_COOKIE
 class FakeGitHub:
     def __init__(self):
         self.perm = {A: ("admin", "admin"), B: ("read", "read")}
+        self.refuse = {}  # repo -> ROLE_* code: GitHub refuses the role check for that repo
         self.perm_calls = 0
         self.exchanges = []
         self.calls = []
@@ -51,6 +52,8 @@ class FakeGitHub:
     def get_permission(self, token, repo, login):
         assert token == TOKEN and login == "ana"
         self.perm_calls += 1
+        if repo in self.refuse:
+            raise auth.RoleLookupFailed(self.refuse[repo])
         return self.perm.get(repo, (None, None))
 
     # policy file and panel actions: every call records the token it was made with
@@ -179,12 +182,32 @@ def test_full_flow(client, gh):
     data = me(client)
     assert data["enabled"] and data["authenticated"] and data["login"] == "ana"
     assert data["avatar_url"].endswith("/u/7")
+    no_ceiling = {"cap_usd": None, "spent_usd": None, "level": "ok"}
     assert data["projects"] == [
-        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "pending_count": 0,
+        {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "role_reason": None,
+         "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
          "can_start": True, "can_approve": True, "can_manage_connections": True},
-        {"slug": "acme-widgets", "external_id": B, "role": "read", "pending_count": 0,
+        {"slug": "acme-widgets", "external_id": B, "role": "read", "role_reason": None,
+         "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
          "can_start": False, "can_approve": False, "can_manage_connections": False},
     ]
+
+
+def test_me_reports_the_monthly_budget(store, gh, clock):
+    from datetime import datetime, timezone
+
+    pid = store.ensure_project(A)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-01T00:00:00Z")
+    store.upsert_comment(pid, {"id": 1, "issue_number": 1, "author": "bot", "body": "",
+                               "created_at": stamp, "updated_at": stamp, "cost_usd": 4.0})
+    store.upsert_pull_request(pid, {"id": 9, "number": 20, "title": "pr", "state": "open",
+                                    "branch": "tradvia/issue-1", "created_at": stamp,
+                                    "updated_at": stamp, "cost_usd": 4.5, "cost_so_far_usd": 8.5})
+    gh.policy = "budget:\n  monthly_usd: 10\n"
+    client = make_client(store, gh, clock)
+    login(client)
+    projects = me(client)["projects"]
+    assert projects[0]["monthly_budget"] == {"cap_usd": 10.0, "spent_usd": 8.5, "level": "warn"}
 
     out = client.post("/api/auth/logout", headers=csrf_headers(client))
     assert out.status_code == 200
@@ -449,6 +472,81 @@ def test_github_failure_gives_no_role_and_is_not_cached(client, gh):
     r = client.get("/api/auth/me")
     assert r.status_code == 200 and TOKEN not in r.text
     assert [p["role"] for p in r.json()["projects"]] == [None, None]
+
+
+@pytest.mark.parametrize("code, words", [
+    (auth.ROLE_TOKEN, "Sign in again"),
+    (auth.ROLE_APP, "Metadata: Read-only"),
+    (auth.ROLE_RATE_LIMIT, "rate limit"),
+    (auth.ROLE_UNAVAILABLE, "could not be reached"),
+])
+def test_each_failed_role_lookup_says_why_in_every_route(store, gh, clock, code, words):
+    gh.refuse[A] = code
+    client = make_client(store, gh, clock)
+    login(client)
+    project = me(client)["projects"][0]
+    assert project["role"] is None and project["role_reason"] == code
+    assert words in project["notice"] and TOKEN not in project["notice"]
+    read = client.get(BASE + "/chat")
+    assert read.status_code == 403 and read.json()["error"] == project["notice"]
+    refused = post(client, BASE + "/cards/7/start")
+    assert refused.status_code == 403 and refused.json()["error"] == project["notice"]
+    assert not gh.writes("add_label")
+    assert audit_rows(store, 7)[0]["detail"].startswith(f"role none ({code})")
+
+
+def test_non_collaborator_keeps_the_plain_answer(client, gh):
+    gh.perm[B] = (None, None)
+    login(client)
+    admin, outsider = me(client)["projects"]
+    assert admin["notice"] is None
+    assert outsider["role"] is None and outsider["role_reason"] == auth.ROLE_NONE
+    assert outsider["notice"] is None
+    r = client.get(f"/api/projects/{B}/chat")
+    assert r.status_code == 403 and r.json()["error"] == f"You need at least the 'read' role in {B}."
+
+
+def test_a_failed_lookup_is_not_cached_so_a_fixed_app_works_at_once(store, gh, clock):
+    gh.refuse[A] = auth.ROLE_APP
+    client = make_client(store, gh, clock)
+    login(client)
+    assert me(client)["projects"][0]["role"] is None
+    del gh.refuse[A]  # the owner accepted the update: no new sign-in, and no time has passed
+    assert me(client)["projects"][0]["role"] == "admin"
+
+
+@pytest.mark.parametrize("status, body, reason", [
+    (401, {"message": "Bad credentials"}, auth.ROLE_TOKEN),
+    (403, {"message": "Resource not accessible by integration"}, auth.ROLE_APP),
+    (403, {"message": "API rate limit exceeded for user ID 7."}, auth.ROLE_RATE_LIMIT),
+    (429, {"message": "Too Many Requests"}, auth.ROLE_RATE_LIMIT),
+    (500, {"message": "Server Error"}, auth.ROLE_UNAVAILABLE),
+])
+def test_github_refusals_keep_their_reason(monkeypatch, status, body, reason):
+    from types import SimpleNamespace
+
+    answer = SimpleNamespace(status_code=status, json=lambda: body)
+    monkeypatch.setattr(auth.requests, "get", lambda *a, **k: answer)
+    with pytest.raises(auth.RoleLookupFailed) as exc:
+        auth.HttpGitHub("id", "s3cr3t").get_permission(TOKEN, A, "ana")
+    assert exc.value.reason == reason and TOKEN not in str(exc.value)
+
+
+def test_not_a_collaborator_is_no_role_and_an_unreachable_github_is_a_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    http = auth.HttpGitHub("id", "s3cr3t")
+    monkeypatch.setattr(auth.requests, "get",
+                        lambda *a, **k: SimpleNamespace(status_code=404, json=lambda: {}))
+    assert http.get_permission(TOKEN, A, "ana") == (None, None)
+
+    def unreachable(*a, **k):
+        raise ConnectionError(TOKEN)
+
+    monkeypatch.setattr(auth.requests, "get", unreachable)
+    with pytest.raises(auth.RoleLookupFailed) as exc:
+        http.get_permission(TOKEN, A, "ana")
+    assert exc.value.reason == auth.ROLE_UNAVAILABLE and TOKEN not in str(exc.value)
 
 
 # return path -------------------------------------------------------------------

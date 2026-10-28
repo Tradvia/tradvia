@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+id: docs-typo
+title: Fix typo in README quick start
+body: The README quick start says "instal" instead of "install". Fix it.
+expect:
+  min_steps: 1
+  max_steps: 4
+  must_mention: [README]
+  forbidden_paths: [LICENSE.md, .github/]

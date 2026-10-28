@@ -78,6 +78,31 @@ Delete the local `tradvia-deploy` private key after saving it as a secret.
 deployment. The workflow uploads `infra/oci/` and `dashboard/`, starts the
 services and checks `https://app.tradvia.org/healthz`.
 
+## Deploy queue
+
+The workflow runs in the concurrency group `deploy-oci` with `cancel-in-progress: false`.
+A deploy that is already running is never cut short by a newer push, and deploys never
+run side by side. GitHub keeps one running and one pending run per group, and a newer
+pending run cancels the older pending one
+([control workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)).
+
+A run that waits for approval in `production` holds the group. On 24 October a run waited
+for more than an hour, and every push after it queued behind it without asking for
+approval, until someone cancelled the older run by hand. The panel shows two things to
+people who can approve:
+
+- **Waiting too long.** A deploy that waits for approval for more than
+  `TRADVIA_DEPLOY_WAIT_ALERT_MINUTES` minutes (default `30`) gets a ⏳ button in the
+  header. The time counts from when the run was created. The button only reminds:
+  nothing is sent anywhere.
+- **Replaced.** A waiting run is marked *replaced* when a newer run of the same workflow
+  is also waiting. The panel highlights it as the run that blocks the newest deploy, and
+  its button **Cancel and free the queue** cancels it. Cancelling stays a person's action
+  in the panel ([ADR 0007](adr/0007-tradvia-as-the-single-interaction-surface.md)).
+
+To free the queue from a run that waits too long, reject it: the run ends and the next
+deploy asks for approval. Approving the run runs that deploy instead.
+
 ## What runs where
 
 | Service | Exposure | Notes |

@@ -55,6 +55,8 @@ def test_every_kind_maps_to_an_interaction():
     assert pending.ROLE_FOR_KIND == {
         "plan_ready": "approve_plan", "agent_question": "approve_plan",
         "adjust_limit": "approve_plan", "pr_opened": "merge_pr", "budget_limit": "budget_control",
+        "deploy_stuck": "approve_deploy", "cost_outlier": "budget_control",
+        "run_dead": "approve_plan",
     }
 
 
@@ -140,6 +142,17 @@ def test_cards_of_reads_the_store():
 )
 def test_last_agent_marker(c, marker):
     assert pending.last_agent_marker(c) == marker
+
+
+def test_the_marker_comment_carries_the_time_the_marker_was_posted():
+    # #152: the dashboard compares this time with the start of the newest run.
+    comment = {"author": AGENT, "body": "\U0001F534 planejamento falhou.",
+               "created_at": "2026-01-06T00:00:00Z"}
+    c = {"number": 30, "state": "open", "comments": [comment]}
+    assert pending.last_agent_marker_comment(c) == comment
+    assert pending.marker_in(comment) == "\U0001F534"
+    assert pending.marker_in(None) is None
+    assert pending.last_agent_marker_comment({**c, "state": "closed"}) is None
 
 
 def test_affected_cards():

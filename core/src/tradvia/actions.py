@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from typing import Any, Protocol
 
 from .backlog import parse_depends
@@ -320,5 +321,51 @@ def deploy_view(
             "environments": [(e.get("environment") or {}).get("name") for e in envs],
             "can_approve": any(e.get("current_user_can_approve") for e in envs),
             "replaced": r["id"] in replaced,
+        })
+    return out
+
+
+DEFAULT_WAIT_ALERT_MINUTES = 30
+
+
+def wait_alert_minutes(raw: str | None) -> int:
+    """Minutes a deploy may wait for approval before the panel flags it.
+
+    Read from TRADVIA_DEPLOY_WAIT_ALERT_MINUTES. Anything that is not a positive whole number
+    keeps the default, so a typo cannot switch the alert off.
+    """
+    try:
+        value = int(raw) if raw is not None else DEFAULT_WAIT_ALERT_MINUTES
+    except ValueError:
+        return DEFAULT_WAIT_ALERT_MINUTES
+    return value if value > 0 else DEFAULT_WAIT_ALERT_MINUTES
+
+
+def _seconds_since(iso: str | None, now: float) -> float | None:
+    """Seconds from a GitHub timestamp (ISO 8601, UTC) to `now`; None when missing or invalid."""
+    if not iso:
+        return None
+    try:
+        created = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    return max(0.0, now - created)
+
+
+def mark_waits(
+    deploys: list[dict[str, Any]], now: float, alert_minutes: int
+) -> list[dict[str, Any]]:
+    """Adds `waiting_minutes` and `long_wait` to each deploy, counted from when its run was created.
+
+    "Long" means more than `alert_minutes`. The server does the arithmetic, so the panel does
+    not depend on the browser's clock.
+    """
+    out = []
+    for d in deploys:
+        waited = _seconds_since(d.get("created_at"), now)
+        out.append({
+            **d,
+            "waiting_minutes": None if waited is None else int(waited // 60),
+            "long_wait": waited is not None and waited > alert_minutes * 60,
         })
     return out

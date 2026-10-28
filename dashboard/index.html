@@ -89,6 +89,8 @@
   button:disabled { opacity: .5; cursor: default; }
   #bell.has { border-color: var(--warn); }
   #bell.has #bell-count { color: var(--warn); font-weight: 600; }
+  #deploy-alert { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+  .deploys li.blocking { border-left: 3px solid var(--warn); padding-left: 8px; }
   .inbox { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 14px 12px; margin-bottom: 14px; }
   .inbox[hidden], .notify[hidden] { display: none; }
   .inbox h3 { margin: 10px 0 4px; font-size: 13px; }
@@ -102,6 +104,12 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s3); }
   .kpi .v { font-size: var(--fs-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi .bar { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .kpi .bar > span { display: block; height: 100%; background: var(--ok); }
+  .kpi.warn .bar > span { background: var(--warn); }
+  .kpi.stop .bar > span { background: var(--bad); }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.stop .v { color: var(--bad); }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
   .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
@@ -195,6 +203,7 @@
     <nav class="mainnav" id="mainnav" aria-label="Main"></nav>
     <div class="controls">
       <button id="bell" type="button" hidden><span aria-hidden="true">🔔</span> <span id="bell-count">0</span></button>
+      <button id="deploy-alert" type="button" hidden><span aria-hidden="true">⏳</span> <span id="deploy-alert-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
       <select id="lang" aria-label="Language">
@@ -277,6 +286,16 @@ function branchMatchesIssue(ref, n) {
   return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
 }
 
+// True while a run of this card that started after `since` (ISO time) is still going. The
+// marker before it is from an earlier attempt, so the board shows the card as worked on.
+function runningSince(title, agentRuns, since) {
+  const t = Date.parse(since);
+  if (isNaN(t)) return false;
+  return agentRuns.some((r) => r.status !== "completed"
+    && (r.display_title || r.name) === title
+    && Date.parse(r.run_started_at) > t);
+}
+
 // agentRuns: runs of agent.yml only.
 function deriveCardState(issue, prs, agentRuns) {
   if (issue.state === "closed") return "DONE";
@@ -291,7 +310,12 @@ function deriveCardState(issue, prs, agentRuns) {
   // (BLOCKED); any other marker means something is waiting on a human right now, whatever
   // the run status says.
   if (issue.tradvia_last_marker) {
-    return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    // A run still going that started after the marker (tradvia_last_marker_at, #152) is a
+    // new attempt: the marker belongs to the attempt before it.
+    if (!runningSince(issue.title, agentRuns, issue.tradvia_last_marker_at)) {
+      return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    }
+    return "AGENT_WORKING";
   }
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
@@ -494,6 +518,11 @@ function buildTimeline(events) {
   }
   settle("awaiting");
   return out;
+}
+
+// Deploys waiting for approval past the alert threshold; the server flags them (long_wait).
+function longWaitCount(deploys) {
+  return (deploys || []).filter((x) => x.long_wait === true).length;
 }
 
 // cards: [{number, title, items}]; returns the newest `limit` events across cards.
@@ -1109,8 +1138,10 @@ let deploysToken = 0;
 async function renderDeploys() {
   const section = document.getElementById("deploys-section");
   const box = document.getElementById("deploys");
+  const alertBtn = document.getElementById("deploy-alert");
   const mine = myRights();
   section.hidden = !mine;
+  alertBtn.hidden = true;
   box.replaceChildren();
   if (!mine) return;
   const mineToken = ++deploysToken;
@@ -1122,15 +1153,18 @@ async function renderDeploys() {
   const list = el("ul");
   d.deploys.forEach((x) => {
     const li = el("li");
+    if (x.replaced) li.classList.add("blocking");
     const link = el("a", "#" + x.run_id + " " + (x.title || ""));
     const href = safeGithubUrl(x.html_url);
     if (href) { link.href = href; link.target = "_blank"; link.rel = "noopener"; }
     li.append(link, el("span", " · " + (x.environments || []).join(", ") + " · " + fmtTime(x.created_at), "sub"));
-    if (x.replaced) li.append(el("span", " · " + t("replaced"), "badge"));
+    if (x.long_wait) li.append(el("span", " · " + t("waitingFor") + " " + x.waiting_minutes + " min", "badge"));
+    if (x.replaced) li.append(el("span", " · " + t("replaced"), "badge"), el("div", t("blocksQueue"), "sub"));
+    else if (x.long_wait) li.append(el("div", t("longWaitNote"), "sub"));
     if (d.can.approve_deploy) {
       const base = "/deployments/" + x.run_id;
       const acts = el("div", null, "acts");
-      if (x.replaced) acts.append(actionButton(li, t("cancelRun"), base + "/cancel", {}));
+      if (x.replaced) acts.append(actionButton(li, t("cancelBlocking"), base + "/cancel", {}));
       else if (x.can_approve) {
         acts.append(actionButton(li, t("approve"), base + "/approve", {}), actionButton(li, t("reject"), base + "/reject", {}));
       }
@@ -1139,6 +1173,13 @@ async function renderDeploys() {
     list.append(li);
   });
   box.append(list);
+  const waiting = longWaitCount(d.deploys);
+  if (d.can.approve_deploy && waiting > 0) {
+    document.getElementById("deploy-alert-count").textContent = String(waiting);
+    alertBtn.title = t("deployAlert") + ": " + waiting;
+    alertBtn.onclick = () => section.scrollIntoView({ block: "start" });
+    alertBtn.hidden = false;
+  }
   if (!d.can.approve_deploy) return;
   const op = el("div", null, "op");
   const backfill = el("input");
@@ -1344,7 +1385,8 @@ async function loadData(repo) {
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
 
-const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit"];
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+  "deploy_stuck", "cost_outlier", "run_dead"];
 let inboxOpen = false;
 let inboxData = []; // [{ repo, items }] of the projects that have something pending
 let pushKey = null; // VAPID public key; null while unknown or when notifications are off
@@ -1532,7 +1574,8 @@ const I18N = {
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
     kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
     kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
-    kind_adjust_limit: "limite de ajustes",
+    kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
+    kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1571,8 +1614,8 @@ const I18N = {
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pendência para você",
     act_chat: "conversou com o orquestrador",
-    deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído",
-    cancelRun: "Cancelar", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
+    deploys: "Deploys pendentes", noDeploys: "Nenhum deploy aguardando aprovação.", replaced: "substituído", waitingFor: "aguardando há", blocksQueue: "Esta execução bloqueia o deploy mais recente: cancelar libera a fila.", longWaitNote: "Esperando há muito tempo: rejeitar libera a fila; aprovar roda o deploy.", deployAlert: "Deploys aguardando aprovação há muito tempo",
+    cancelBlocking: "Cancelar e liberar a fila", postDeploy: "Operação pós-deploy", runPostDeploy: "Rodar operação pós-deploy",
     pullRequest: "Pull request", pr_open: "aberto", pr_closed: "fechado", pr_merged: "mesclado",
     executorSummary: "Resumo do executor", description: "Descrição", changedFiles: "Arquivos alterados",
     checks: "Checks", reviewComments: "Comentários de revisão", loadingPull: "Carregando PR…",
@@ -1588,6 +1631,9 @@ const I18N = {
     ST_WAITING_HUMAN: "aguardando humano", ST_BLOCKED: "bloqueado",
     ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
     noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
+    monthlyBudget: "Orçamento mensal (UTC)",
+    monthlyNone: "Sem teto mensal: defina budget.monthly_usd em .tradvia.yml.",
+    monthlyUnknown: "Não foi possível ler o gasto do mês.",
     costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
@@ -1627,7 +1673,8 @@ const I18N = {
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
     kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
     kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
-    kind_adjust_limit: "adjustment limit",
+    kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
+    kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -1666,8 +1713,8 @@ const I18N = {
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
     chat_card: "card", chat_pr: "PR", chat_deploy: "deploy", chatPendingKind: "Pending for you",
     act_chat: "talked to the orchestrator",
-    deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced",
-    cancelRun: "Cancel", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
+    deploys: "Pending deploys", noDeploys: "No deploy waiting for approval.", replaced: "replaced", waitingFor: "waiting for", blocksQueue: "This run blocks the newest deploy: cancelling it frees the queue.", longWaitNote: "Waiting a long time: rejecting it frees the queue; approving runs the deploy.", deployAlert: "Deploys waiting for approval for a long time",
+    cancelBlocking: "Cancel and free the queue", postDeploy: "Post-deploy operation", runPostDeploy: "Run post-deploy operation",
     pullRequest: "Pull request", pr_open: "open", pr_closed: "closed", pr_merged: "merged",
     executorSummary: "Executor summary", description: "Description", changedFiles: "Changed files",
     checks: "Checks", reviewComments: "Review comments", loadingPull: "Loading PR…",
@@ -1683,6 +1730,9 @@ const I18N = {
     ST_WAITING_HUMAN: "waiting for human", ST_BLOCKED: "blocked",
     ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
     noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
+    monthlyBudget: "Monthly budget (UTC)",
+    monthlyNone: "No monthly ceiling: set budget.monthly_usd in .tradvia.yml.",
+    monthlyUnknown: "Could not read this month's spend.",
     costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
@@ -1857,6 +1907,32 @@ function renderKpis(view) {
     d.append(val, el("div", l, "l"));
     root.append(d);
   }
+  root.append(monthlyBudgetKpi());
+}
+
+// Project ceiling vs. spend of the UTC month, from /auth/me; "—" with a tooltip without a ceiling.
+function monthlyBudgetKpi() {
+  const p = authState && authState.authenticated === true
+    ? (authState.projects || []).find((x) => x.external_id === getRepo()) : null;
+  const mb = p && p.monthly_budget;
+  const d = el("div", null, "kpi");
+  if (!mb || mb.cap_usd == null) {
+    const val = el("div", "—", "v");
+    val.title = t("monthlyNone");
+    d.append(val, el("div", t("monthlyBudget"), "l"));
+    return d;
+  }
+  const spent = mb.spent_usd;
+  const val = el("div", (spent == null ? "—" : "$" + spent.toFixed(2)) + " / $" + mb.cap_usd.toFixed(2), "v");
+  if (spent == null) val.title = t("monthlyUnknown");
+  d.append(val, el("div", t("monthlyBudget"), "l"));
+  const bar = el("div", null, "bar");
+  const fill = document.createElement("span");
+  fill.style.width = (spent == null ? 0 : Math.min(100, (spent / mb.cap_usd) * 100)) + "%";
+  bar.append(fill);
+  d.append(bar);
+  if (mb.level === "warn" || mb.level === "stop") d.classList.add(mb.level);
+  return d;
 }
 
 function svgEl(tag, attrs) {
