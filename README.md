@@ -71,7 +71,7 @@ and executor of a card is an adapter (Claude Code ✅ Shipped; Gemini CLI and Co
 🟨 In progress, tested offline with fake runners). IDE tools without a headless CLI are
 ⏳ Planned.
 
-**Distributed tracing** (ADR 0012): one OpenTelemetry trace per card, with a span per graph
+**Distributed tracing** (ADR 0017): one OpenTelemetry trace per card, with a span per graph
 node, model run and executor tool call. Optional: `pip install tradvia[otel]`, then set
 `TRADVIA_OTEL=1` and the standard `OTEL_EXPORTER_OTLP_*` variables (for example
 `OTEL_EXPORTER_OTLP_ENDPOINT`). Everything passes through `redact` before export; without

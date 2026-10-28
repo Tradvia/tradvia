@@ -1,4 +1,4 @@
-# ADR 0012: Distributed tracing of card runs
+# ADR 0017: Distributed tracing of card runs
 
 - Status: Partial (becomes Shipped once merged and verified against a real collector)
 - Date: 2026-10-26

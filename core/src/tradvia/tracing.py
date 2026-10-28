@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
 """Distributed tracing of a card: one trace per card, one span per graph step, model call
-and tool call (ADR 0012).
+and tool call (ADR 0017).
 
 Export is OpenTelemetry behind the optional extra `tradvia[otel]`. Without the extra, or
 without `TRADVIA_OTEL=1`, `NullTracer` does nothing and behaviour is unchanged.

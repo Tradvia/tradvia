@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
-"""Tracing (ADR 0012): one trace per card, redact-first, no change without the extra."""
+"""Tracing (ADR 0017): one trace per card, redact-first, no change without the extra."""
 
 import sys
 
