@@ -11,6 +11,7 @@ from langgraph.types import Command
 
 from tradvia.agents import NOT_REPORTED, Cost, make_agent
 from tradvia.cli import make_executor, make_planner
+from tradvia.budget import estimate_usd
 from tradvia.codex_cli import CodexCliAgent
 from tradvia.connections import BY_KEY
 from tradvia.gemini_cli import EXEC_TOOLS, PLAN_TOOLS, GeminiCliAgent
@@ -204,10 +205,27 @@ def test_cost_not_reported_is_flagged_not_invented(tmp_path, provider):
         assert run["usd_reported"] is False and run["cost_usd"] == 0.0
 
 
-def test_codex_never_reports_usd(tmp_path):
+def test_codex_usd_is_an_estimate_from_the_tokens(tmp_path):
     runner = fake_runner(tmp_path, "codex-cli", "ok", ["docs/a.md"])
     run = CodexCliAgent(runner=runner).execute(CARD, str(tmp_path))
     assert run["usd_reported"] is False and run["tokens_reported"] is True
+    assert run["cost_usd"] == estimate_usd(100, 20, 5) > 0
+
+
+def test_codex_turn_limit_and_timeout_come_from_the_call(tmp_path):
+    seen = {}
+    inner = fake_runner(tmp_path, "codex-cli", "ok", ["docs/a.md"], tool_calls=3)
+
+    def runner(cmd, **opts):
+        if cmd[0] != "git":
+            seen["timeout"] = opts["timeout"]
+        return inner(cmd, **opts)
+
+    agent = CodexCliAgent(runner=runner, max_turns=50, timeout=900)
+    agent.execute(CARD, str(tmp_path), max_turns=3, timeout=42)
+    assert seen["timeout"] == 42
+    with pytest.raises(RuntimeError, match=r"turn limit \(2 turns\)"):
+        agent.execute(CARD, str(tmp_path), max_turns=2, timeout=42)
 
 
 def test_claude_code_reports_usd(tmp_path):
