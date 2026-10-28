@@ -23,9 +23,10 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .budget import Budget, check, format_monthly, format_usage, monthly_check, warning_notice
+from .budget import (Budget, check, format_monthly, format_usage, monthly_check, run_limits,
+                     warning_notice)
 from .checkpoints import make_checkpointer
-from .claude_code import StagnationError
+from .claude_code import StagnationError, _timeout, exec_max_turns
 from .guardrails import block_message, review
 from .integrations import Chat, GitHub
 from .llm import architect_plan
@@ -119,7 +120,9 @@ def build_graph(github: GitHub, chat: Chat,
     policy = policy or Policy()
     budget = budget or Budget()
     tracer = tracer or get_tracer()
-    takes_on_tool = bool(executor) and "on_tool" in inspect.signature(executor.execute).parameters
+    exec_params = inspect.signature(executor.execute).parameters if executor else {}
+    takes_on_tool = "on_tool" in exec_params
+    takes_limits = "max_turns" in exec_params and "timeout" in exec_params
 
     def traced(name: str, agent: str):
         """Run a node inside the span `node.<name>` of the card trace (logic unchanged)."""
@@ -400,6 +403,12 @@ def build_graph(github: GitHub, chat: Chat,
             return transition(card["status"], "WAITING_HUMAN", "@Agent-Coder", f"No executor: {why}")
         if executor:
             kwargs = {"on_tool": tool_span} if takes_on_tool else {}
+            if takes_limits:  # the run cannot go past what is left of the card's budget
+                turns, seconds = run_limits(card.get("usage"), budget, exec_max_turns(),
+                                            _timeout())
+                if turns < 1:
+                    return stop_budget(card, "@Agent-Coder")
+                kwargs.update(max_turns=turns, timeout=seconds)
             if level == "warn":
                 kwargs["budget_notice"] = warning_notice(card.get("usage"), budget)
             try:
