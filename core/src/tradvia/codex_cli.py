@@ -6,14 +6,16 @@ Authenticated by OPENAI_API_KEY (CODEX_API_KEY is read by the CLI too). Restrict
 sandbox instead of a tool list: planning runs `read-only`; execution runs `workspace-write`
 with network access disabled, so the agent can only touch the working tree. Codex has no turn
 flag: a run with more command/file/tool items than the limit is rejected afterwards. Time is
-bounded by the subprocess timeout. Codex reports tokens but no price: US$ is 'não informado'.
+bounded by the subprocess timeout, which is what keeps a run inside the card's balance. Codex
+reports tokens but no price: US$ is an estimate from budget.TOKEN_PRICES, flagged as not
+reported (`usd_reported` false). The US$ limit can only reject the run once it has finished.
 """
 
 from __future__ import annotations
 
 import json
 
-from .agents import CliAgent, Cost, Run, count
+from .agents import CliAgent, Cost, Run, count, with_estimate
 
 ACTION_ITEMS = ("command_execution", "file_change", "mcp_tool_call", "web_search")
 
@@ -61,6 +63,6 @@ class CodexCliAgent(CliAgent):
         if calls > max_turns:
             raise RuntimeError(f"{self.label} stopped at the turn limit ({max_turns} turns)")
         u = usage or {}
-        cost = Cost(None, count(u.get("input_tokens")), count(u.get("output_tokens")),
-                    count(u.get("cached_input_tokens")), duration_s)
+        cost = with_estimate(Cost(None, count(u.get("input_tokens")), count(u.get("output_tokens")),
+                                  count(u.get("cached_input_tokens")), duration_s))
         return Run(text, cost, calls)
