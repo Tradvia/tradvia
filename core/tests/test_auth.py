@@ -186,10 +186,12 @@ def test_full_flow(client, gh):
     assert data["projects"] == [
         {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "role_reason": None,
          "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
-         "can_start": True, "can_approve": True, "can_manage_connections": True},
+         "can_start": True, "can_approve": True, "can_manage_connections": True,
+         "can_budget": True},
         {"slug": "acme-widgets", "external_id": B, "role": "read", "role_reason": None,
          "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
-         "can_start": False, "can_approve": False, "can_manage_connections": False},
+         "can_start": False, "can_approve": False, "can_manage_connections": False,
+         "can_budget": False},
     ]
 
 
@@ -203,7 +205,8 @@ def test_me_reports_the_monthly_budget(store, gh, clock):
     store.upsert_pull_request(pid, {"id": 9, "number": 20, "title": "pr", "state": "open",
                                     "branch": "tradvia/issue-1", "created_at": stamp,
                                     "updated_at": stamp, "cost_usd": 4.5, "cost_so_far_usd": 8.5})
-    gh.policy = "budget:\n  monthly_usd: 10\n"
+    gh.policy = "budget:\n  monthly_usd: 99999\n"  # the file has no say (ADR 0018)
+    store.set_setting(pid, "budget", {"monthly_usd": 10}, "ana", 0)
     client = make_client(store, gh, clock)
     login(client)
     projects = me(client)["projects"]

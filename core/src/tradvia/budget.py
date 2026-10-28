@@ -2,9 +2,10 @@
 # Copyright (c) 2026 Anderson dos Santos Dutra
 """Execution budgets per card (ADR 0006): a warning at 80%, a hard stop at 100%.
 
-The limits live in the `budget` section of `.tradvia.yml`. Parsing never raises: an
-invalid value falls back to the safe default of that field, so a typo can never remove
-or loosen a limit.
+The limits are a setting of the project, made on Tradvia's Settings screen and stored with the
+project (ADR 0018), never in `.tradvia.yml`. Reading a stored value never raises: an invalid
+value falls back to the safe default of that field, so nothing can remove or loosen a limit.
+Writing goes through `validate_settings`, which refuses invalid input instead.
 """
 
 from __future__ import annotations
@@ -73,6 +74,54 @@ def parse_monthly_usd(section: object) -> float | None:
 
 def parse_monthly_budget(section: object) -> MonthlyBudget:
     return MonthlyBudget(monthly_usd=parse_monthly_usd(section))
+
+
+# --- the project's budget setting (ADR 0018) ------------------------------------------------
+
+SETTINGS_KEY = "budget"
+# Upper bounds for what the Settings screen accepts; reading is lenient, writing is strict.
+LIMITS = {"max_minutes": 1440.0, "max_steps": 10_000, "max_usd": 10_000.0, "monthly_usd": 1_000_000.0}
+
+
+def settings_budget(value: object) -> tuple[Budget, float | None]:
+    """`(per-card Budget, monthly ceiling or None)` from the stored setting; never raises."""
+    return parse_budget(value), parse_monthly_usd(value)
+
+
+def settings_view(value: object) -> dict[str, Any]:
+    """What the Settings screen shows: the values in force, defaults filled in."""
+    budget, monthly = settings_budget(value)
+    return {"max_minutes": budget.max_minutes, "max_steps": budget.max_steps,
+            "max_usd": budget.max_usd, "monthly_usd": monthly,
+            "defaults": {"max_minutes": Budget().max_minutes, "max_steps": Budget().max_steps,
+                         "max_usd": Budget().max_usd, "monthly_usd": None}}
+
+
+def validate_settings(data: object) -> dict[str, Any]:
+    """The setting to store, or ValueError with a message safe to show. `monthly_usd` null (or
+    absent) means no ceiling; each per-card limit must be positive and within LIMITS."""
+    if not isinstance(data, dict):
+        raise ValueError("send an object with max_minutes, max_steps, max_usd and monthly_usd")
+    unknown = sorted(set(data) - set(LIMITS))
+    if unknown:
+        raise ValueError(f"unknown field(s): {', '.join(unknown)}")
+    out: dict[str, Any] = {}
+    for name, top in LIMITS.items():
+        value = data.get(name)
+        if value is None:
+            if name == "monthly_usd":
+                out[name] = None
+                continue
+            value = getattr(Budget(), name)
+        n = _positive(value)
+        if n is None or n > top:
+            raise ValueError(f"{name} must be a number greater than 0 and at most {top:g}")
+        if name == "max_steps":
+            if n != int(n):
+                raise ValueError("max_steps must be a whole number")
+            n = int(n)
+        out[name] = n
+    return out
 
 
 def _parse_utc(value: object) -> datetime | None:

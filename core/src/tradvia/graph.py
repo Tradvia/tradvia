@@ -177,7 +177,7 @@ def build_graph(github: GitHub, chat: Chat,
             spent = float(month_spend())
         except Exception as e:  # never loosen the lock: an unreadable spend stops the start
             say(card, f"🛑 **{card['id']}** — could not read this month's spend ({type(e).__name__}) "
-                      "to check `budget.monthly_usd`; the card was not started. Restart it "
+                      "to check the monthly budget; the card was not started. Restart it "
                       "(remove and add the `agent:ready` label) once the store is reachable.")
             return {"plan_error": "Monthly spend unreadable",
                     **transition(card.get("status", "BACKLOG"), "BACKLOG", "human",
@@ -185,9 +185,9 @@ def build_graph(github: GitHub, chat: Chat,
         level = monthly_check(spent, cap)
         if level == "stop":
             say(card, f"🛑 **{card['id']}** — monthly budget exhausted; no new card starts this "
-                      f"month. {format_monthly(spent, cap)}. Raise `budget.monthly_usd` in "
-                      "`.tradvia.yml`, then restart the card (remove and add the "
-                      "`agent:ready` label).")
+                      f"month. {format_monthly(spent, cap)}. An admin raises the monthly "
+                      "budget in Tradvia (Settings, Project budget), then restart the card "
+                      "(remove and add the `agent:ready` label).")
             return {"plan_error": "Monthly budget exhausted",
                     **transition(card.get("status", "BACKLOG"), "BACKLOG", "human",
                                  "Monthly budget exhausted")}

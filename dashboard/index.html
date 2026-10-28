@@ -66,6 +66,9 @@
   .soon-badge { font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 6px; color: var(--muted); }
   .view[hidden] { display: none; }
   .settings-section, .help-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s4); margin-bottom: var(--s4); }
+  .budget-form { display: grid; gap: 8px; max-width: 460px; }
+  .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .budget-row input { width: 9em; }
   .settings-section h3, .help-section h3 { margin: 0 0 var(--s2); font-size: var(--fs-md); }
   .settings-section p { margin: var(--s1) 0; }
   .settings-section label { display: flex; gap: var(--s3); align-items: center; margin: var(--s2) 0; }
@@ -1816,6 +1819,16 @@ const I18N = {
     planPlusExec: "planejamento + execução", chartCost: "Custo por dia (US$)", chartTokens: "Tokens por dia",
     "nav.panel": "Painel", "nav.connections": "Conexões", "nav.settings": "Configurações", "nav.help": "Ajuda",
     soon: "em breve",
+    "budget.title": "Orçamento do projeto", "budget.intro": "Vale só para este projeto (repositório):",
+    "budget.thisMonth": "Gasto neste mês (UTC)", "budget.noCeiling": "sem teto",
+    "budget.warn": "acima de 80%", "budget.stop": "teto atingido, nenhum card novo inicia",
+    "budget.monthly": "Teto mensal (US$, vazio = sem teto)", "budget.maxUsd": "Por card: custo máximo (US$)",
+    "budget.maxMinutes": "Por card: minutos de trabalho", "budget.maxSteps": "Por card: passos (iterações)",
+    "budget.save": "Salvar orçamento", "budget.saved": "Orçamento salvo.",
+    "budget.note": "Em 80% de qualquer limite o agente é avisado; em 100% ele para e o card espera uma pessoa. O teto mensal impede que cards novos iniciem.",
+    "budget.readOnly": "Só quem tem o papel exigido neste projeto (admin, por padrão) altera o orçamento.",
+    "budget.updated": "Última alteração por",
+    "budget.fileIgnored": "O .tradvia.yml deste repositório ainda tem uma seção budget: ela é ignorada. O orçamento vale só como definido aqui.",
     "settings.title": "Configurações", "settings.project": "Projeto",
     "settings.roles": "Papéis e permissões", "settings.yourRole": "Seu papel neste projeto",
     "settings.canStart": "Pode iniciar cards", "settings.canApprove": "Pode aprovar planos",
@@ -1927,6 +1940,16 @@ const I18N = {
     planPlusExec: "planning + execution", chartCost: "Cost per day (US$)", chartTokens: "Tokens per day",
     "nav.panel": "Dashboard", "nav.connections": "Connections", "nav.settings": "Settings", "nav.help": "Help",
     soon: "soon",
+    "budget.title": "Project budget", "budget.intro": "Applies to this project (repository) only:",
+    "budget.thisMonth": "Spent this month (UTC)", "budget.noCeiling": "no ceiling",
+    "budget.warn": "above 80%", "budget.stop": "ceiling reached, no new card starts",
+    "budget.monthly": "Monthly ceiling (US$, empty = no ceiling)", "budget.maxUsd": "Per card: maximum cost (US$)",
+    "budget.maxMinutes": "Per card: minutes of work", "budget.maxSteps": "Per card: steps (iterations)",
+    "budget.save": "Save budget", "budget.saved": "Budget saved.",
+    "budget.note": "At 80% of any limit the agent is warned; at 100% it stops and the card waits for a person. The monthly ceiling keeps new cards from starting.",
+    "budget.readOnly": "Only someone with the required role in this project (admin by default) changes the budget.",
+    "budget.updated": "Last changed by",
+    "budget.fileIgnored": "This repository's .tradvia.yml still has a budget section: it is ignored. The budget is only what is set here.",
     "settings.title": "Settings", "settings.project": "Project",
     "settings.roles": "Roles and permissions", "settings.yourRole": "Your role in this project",
     "settings.canStart": "Can start cards", "settings.canApprove": "Can approve plans",
@@ -2917,6 +2940,15 @@ function renderSettings() {
   if (navRights()) root.append(roles);
   else root.append(el("p", t("settings.signInHint"), "sub"));
 
+  // The project's budget (ADR 0018): set here, per project, never in .tradvia.yml.
+  if (myRights()) {
+    const budget = el("div", null, "settings-section");
+    budget.id = "settings-budget";
+    budget.append(el("h3", t("budget.title")), el("p", t("loading"), "sub"));
+    root.append(budget);
+    loadBudgetSettings(budget);
+  }
+
   if (navRights()) {
     const notif = el("div", null, "settings-section");
     const h = el("h3", t("settings.notifications") + " ");
@@ -2933,6 +2965,69 @@ function renderSettings() {
       PREF_THEMES.map((v) => [v, t("theme." + v)]), (v) => setPref("theme", v)),
   );
   root.append(pref);
+}
+
+const BUDGET_FIELDS = [
+  ["monthly_usd", "budget.monthly", "0.01"], ["max_usd", "budget.maxUsd", "0.01"],
+  ["max_minutes", "budget.maxMinutes", "1"], ["max_steps", "budget.maxSteps", "1"],
+];
+
+async function loadBudgetSettings(box) {
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/settings/budget");
+  if (repo !== getRepo() || !box.isConnected) return;
+  box.replaceChildren(el("h3", t("budget.title")));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  drawBudgetSettings(box, res.data);
+}
+
+function drawBudgetSettings(box, b) {
+  box.append(el("p", t("budget.intro") + " " + b.project, "sub"));
+  const m = b.month || {};
+  const spent = typeof m.spent_usd === "number" ? "$" + m.spent_usd.toFixed(2) : "—";
+  box.append(el("p", t("budget.thisMonth") + ": " + spent +
+    (b.monthly_usd ? " / $" + b.monthly_usd + (m.level === "warn" ? " · " + t("budget.warn") :
+      m.level === "stop" ? " · " + t("budget.stop") : "") : " · " + t("budget.noCeiling"))));
+  if (b.file_budget_ignored) box.append(el("p", t("budget.fileIgnored"), "msg"));
+  const form = el("form", null, "budget-form");
+  const inputs = {};
+  for (const [key, label, step] of BUDGET_FIELDS) {
+    const row = el("label", null, "budget-row");
+    const input = el("input");
+    Object.assign(input, { type: "number", min: step, step, value: b[key] == null ? "" : b[key] });
+    if (key === "monthly_usd") input.placeholder = t("budget.noCeiling");
+    input.disabled = !b.can_edit;
+    inputs[key] = input;
+    row.append(el("span", t(label)), input);
+    form.append(row);
+  }
+  const err = el("div", null, "msg error"); err.hidden = true;
+  if (b.can_edit) {
+    const save = el("button", t("budget.save"));
+    save.type = "submit";
+    form.append(save);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      save.disabled = true; err.hidden = true;
+      const body = {};
+      for (const [key] of BUDGET_FIELDS) {
+        const v = inputs[key].value.trim();
+        body[key] = v === "" ? null : Number(v);
+      }
+      const res = await panelRequest("PUT", "/settings/budget", body);
+      save.disabled = false;
+      if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+      box.replaceChildren(el("h3", t("budget.title")));
+      drawBudgetSettings(box, res.data);
+      box.append(el("p", t("budget.saved"), "sub"));
+    });
+  }
+  box.append(form, err);
+  box.append(el("p", b.can_edit ? t("budget.note") : t("budget.readOnly"), "note"));
+  if (b.updated_by) {
+    box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
+      new Date(b.updated_at * 1000).toLocaleString(), "sub"));
+  }
 }
 
 function renderHelp() {

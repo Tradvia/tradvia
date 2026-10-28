@@ -12,6 +12,7 @@ from tradvia.budget import (Budget, MonthlyBudget, check, format_monthly, format
                             month_spend, monthly_check, parse_budget, parse_monthly_budget,
                             parse_monthly_usd, usage_ratio)
 from tradvia.graph import build_graph
+from tradvia.budget import settings_budget, validate_settings
 from tradvia.policy import Policy, parse_policy
 from tradvia.state import add_usage
 
@@ -193,8 +194,10 @@ def test_valid_monthly_usd_and_the_per_card_limits_stay_untouched():
     assert parse_monthly_usd(section) == 20.0
     assert parse_budget(section) == Budget(max_usd=2.0)
     assert parse_monthly_usd(None) is None and parse_monthly_usd("x") is None
-    assert parse_policy("budget:\n  monthly_usd: 7.5\n").monthly_usd == 7.5
-    assert parse_policy("budget:\n  monthly_usd: abc\n").monthly_usd is None
+    # The file has no say (ADR 0018): the ceiling comes from the project's setting.
+    assert parse_policy("budget:\n  monthly_usd: 7.5\n").monthly_usd is None
+    assert settings_budget({"monthly_usd": 7.5})[1] == 7.5
+    assert settings_budget({"monthly_usd": "abc"})[1] is None
 
 
 def test_month_spend_sums_plans_and_prs_of_the_current_utc_month_only():
@@ -296,3 +299,24 @@ def test_per_card_limit_is_unchanged_with_a_monthly_ceiling():
     _, config = start(app)
     result = reply(app, config, "change it")
     assert result["history"][-1]["reason"] == "Budget exhausted"
+
+
+
+# --- the project's budget setting (ADR 0018) ------------------------------------------------
+
+
+def test_validate_settings_accepts_a_full_setting_and_no_ceiling():
+    assert validate_settings({"max_minutes": 15, "max_steps": 20, "max_usd": 1.5,
+                              "monthly_usd": None}) == {
+        "max_minutes": 15.0, "max_steps": 20, "max_usd": 1.5, "monthly_usd": None}
+    assert validate_settings({}) == {"max_minutes": 30.0, "max_steps": 40, "max_usd": 5.0,
+                                     "monthly_usd": None}
+
+
+@pytest.mark.parametrize("bad", [
+    {"max_usd": 0}, {"max_usd": -1}, {"max_steps": 2.5}, {"monthly_usd": "100"},
+    {"monthly_usd": 0}, {"max_minutes": 99999}, {"max_usd": True}, {"other": 1}, [], "x",
+])
+def test_validate_settings_refuses_what_it_cannot_store(bad):
+    with pytest.raises(ValueError):
+        validate_settings(bad)
