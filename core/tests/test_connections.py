@@ -415,6 +415,16 @@ def test_parse_policy_rejects_invalid_providers(text):
         parse_policy(text)
 
 
+@pytest.mark.parametrize("provider, model", [("gemini-cli", "gemini-2.5-pro"), ("codex-cli", "gpt-5")])
+def test_orchestrator_role_takes_only_an_ai_provider(provider, model):
+    # The chat is a prompt completion: a coding-agent CLI shares the key but cannot answer it.
+    with pytest.raises(connections.ConnectionInputError, match="orchestrator chat needs an AI provider"):
+        connections.validate_assignment("orchestrator", provider, model)
+    assert connections.validate_assignment("executor", provider, model) == ("executor", provider, model)
+    with pytest.raises(PolicyError):
+        parse_policy(f"providers:\n  orchestrator: {{provider: {provider}, model: {model}}}\n")
+
+
 def test_manage_connections_may_be_restated_as_admin():
     assert parse_policy("interactions:\n  manage_connections: admin\n").interactions.manage_connections == "admin"
 
