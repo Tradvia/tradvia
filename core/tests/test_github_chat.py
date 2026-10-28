@@ -104,3 +104,29 @@ def test_bots_never_approve_even_with_admin_role(login, kind):
                     permissions={login: "admin"})
     chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
     assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) is None
+
+
+def test_outsider_decision_is_refused_and_the_notice_is_posted_once():
+    s = FakeSession([comment(1001, "Aprovado", "NONE", "stranger")])
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
+    mid = chat.post("plan?")
+    assert chat.wait_for_reply(mid, timeout_s=0) is None
+    assert chat.wait_for_reply(mid, timeout_s=0) is None  # polled again: no second notice
+    notices = [c["body"] for c in s.posted[1:]]
+    assert len(notices) == 1
+    assert "@stranger" in notices[0] and "nenhum papel" in notices[0] and "segue como estava" in notices[0]
+
+
+def test_free_text_from_an_outsider_gets_no_notice():
+    s = FakeSession([comment(1001, "Qual o custo?", "NONE", "stranger")])
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
+    assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) is None
+    assert len(s.posted) == 1  # only the plan itself
+
+
+def test_accepted_decision_is_announced_with_the_role():
+    s = FakeSession([comment(1001, "Aprovado", "COLLABORATOR", "maria")],
+                    permissions={"maria": "write"})
+    chat = GitHubIssueChat("t", "Tradvia/tradvia", 7, poll_s=0, session=s)
+    assert chat.wait_for_reply(chat.post("plan?"), timeout_s=0) == {"text": "Aprovado", "by": "maria"}
+    assert "@maria aceita" in s.posted[-1]["body"] and "`write`" in s.posted[-1]["body"]
