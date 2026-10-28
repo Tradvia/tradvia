@@ -71,6 +71,13 @@ and executor of a card is an adapter (Claude Code ✅ Shipped; Gemini CLI and Co
 🟨 In progress, tested offline with fake runners). IDE tools without a headless CLI are
 ⏳ Planned.
 
+**Distributed tracing** (ADR 0017): one OpenTelemetry trace per card, with a span per graph
+node, model run and executor tool call. Optional: `pip install tradvia[otel]`, then set
+`TRADVIA_OTEL=1` and the standard `OTEL_EXPORTER_OTLP_*` variables (for example
+`OTEL_EXPORTER_OTLP_ENDPOINT`). Everything passes through `redact` before export; without
+the extra nothing changes. Status: 🟦 Partial, tested offline with an in-memory exporter;
+not yet verified against a real collector.
+
 **Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
 the panel lists, per project, the cards waiting for you by role (plan ready, agent
 question, PR opened, budget or adjustment limit) with a counter in the header, and can
