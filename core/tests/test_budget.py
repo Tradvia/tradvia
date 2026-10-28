@@ -8,9 +8,10 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from tradvia.budget import (Budget, MonthlyBudget, check, format_monthly, format_usage,
-                            month_spend, monthly_check, parse_budget, parse_monthly_budget,
-                            parse_monthly_usd, usage_ratio)
+from tradvia.budget import (TOKEN_PRICES, Budget, MonthlyBudget, check, estimate_usd,
+                            format_monthly, format_usage, month_spend, monthly_check,
+                            parse_budget, parse_monthly_budget, parse_monthly_usd, remaining,
+                            run_limits, usage_ratio)
 from tradvia.graph import build_graph
 from tradvia.budget import settings_budget, validate_settings
 from tradvia.policy import Policy, parse_policy
@@ -300,6 +301,70 @@ def test_per_card_limit_is_unchanged_with_a_monthly_ceiling():
     result = reply(app, config, "change it")
     assert result["history"][-1]["reason"] == "Budget exhausted"
 
+# --- the run is derived from the card's remaining balance (ADR 0006, unchanged limit) --------
+
+
+def test_remaining_is_never_negative():
+    b = Budget(max_minutes=10, max_steps=10, max_usd=1)
+    assert remaining({"steps": 4, "minutes": 2.5, "usd": 0.25}, b) == {
+        "steps": 6, "minutes": 7.5, "usd": 0.75}
+    assert remaining({"steps": 47, "minutes": 99, "usd": 9}, b) == {
+        "steps": 0, "minutes": 0.0, "usd": 0.0}
+    assert remaining(None, b) == {"steps": 10, "minutes": 10, "usd": 1}
+
+
+def test_run_limits_leave_one_step_for_the_run_itself():
+    b = Budget(max_minutes=10, max_steps=40, max_usd=5)
+    assert run_limits(None, b, 80, 900) == (39, 600)  # capped by the card, not by the defaults
+    assert run_limits({"steps": 10, "minutes": 9.99}, b, 80, 900) == (29, 1)
+    assert run_limits({"steps": 1}, Budget(max_steps=100, max_minutes=60), 80, 900) == (80, 900)
+    assert run_limits({"steps": 39}, b, 80, 900)[0] == 0  # no balance for a single turn
+    assert run_limits({"steps": 47, "minutes": 99}, b, 80, 900) == (0, 1)
+
+
+def test_estimate_usd_uses_the_price_table():
+    assert estimate_usd(1_000_000, 0, 0) == TOKEN_PRICES["default"][0]
+    assert estimate_usd(0, 1_000_000, 1_000_000) == TOKEN_PRICES["default"][1] + TOKEN_PRICES[
+        "default"][2]
+    assert estimate_usd(None, None, None) == 0.0
+    assert estimate_usd(100, 20, 5, model="unknown") == estimate_usd(100, 20, 5)
+
+
+class LimitedExecutor(Executor):
+    """Records the limits the graph hands to each run."""
+
+    def execute(self, card, cwd=".", budget_notice="", max_turns=None, timeout=None):
+        self.limits = (max_turns, timeout)
+        return super().execute(card, cwd, budget_notice)
+
+
+def test_run_never_goes_past_the_remaining_balance(tmp_path):
+    ex = LimitedExecutor(tmp_path)
+    app = build_graph(FakeGitHub(), FakeChat(), planner=Planner(tool_calls=0), executor=ex,
+                      cwd=str(tmp_path), budget=Budget(max_steps=3, max_minutes=2))
+    _, config = start(app)  # the plan used 1 of 3 steps
+    reply(app, config, "approved")
+    turns, seconds = ex.limits
+    assert 1 + turns <= 3 - 1 and turns == 1  # steps used by the run: 1 + tool_calls
+    assert seconds == 120
+
+
+def test_no_balance_for_one_turn_stops_without_calling_the_agent(tmp_path):
+    gh, ex = FakeGitHub(), LimitedExecutor(tmp_path)
+    app = build_graph(gh, FakeChat(), planner=Planner(tool_calls=0), executor=ex,
+                      cwd=str(tmp_path), budget=Budget(max_steps=2))
+    _, config = start(app)  # 1 of 2 steps used: 50%, but no step left besides the run itself
+    result = reply(app, config, "approved")
+    assert not hasattr(ex, "limits") and gh.prs == []
+    assert result["history"][-1]["reason"] == "Budget exhausted"
+
+
+def test_executor_without_limit_parameters_still_runs(tmp_path):
+    ex = Executor(tmp_path)  # the old signature: no max_turns/timeout
+    app = build_graph(FakeGitHub(), FakeChat(), planner=Planner(), executor=ex, cwd=str(tmp_path))
+    _, config = start(app)
+    reply(app, config, "approved")
+    assert len(ex.calls) == 1
 
 
 # --- the project's budget setting (ADR 0018) ------------------------------------------------
