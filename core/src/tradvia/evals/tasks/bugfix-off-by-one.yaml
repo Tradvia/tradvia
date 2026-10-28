@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+id: bugfix-off-by-one
+title: Pagination skips the last item
+body: The list endpoint drops the last item of every page because of an off-by-one in the slice.
+expect:
+  min_steps: 2
+  max_steps: 6
+  must_mention: [test, slice]
+  forbidden_paths: [LICENSE.md, .github/]

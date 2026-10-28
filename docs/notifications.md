@@ -95,3 +95,27 @@ Clicking opens the card in the panel, where the usual sign in and role checks ap
 
 The server only sends to `https` endpoints on public host names, since the subscription's
 endpoint is a request target.
+
+## Proactive alerts
+
+Status: **In progress** (becomes Shipped after the merge).
+
+While the server runs, a check every `TRADVIA_ALERT_INTERVAL_S` seconds (default `300`)
+warns by Discord and Web Push about three things, once per occurrence, with the link to the
+card (or to the run when it has no card):
+
+- **Stuck deploy queue.** A deploy waiting for approval for more than
+  `TRADVIA_DEPLOY_WAIT_ALERT_MINUTES` (default `30`). Replaced runs do not alert. It needs
+  `GITHUB_TOKEN` and sign-in to be configured.
+- **Cost outlier.** A card whose summed cost is more than `TRADVIA_COST_ALERT_FACTOR`
+  (default `3`) times the project's median card cost. It needs at least 5 cards with a cost
+  and ignores a median of 0.
+- **Dead run.** A run still in progress or queued without an update for more than
+  `TRADVIA_RUN_STALE_MINUTES` (default `30`).
+
+The checks run only when Discord (`DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`) or Web Push
+is configured. The Discord message has the kind, the project and the link; the push has only
+project, card number and kind (`deploy_stuck`, `cost_outlier`, `run_dead`), can be muted per
+kind in the preferences, and goes to who may answer it by role. An alert is announced again
+only after its condition stopped holding and came back. Announced alerts are kept in memory:
+a restart can resend those still active. Slack and outbound webhooks are out of scope.

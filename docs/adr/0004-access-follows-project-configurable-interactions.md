@@ -62,8 +62,9 @@ budget:                    # per-card execution limits (ADR 0006)
   max_usd: 5.0
 ```
 
-`.tradvia.yml` also has a `budget` section (execution budgets per card, ADR 0006).
-Invalid values fall back to the safe defaults instead of failing the file.
+`.tradvia.yml` also had a `budget` section (execution budgets per card, ADR 0006).
+Superseded by ADR 0018: budgets are now a setting of the project on Tradvia (Settings, Project
+budget), changed by whoever holds `budget_control`; a `budget` section in the file is ignored.
 
 ### 3. Safety invariants
 

@@ -53,21 +53,46 @@ coming back to a browser.
     the subprocess (`run_claude(env=...)`) and the object never prints its values.
 - **New dependency**: `PyNaCl`. GitHub requires the sealed box
   (X25519 + XSalsa20-Poly1305), which `cryptography` does not implement.
+- **The "Conexões" nav item was dead** (`status: "soon"` since #58, even after the screen
+  shipped): it rendered disabled with a permanent "em breve" badge while the real screen sat,
+  reachable, at the bottom of the panel view. Fixed: the link is live once the signed-in person
+  has `manage_connections` on the current project, and clicking it scrolls to the screen (it is
+  not a separate routed view, so there was nowhere else to send the click).
+- **Authentication is not symmetric across providers, and the catalog says so.** Every AI
+  provider's `note` (shown on its card) states plainly what is and is not possible today, so
+  nothing here is presented as available before it is:
+  - *Claude Code*: a subscription login, not an API key. Get the token either by running
+    `claude setup-token` (prints a long-lived token to paste) or `claude login` once on your
+    own machine (opens a browser to sign in, same OAuth flow; the resulting token is what
+    `setup-token` also produces) — both land in the same `claude-code` secret field. It runs
+    the executor only: the orchestrator chat needs an AI provider with an API key and has no
+    subscription path ([ADR 0013](0013-chat-needs-an-api-key.md)).
+  - *Anthropic (API key)*, *Gemini*, *OpenAI*: pasting an API key is the only method. OpenAI
+    has since announced "Sign in with ChatGPT" — a subscription login comparable to Claude
+    Code's, letting an *approved partner app* spend a subscriber's ChatGPT plan allowance
+    instead of a metered key — but Tradvia is not one of those partners (it is a short list of
+    named launch partners), so it cannot be offered here yet. Google has no equivalent program
+    for Gemini: there is no sanctioned way for a third-party app to use a personal Gemini
+    subscription, and Google has enforced against unofficial attempts at it. Neither gap is a
+    Tradvia limitation to engineer around; they are decided by Anthropic/OpenAI/Google, so the
+    note says so instead of implying a button is merely "not built yet".
 
 ## Status by provider
 
 | Provider | Status | What it means today |
 |---|---|---|
 | GitHub | Shipped | Sign in, roles and actions through the GitHub App; Actions secrets written on save (needs the *Secrets* permission) |
-| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The choice per role is not read yet by the workflows |
-| Google Gemini | In progress | Secret and model stored and delivered; no executor uses them yet |
-| OpenAI | In progress | Secret and model stored and delivered; no executor uses them yet |
+| Anthropic / Claude Code | Partial | Secret and model stored and delivered; the planner calls Anthropic through LiteLLM and `claude.yml` runs Claude Code. The `orchestrator` role reads its own choice (#107; [orchestrator.md](../orchestrator.md)) and the chat runs only with the Anthropic API key, never the Claude Code token (ADR 0013); `planner`/`executor`/`reviewer` still do not |
+| Google Gemini | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
+| OpenAI | In progress | Secret and model stored and delivered; the `orchestrator` role can use it (#107); `planner`/`executor`/`reviewer` do not yet |
 | GitLab | Planned | Issue #60 |
 
 ## Consequences
 
-- The workflows do not read the per-role choice yet; wiring the planner and
-  executor to it is follow-up work, and the table above must change with it.
+- The `agent.yml`/`claude.yml` workflows (`planner`, `executor`, `reviewer`) do not read the
+  per-role choice yet; wiring them to it is follow-up work, and the table above must change
+  with it. The `orchestrator` role, called in-process rather than as a workflow, reads its own
+  choice already (#107).
 - The GitHub App needs the repository permission *Secrets: Read and write*
   ([docs/github-app.md](../github-app.md)); existing installs must accept it.
 - Status: Partial. Code and offline tests shipped.

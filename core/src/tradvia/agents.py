@@ -15,8 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol
 
-from .claude_code import (EXEC_PROMPT, PLAN_PROMPT, changed_files, exec_max_turns, parse_plan,
-                          plan_max_turns, untracked_files, _timeout)
+from .claude_code import (EXEC_PROMPT, PLAN_PROMPT, add_costs, changed_files, exec_max_turns,
+                          plan_max_turns, plan_with_repair, untracked_files, _timeout)
 from .connections import redact
 
 NOT_REPORTED = "não informado"
@@ -119,11 +119,14 @@ class CliAgent:
 
     def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
         prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
-        result = self.run(prompt + (f"\n\n{notice}" if notice else ""), cwd, False,
-                          plan_max_turns())
-        plan = parse_plan(result.text, self.label)
-        plan["_cost"] = result.cost.as_dict()
-        plan["_tool_calls"] = result.tool_calls
+        prompt += f"\n\n{notice}" if notice else ""
+
+        def ask(text: str) -> Run:
+            return self.run(text, cwd, False, plan_max_turns())
+
+        plan, runs = plan_with_repair(ask, lambda result: result.text, prompt, self.label)
+        plan["_cost"] = add_costs([result.cost.as_dict() for result in runs])
+        plan["_tool_calls"] = sum(result.tool_calls for result in runs)
         return plan
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
