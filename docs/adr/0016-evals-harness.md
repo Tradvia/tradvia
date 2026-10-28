@@ -1,4 +1,4 @@
-# ADR 0012: an evals harness with golden tasks, scripted by default
+# ADR 0016: an evals harness with golden tasks, scripted by default
 
 - Status: Accepted
 - Date: 2026-10-26

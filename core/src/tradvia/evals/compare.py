@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
-"""Task-by-task comparison of two eval reports (ADR 0012)."""
+"""Task-by-task comparison of two eval reports (ADR 0016)."""
 
 from __future__ import annotations
 

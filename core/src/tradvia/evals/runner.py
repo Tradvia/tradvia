@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
-"""Suite runner and planners for the evals harness (ADR 0012).
+"""Suite runner and planners for the evals harness (ADR 0016).
 
 `scripted` is the default: fixed answers from `scripts/<label>.yaml`, no network, no key.
 `live` calls `llm.architect_plan` with TRADVIA_PLANNER_MODEL and needs TRADVIA_EVALS_LIVE=1;

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Copyright (c) 2026 Anderson dos Santos Dutra
-"""Evals harness (ADR 0012): golden tasks with an expected outcome, run through a planner.
+"""Evals harness (ADR 0016): golden tasks with an expected outcome, run through a planner.
 
 A `Task` says what a good plan looks like (step range, words it must mention, paths it must not
 target). `run_task` asks a planner for a plan, validates it with `claude_code.parse_plan` and
