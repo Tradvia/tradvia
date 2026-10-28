@@ -302,6 +302,48 @@ def test_a_run_still_in_progress_is_agent_working_even_after_an_earlier_failure(
     ) == "AGENT_WORKING"
 
 
+def test_a_run_started_after_the_last_marker_is_a_new_attempt_and_shows_agent_working():
+    # #152: the marker was posted by the attempt before this run, so the run going now counts.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    card["tradvia_last_marker_at"] = "2026-03-29T10:30:00Z"
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "AGENT_WORKING"
+
+
+def test_a_run_that_started_before_the_marker_is_still_waiting_for_the_reply():
+    # #152: the marker came after this run started, so it is the same job polling for the reply.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F7E1"  # 🟡
+    card["tradvia_last_marker_at"] = "2026-03-29T12:00:00Z"
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-29T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "WAITING_HUMAN"
+
+
+def test_a_finished_newer_run_keeps_the_marker_until_the_agent_posts_again():
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    card["tradvia_last_marker_at"] = "2026-03-29T10:30:00Z"
+    assert js(
+        "deriveCardState(card, [], [run_])", card=card,
+        run_=run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"),
+    ) == "BLOCKED"
+
+
+def test_without_the_marker_time_the_marker_keeps_deciding():
+    # A server that does not send tradvia_last_marker_at behaves as before.
+    card = issue(99, "2026-03-29T10:00:00Z", title="Card 99")
+    card["tradvia_last_marker"] = "\U0001F534"  # 🔴
+    in_progress = dict(
+        run("agent.yml", "Card 99", "2026-03-31T11:00:00Z"), status="in_progress", conclusion=None
+    )
+    assert js("deriveCardState(card, [], [run_])", card=card, run_=in_progress) == "BLOCKED"
+
+
 # --- cost per card --------------------------------------------------------------------------
 
 def test_card_cost_sums_every_plan_plus_the_executor():

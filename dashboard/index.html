@@ -74,7 +74,6 @@
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
   .controls { display: flex; gap: 8px; align-items: center; }
-  #help-link { border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
   button, select {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
@@ -105,6 +104,12 @@
   .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s3); }
   .kpi .v { font-size: var(--fs-xl); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .kpi .bar { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .kpi .bar > span { display: block; height: 100%; background: var(--ok); }
+  .kpi.warn .bar > span { background: var(--warn); }
+  .kpi.stop .bar > span { background: var(--bad); }
+  .kpi.warn .v { color: var(--warn); }
+  .kpi.stop .v { color: var(--bad); }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; font-size: 12px; }
   .filters label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
   .filters input[type=date] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; padding: 2px 6px; }
@@ -225,7 +230,6 @@
       <button id="deploy-alert" type="button" hidden><span aria-hidden="true">⏳</span> <span id="deploy-alert-count">0</span></button>
       <span id="auth" class="auth" hidden></span>
       <select id="project" aria-label="Project" hidden></select>
-      <a id="help-link" href="docs.html" data-i18n="help"></a>
       <select id="lang" aria-label="Language">
         <option value="pt">PT-BR</option>
         <option value="en">EN</option>
@@ -261,6 +265,7 @@
         <div class="log" id="chat-log" aria-live="polite"></div>
         <div class="working" id="chat-working" hidden data-i18n="chatWorking"></div>
         <div class="sub" id="chat-cost"></div>
+        <div class="msg" id="chat-off" role="status" hidden data-i18n="chatNoApiKey"></div>
         <form id="chat-form" hidden>
           <textarea id="chat-input" rows="2" maxlength="2000" data-i18n-placeholder="chatHint"></textarea>
           <button type="submit" id="chat-send" data-i18n="chatSend"></button>
@@ -315,6 +320,16 @@ function branchMatchesIssue(ref, n) {
   return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
 }
 
+// True while a run of this card that started after `since` (ISO time) is still going. The
+// marker before it is from an earlier attempt, so the board shows the card as worked on.
+function runningSince(title, agentRuns, since) {
+  const t = Date.parse(since);
+  if (isNaN(t)) return false;
+  return agentRuns.some((r) => r.status !== "completed"
+    && (r.display_title || r.name) === title
+    && Date.parse(r.run_started_at) > t);
+}
+
 // agentRuns: runs of agent.yml only.
 function deriveCardState(issue, prs, agentRuns) {
   if (issue.state === "closed") return "DONE";
@@ -329,7 +344,12 @@ function deriveCardState(issue, prs, agentRuns) {
   // (BLOCKED); any other marker means something is waiting on a human right now, whatever
   // the run status says.
   if (issue.tradvia_last_marker) {
-    return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    // A run still going that started after the marker (tradvia_last_marker_at, #152) is a
+    // new attempt: the marker belongs to the attempt before it.
+    if (!runningSince(issue.title, agentRuns, issue.tradvia_last_marker_at)) {
+      return issue.tradvia_last_marker === "\u{1F534}" ? "BLOCKED" : "WAITING_HUMAN";
+    }
+    return "AGENT_WORKING";
   }
   const mine = agentRuns.filter((r) => (r.display_title || r.name) === issue.title);
   if (mine.some((r) => r.status !== "completed")) return "AGENT_WORKING";
@@ -1333,7 +1353,10 @@ async function renderDeploys() {
 // Conversation with the project's orchestrator (ADR 0007). Messages are plain text (textContent
 // only). The agent never approves, merges or deploys: those arrive as "pending" messages with
 // a button that calls the same panel action, so the server checks the role again.
-let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false, at: 0 };
+// canChat: may send and an AI provider with an API key answers (ADR 0013). canAct: may use the
+// buttons of pending items, which do not need the chat model. offReason: why the chat is off.
+let chatState = { repo: null, messages: [], working: false, cost: null, canChat: false,
+                  canAct: false, offReason: null, at: 0 };
 let chatToken = 0;
 const CHAT_POLL_MS = 3000;
 const CHAT_IDLE_MS = 20000;
@@ -1383,10 +1406,11 @@ function renderChat() {
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.replaceChildren();
   if (!chatState.messages.length) log.append(el("div", t("chatEmpty"), "sub"));
-  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canChat)));
+  chatState.messages.forEach((m) => log.append(chatMessage(m, chatState.canAct)));
   if (atEnd) log.scrollTop = log.scrollHeight;
   document.getElementById("chat-working").hidden = !chatState.working;
   document.getElementById("chat-form").hidden = !chatState.canChat;
+  document.getElementById("chat-off").hidden = chatState.offReason !== "no_api_key";
   document.getElementById("chat-send").disabled = chatState.working;
   const c = chatState.cost;
   document.getElementById("chat-cost").textContent =
@@ -1400,7 +1424,9 @@ async function loadChat() {
   const res = await panelRequest("GET", "/chat");
   if (mineToken !== chatToken || repo !== getRepo() || !res.ok) return;
   chatState = { repo, messages: res.data.messages, working: !!res.data.working,
-                cost: res.data.cost, canChat: !!res.data.can_chat, at: Date.now() };
+                cost: res.data.cost, canChat: !!res.data.can_chat,
+                canAct: !!res.data.can_chat || !!res.data.chat_off_reason,
+                offReason: res.data.chat_off_reason || null, at: Date.now() };
   renderChat();
 }
 
@@ -1469,6 +1495,32 @@ async function loadBacklog(repo) {
 
 const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em andamento": "andamento", "concluído": "concluido" };
 
+// A card can have real in-flight work (an open PR on its own branch) without ever carrying the
+// agent:ready label: the label starts a run (agent.yml), it does not mark one as under way. Left
+// alone, such a card was reachable only from the "Pendências" inbox, never as a card in its own
+// column (deriveCardState already places it correctly — it never looked at the label). Fetched
+// one issue at a time: there is no "give me these N issues" endpoint.
+function orphanedIssueNumbers(labeledIssues, prs) {
+  const known = new Set(labeledIssues.map((i) => i.number));
+  const found = new Set();
+  for (const p of prs) {
+    if (p.state !== "open") continue;
+    const n = issueOfBranch(p.head && p.head.ref);
+    if (n != null && !known.has(n)) found.add(n);
+  }
+  return [...found];
+}
+
+async function withOrphanedCards(repo, labeledIssues, prs) {
+  const numbers = orphanedIssueNumbers(labeledIssues, prs);
+  if (numbers.length === 0) return labeledIssues;
+  const fetched = await Promise.all(
+    numbers.map((n) => getData(repo, "/issues/" + n).catch(() => null))
+  );
+  const extra = fetched.filter((i) => i && !i.pull_request);
+  return labeledIssues.concat(extra);
+}
+
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
   const [agent, claude, labeled, openIssues, prs, openPrs] = await Promise.all([
@@ -1484,12 +1536,16 @@ async function loadData(repo) {
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
   // Open PRs are read in full: the 50 most recent PRs alone can leave out an old open one.
   const allPrs = mergePulls(openPrs, prs);
-  return { agentRuns, runs, issues: boardCards(labeled, openIssues, allPrs), prs: allPrs, backlog: await loadBacklog(repo) };
+  // Cards with an open agent PR among the open issues, then any such card still missing (an
+  // issue beyond the first 100 open ones), fetched one by one.
+  const cards = await withOrphanedCards(repo, boardCards(labeled, openIssues, allPrs), allPrs);
+  return { agentRuns, runs, issues: cards, prs: allPrs, backlog: await loadBacklog(repo) };
 }
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
 
-const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit"];
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+  "deploy_stuck", "cost_outlier", "run_dead"];
 let inboxOpen = false;
 let inboxData = []; // [{ repo, items }] of the projects that have something pending
 let pushKey = null; // VAPID public key; null while unknown or when notifications are off
@@ -1668,9 +1724,14 @@ function deepLinkNote() {
 function openRequestedCard() {
   if (cardToOpen === null) return;
   const n = cardToOpen;
-  cardToOpen = null; // tried once: the note above the board says why when it is not there
+  cardToOpen = null; // one attempt: by the time this runs, data.issues has already loaded
   const node = document.getElementById("card-" + n);
-  if (!node) return;
+  if (!node) {
+    // A pending item the board cannot show (pending.py flags any open agent PR, labeled or not)
+    // is still something to act on (ADR 0007): open the GitHub issue rather than do nothing.
+    window.open("https://github.com/" + getRepo() + "/issues/" + n, "_blank", "noopener");
+    return;
+  }
   node.scrollIntoView({ block: "center" });
   if (dialogCard !== n) node.click();
 }
@@ -1680,7 +1741,7 @@ function openRequestedCard() {
 const I18N = {
   pt: {
     signIn: "Entrar com GitHub", signOut: "Sair", role: "papel", noRole: "sem papel (leitura)",
-    help: "Ajuda",
+    docs: "Documentação", docsTitle: "README e guias de uso (abre em outra aba)",
     inbox: "Pendências", inboxEmpty: "Nada aguardando você.", notifications: "Notificações",
     noteFilterCard: "O card #{n} não está no quadro: o filtro por card foi ignorado.",
     noteDeepLinkCard: "O card #{n} não está no quadro (sem o rótulo agent:ready e sem PR aberta do agente).",
@@ -1689,7 +1750,8 @@ const I18N = {
     notifyEvents: "Avisar quando:", pushDenied: "O navegador não permitiu notificações.",
     kind_plan_ready: "plano pronto para aprovar", kind_agent_question: "pergunta do agente",
     kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
-    kind_adjust_limit: "limite de ajustes",
+    kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
+    kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1722,6 +1784,7 @@ const I18N = {
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
     chatHint: "Peça ao orquestrador: criar um card, revisar um PR, ajustar um plano…", chatSend: "Enviar",
+    chatNoApiKey: "O chat está desligado: falta uma IA com chave de API. Um admin configura em Conexões o papel orchestrator (Anthropic, OpenAI ou Gemini) e a chave desse provedor.",
     chatEmpty: "Nenhuma mensagem ainda.", chatCost: "Custo do orquestrador neste projeto",
     chatApprovePlan: "Aprovar plano", chatRejectPlan: "Rejeitar plano", chatMerge: "Fazer merge",
     chatApproveDeploy: "Aprovar deploy", chatFailed: "Não foi possível enviar a mensagem.",
@@ -1744,6 +1807,9 @@ const I18N = {
     ST_WAITING_HUMAN: "aguardando humano", ST_BLOCKED: "bloqueado",
     ST_IN_REVIEW_PR: "em revisão", ST_DONE: "concluído",
     noData: "Sem dados de custo neste período: nenhum plano ou PR do agente com custo registrado.",
+    monthlyBudget: "Orçamento mensal (UTC)",
+    monthlyNone: "Sem teto mensal: defina budget.monthly_usd em .tradvia.yml.",
+    monthlyUnknown: "Não foi possível ler o gasto do mês.",
     costTotal: "Custo total", costMedian: "Custo mediano por card", tokensTotal: "Tokens totais",
     tokensIn: "entrada", tokensOut: "saída", tokensCache: "cache", tokensPerCard: "Tokens por card (mediana)",
     costPerPr: "Custo por PR mesclado", cardsInPeriod: "Cards no período",
@@ -1786,7 +1852,7 @@ const I18N = {
   },
   en: {
     signIn: "Sign in with GitHub", signOut: "Sign out", role: "role", noRole: "no role (read-only)",
-    help: "Help",
+    docs: "Documentation", docsTitle: "README and usage guides (opens in a new tab)",
     inbox: "Pending", inboxEmpty: "Nothing is waiting for you.", notifications: "Notifications",
     noteFilterCard: "Card #{n} is not on the board: the card filter was ignored.",
     noteDeepLinkCard: "Card #{n} is not on the board (no agent:ready label and no open agent PR).",
@@ -1795,7 +1861,8 @@ const I18N = {
     notifyEvents: "Notify me when:", pushDenied: "The browser did not allow notifications.",
     kind_plan_ready: "plan ready to approve", kind_agent_question: "agent question",
     kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
-    kind_adjust_limit: "adjustment limit",
+    kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
+    kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -1828,6 +1895,7 @@ const I18N = {
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",
     chatHint: "Ask the orchestrator: create a card, review a PR, adjust a plan…", chatSend: "Send",
+    chatNoApiKey: "The chat is off: it needs an AI provider with an API key. An admin sets the orchestrator role (Anthropic, OpenAI or Gemini) and that provider's key in Connections.",
     chatEmpty: "No messages yet.", chatCost: "Orchestrator cost in this project",
     chatApprovePlan: "Approve plan", chatRejectPlan: "Reject plan", chatMerge: "Merge",
     chatApproveDeploy: "Approve deploy", chatFailed: "The message could not be sent.",
@@ -1850,6 +1918,9 @@ const I18N = {
     ST_WAITING_HUMAN: "waiting for human", ST_BLOCKED: "blocked",
     ST_IN_REVIEW_PR: "in review", ST_DONE: "done",
     noData: "No cost data in this period: no agent plan or PR with a recorded cost.",
+    monthlyBudget: "Monthly budget (UTC)",
+    monthlyNone: "No monthly ceiling: set budget.monthly_usd in .tradvia.yml.",
+    monthlyUnknown: "Could not read this month's spend.",
     costTotal: "Total cost", costMedian: "Median cost per card", tokensTotal: "Total tokens",
     tokensIn: "in", tokensOut: "out", tokensCache: "cache", tokensPerCard: "Tokens per card (median)",
     costPerPr: "Cost per merged PR", cardsInPeriod: "Cards in period",
@@ -1901,8 +1972,16 @@ const VIEWS = ["panel", "settings", "help"];
 function navItems(rights) {
   return [
     { id: "panel", labelKey: "nav.panel", status: "ready" },
-    { id: "connections", labelKey: "nav.connections", status: "soon" }, // #58
+    // #58/ADR 0009: shipped (roles, secrets, GitHub Actions delivery), rendered inline at the
+    // bottom of the panel view (#connections-section) rather than as its own routed view.
+    // "soon" only for someone who cannot use the screen yet (no admin role on this project);
+    // for an admin the link is live and scrolls there (see scrollToConnectionsIfLinked()).
+    { id: "connections", labelKey: "nav.connections", status: rights && rights.can_manage_connections ? "ready" : "soon" },
     { id: "settings", labelKey: "nav.settings", status: "ready", limited: !rights },
+    // Two different things used to both say "Ajuda" in the header: this one leaves the app for
+    // the full README/guides page, the next opens the in-app help view. Keeping them side by
+    // side in the same menu, with distinct labels, makes clear they're not the same link twice.
+    { id: "docs", labelKey: "docs", status: "ready", href: "docs.html", external: true, titleKey: "docsTitle" },
     { id: "help", labelKey: "nav.help", status: "ready" },
   ];
 }
@@ -2025,6 +2104,32 @@ function renderKpis(view) {
     d.append(val, el("div", l, "l"));
     root.append(d);
   }
+  root.append(monthlyBudgetKpi());
+}
+
+// Project ceiling vs. spend of the UTC month, from /auth/me; "—" with a tooltip without a ceiling.
+function monthlyBudgetKpi() {
+  const p = authState && authState.authenticated === true
+    ? (authState.projects || []).find((x) => x.external_id === getRepo()) : null;
+  const mb = p && p.monthly_budget;
+  const d = el("div", null, "kpi");
+  if (!mb || mb.cap_usd == null) {
+    const val = el("div", "—", "v");
+    val.title = t("monthlyNone");
+    d.append(val, el("div", t("monthlyBudget"), "l"));
+    return d;
+  }
+  const spent = mb.spent_usd;
+  const val = el("div", (spent == null ? "—" : "$" + spent.toFixed(2)) + " / $" + mb.cap_usd.toFixed(2), "v");
+  if (spent == null) val.title = t("monthlyUnknown");
+  d.append(val, el("div", t("monthlyBudget"), "l"));
+  const bar = el("div", null, "bar");
+  const fill = document.createElement("span");
+  fill.style.width = (spent == null ? 0 : Math.min(100, (spent / mb.cap_usd) * 100)) + "%";
+  bar.append(fill);
+  d.append(bar);
+  if (mb.level === "warn" || mb.level === "stop") d.classList.add(mb.level);
+  return d;
 }
 
 function svgEl(tag, attrs) {
@@ -2726,6 +2831,15 @@ function currentView() {
   return parseView(location.hash);
 }
 
+// "#connections" is not a routed view (it falls back to "panel" in parseView): it is an
+// in-page anchor to #connections-section, which render()/renderConnections() already show or
+// hide by the time this runs. A no-op when the section is hidden (no admin role) or absent.
+function scrollToConnectionsIfLinked() {
+  if (location.hash !== "#connections") return;
+  const section = document.getElementById("connections-section");
+  if (section && !section.hidden) section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function navRights() {
   if (!authState || authState.authenticated !== true) return null;
   return myRights() || { role: null };
@@ -2740,6 +2854,11 @@ function renderNav() {
     if (it.status === "soon") {
       a.setAttribute("aria-disabled", "true");
       a.append(el("span", t("soon"), "soon-badge"));
+    } else if (it.external) {
+      a.href = it.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      if (it.titleKey) a.title = t(it.titleKey);
     } else {
       a.href = "#" + it.id;
       if (it.id === view) a.setAttribute("aria-current", "page");
@@ -2978,9 +3097,9 @@ document.getElementById("lang").addEventListener("change", (e) => {
   // Mirrors the choice under the plain key docs.html (a separate page) reads.
   try { localStorage.setItem("tradvia.lang", e.target.value); } catch (err) { /* ignore */ }
 });
-window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); });
+window.addEventListener("hashchange", () => { render(); tickAutoRefresh(); scrollToConnectionsIfLinked(); });
 document.getElementById("show-skipped").addEventListener("change", (e) => { showSkipped = e.target.checked; runsPage = 0; render(); });
-detectApi().then(() => { loadAuth(); return refresh(); });
+detectApi().then(() => { loadAuth(); return refresh(); }).then(scrollToConnectionsIfLinked);
 </script>
 </body>
 </html>
