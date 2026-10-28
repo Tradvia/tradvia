@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
 CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
+CREATE INDEX IF NOT EXISTS audit_log_project_time_idx ON audit_log (project_id, created_at);
 
 -- Orchestrator conversation (ADR 0007): one chat per project. `refs` points at cards, pull
 -- requests and deploys; `kind` is message, reply, pending (needs the human) or warning.
