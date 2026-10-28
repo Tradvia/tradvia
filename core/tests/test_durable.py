@@ -117,3 +117,92 @@ def test_without_database_url_nothing_connects(monkeypatch):
     assert isinstance(make_checkpointer(), MemorySaver)
     app = build_graph(FakeGitHub(), FakeChat(), planner=_offline_plan)
     assert isinstance(app.checkpointer, MemorySaver)
+
+
+class ScriptedChat(FakeChat):
+    """Chat whose replies are scripted; records the timeout each wait used."""
+
+    name = "the issue"
+
+    def __init__(self, replies):
+        super().__init__()
+        self.replies, self.timeouts = list(replies), []
+
+    def wait_for_reply(self, after_message_id, timeout_s):
+        self.timeouts.append(timeout_s)
+        return self.replies.pop(0) if self.replies else None
+
+
+def patch_run(monkeypatch, gh, chat, saver, planner):
+    from tradvia import cli
+    from tradvia.policy import Policy
+
+    gh.repo, gh.base = REPO, "main"
+    monkeypatch.setenv("TRADVIA_REPO", REPO)
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused")  # durable: no in-job fallback
+    monkeypatch.delenv("TRADVIA_ACTOR", raising=False)
+    monkeypatch.setattr(cli, "GitHubREST", lambda *a, **k: gh)
+    monkeypatch.setattr(cli, "load_policy", lambda github: Policy())
+    monkeypatch.setattr(cli, "project_budget_setting", lambda repo: None)
+    monkeypatch.setattr(cli, "make_month_spend", lambda repo: None)
+    monkeypatch.setattr(cli, "project_id_of", lambda repo: 1)
+    monkeypatch.setattr(cli, "make_chat", lambda kind, issue, policy: chat)
+    monkeypatch.setattr(cli, "make_planner", lambda: planner)
+    monkeypatch.setattr(cli, "make_executor", lambda **k: None)
+    monkeypatch.setattr(cli, "make_checkpointer", lambda: saver)
+    return cli
+
+
+def test_late_reply_resumes_the_card_without_replanning(monkeypatch):
+    saver, planner, calls = MemorySaver(), *counting_planner()
+
+    # Label run: posts the plan, checks once for a reply (--wait 0) and ends
+    gh, chat = FakeGitHub(), ScriptedChat([])
+    cli = patch_run(monkeypatch, gh, chat, saver, planner)
+    first = cli.run(1, 0, "github")
+    assert first["status"] == "WAITING_HUMAN"
+    assert calls == [1] and chat.timeouts == [0] and gh.branches == []
+    titles = [s["title"] for s in first["plan"]]
+
+    # Two hours later the reply is there; a new job on the same checkpoint resumes
+    gh, chat = FakeGitHub(), ScriptedChat([{"text": "Aprovado", "by": "dev"}])
+    cli = patch_run(monkeypatch, gh, chat, saver, planner)
+    second = cli.run(1, 0, "github")
+    assert second["status"] == "IN_REVIEW_PR"
+    assert [s["title"] for s in second["plan"]] == titles
+    assert calls == [1]  # the plan was neither lost nor regenerated
+    assert gh.branches == ["tradvia/issue-1"]
+
+
+def test_without_database_url_waits_in_the_same_job(monkeypatch, capsys):
+    saver, planner, _ = MemorySaver(), *counting_planner()
+    chat = ScriptedChat([])
+    cli = patch_run(monkeypatch, FakeGitHub(), chat, saver, planner)
+    monkeypatch.delenv("DATABASE_URL")
+    cli.run(1, 0, "github")
+    assert chat.timeouts == [3600]
+    assert "durable waiting is disabled" in capsys.readouterr().out
+
+
+def test_discord_checks_once_with_timeout_zero():
+    from tradvia.integrations import DiscordREST
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    class Session:
+        gets = 0
+
+        def get(self, *a, **k):
+            Session.gets += 1
+            return Resp()
+
+    discord = DiscordREST("t", "c", poll_s=0)
+    discord.s = Session()
+    assert discord.wait_for_reply("10", 0) is None
+    assert Session.gets == 1
