@@ -13,7 +13,7 @@ from typing import Protocol
 
 import yaml
 
-from .budget import Budget, parse_budget
+from .budget import Budget, parse_budget, parse_monthly_usd
 from .connections import ConnectionInputError, validate_assignment
 from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
 
@@ -66,6 +66,8 @@ class Policy:
     stagnation: Stagnation = Stagnation()
     risk: RiskPolicy = RiskPolicy()
     budget: Budget = Budget()
+    # Project ceiling per UTC month (`budget.monthly_usd`); None = no ceiling.
+    monthly_usd: float | None = None
     # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
     providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -154,7 +156,8 @@ def parse_policy(text: str | None) -> Policy:
                          for k, v in raw_risk.items()})
     # Never raises: invalid budget values fall back to the safe defaults.
     return Policy(view=view, interactions=interactions, stagnation=stagnation, risk=risk,
-                  budget=parse_budget(data.get("budget")), providers=_providers(data))
+                  budget=parse_budget(data.get("budget")),
+                  monthly_usd=parse_monthly_usd(data.get("budget")), providers=_providers(data))
 
 
 def _providers(data: dict) -> dict[str, dict[str, str]]:

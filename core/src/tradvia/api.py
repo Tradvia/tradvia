@@ -6,8 +6,11 @@ Run with: uvicorn tradvia.api:app
 
 from __future__ import annotations
 
+import contextlib
+import csv
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -15,7 +18,8 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, NamedTuple
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Callable, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -67,10 +71,12 @@ from .auth import (
     load_config,
     role_refusal,
 )
-from . import pending, push
+from . import alerts, pending, push
+from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
-from .connections import Connections, ConnectionInputError
+from .budget import monthly_check, store_month_spend
+from .connections import Connections, ConnectionInputError, redact
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -172,6 +178,12 @@ def default_fetch(url: str, headers: dict[str, str]) -> Upstream:
     )
 
 
+def _alert_discord() -> Chat | None:
+    """The Discord channel for alerts when `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set."""
+    bot, channel = os.environ.get("DISCORD_BOT_TOKEN", ""), os.environ.get("DISCORD_CHANNEL_ID", "")
+    return DiscordREST(bot, channel) if bot and channel else None
+
+
 def registered_projects() -> list[str]:
     """Repositories accepted by the API: `TRADVIA_PROJECTS`, default `TRADVIA_REPO`."""
     default = os.environ.get("TRADVIA_REPO", "Tradvia/tradvia")
@@ -211,6 +223,32 @@ def _not_found() -> JSONResponse:
 
 def _store_unavailable() -> JSONResponse:
     return JSONResponse({"error": "storage unavailable"}, status_code=503)
+
+
+AUDIT_COLUMNS = ("created_at", "actor_login", "action", "issue_number", "result", "detail", "via")
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def audit_csv(rows: list[dict[str, Any]]) -> str:
+    """CSV of audit rows; a cell a spreadsheet would run as a formula gets a leading quote."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(AUDIT_COLUMNS)
+    for row in rows:
+        cells = ["" if row[c] is None else str(row[c]) for c in AUDIT_COLUMNS]
+        writer.writerow(["'" + c if c.startswith(_FORMULA_START) else c for c in cells])
+    return out.getvalue()
+
+
+def audit_jsonl(rows: list[dict[str, Any]]) -> str:
+    return "".join(json.dumps({c: row[c] for c in AUDIT_COLUMNS}) + "\n" for row in rows)
+
+
+# file formats besides json: format -> (media type, file extension, renderer)
+AUDIT_FORMATS: dict[str, tuple[str, str, Callable[[list[dict[str, Any]]], str]]] = {
+    "csv": ("text/csv", "csv", audit_csv),
+    "jsonl": ("application/x-ndjson", "jsonl", audit_jsonl),
+}
 
 
 def per_page(value: str | None) -> int:
@@ -310,6 +348,7 @@ def create_app(
     chat_runner: Callable[..., Any] | None = None,
     spawn: Callable[[Callable[[], None]], None] | None = None,
     push_sender: push.Sender | None = None,
+    alert_discord: Chat | None = None,
 ) -> Starlette:
     """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
     background thread of the orchestrator conversation (tests inject fakes)."""
@@ -741,6 +780,7 @@ def create_app(
         counts = await run_in_threadpool(
             lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
         )
+        budgets = await run_in_threadpool(lambda: [monthly_budget(session, r) for r in repos])
         response = JSONResponse(
             {
                 "enabled": True,
@@ -751,8 +791,9 @@ def create_app(
                 "projects": [
                     {"slug": project_slug(r), "external_id": r, "role": role,
                      "role_reason": reason, "notice": role_refusal(reason),
-                     "pending_count": n, **rights}
-                    for r, (role, reason), rights, n in zip(repos, statuses, can, counts)
+                     "pending_count": n, "monthly_budget": mb, **rights}
+                    for r, (role, reason), rights, n, mb in zip(
+                        repos, statuses, can, counts, budgets)
                 ],
             }
         )
@@ -865,6 +906,26 @@ def create_app(
             "can_approve": policy.allows("approve_plan", role),
             "can_manage_connections": policy.allows("manage_connections", role),
         }
+
+    def monthly_budget(session: Any, repo: str) -> dict[str, Any]:
+        """Ceiling and spend of the UTC month for the panel; `cap_usd` is null without a ceiling.
+
+        `level` is ok, warn or stop; "unknown" when the spend cannot be read.
+        """
+        out: dict[str, Any] = {"cap_usd": None, "spent_usd": None, "level": "ok"}
+        try:
+            cap = auth.policy_for(session, repo, fresh=False).monthly_usd
+        except Exception:  # unreadable or invalid policy: no ceiling to show
+            return out
+        if cap is None or db is None:
+            return out
+        out["cap_usd"] = cap
+        try:
+            spent = store_month_spend(db, project_id_of(repo))
+        except Exception:
+            out["level"] = "unknown"
+            return out
+        return {"cap_usd": cap, "spent_usd": spent, "level": monthly_check(spent, cap)}
 
     class Done(NamedTuple):
         number: int | None
@@ -1482,6 +1543,79 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    def audit_time(params: Any, name: str) -> float | None:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            raise ValueError(f"'{name}' must be an ISO 8601 date or date and time.") from None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp()
+
+    def audit_int(params: Any, name: str, default: int, low: int, high: int | None) -> int:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = low - 1
+        if value < low or (high is not None and value > high):
+            span = f"between {low} and {high}" if high is not None else f"at least {low}"
+            raise ValueError(f"'{name}' must be a whole number {span}.")
+        return value
+
+    def read_project_audit(session: Any, repo: str, params: Any) -> Outcome:
+        """The project's audit log by period and page; same role rule as the card audit."""
+        assert auth is not None and db is not None
+        role, reason = auth.role_status(session, repo)
+        if role is None:
+            return read_refused(repo, reason)
+        fmt = params.get("format") or "json"
+        try:
+            if fmt != "json" and fmt not in AUDIT_FORMATS:
+                raise ValueError("'format' must be json, csv or jsonl.")
+            since, until = audit_time(params, "from"), audit_time(params, "to")
+            limit = audit_int(params, "limit", 100, 1, 1000)
+            offset = audit_int(params, "offset", 0, 0, None)
+        except ValueError as e:
+            return Outcome(400, {"error": str(e)})
+        rows = db.query_audit(project_id_of(repo), since, until, limit, offset)
+        has_more = len(rows) > limit
+        # known secret values are not kept by the panel (they live on GitHub): the shapes of
+        # provider keys and tokens are what can be recognised here
+        clean = [
+            {k: redact(v) if isinstance(v, str) else v for k, v in row.items()}
+            for row in rows[:limit]
+        ]
+        return Outcome(200, {"audit": clean, "limit": limit, "offset": offset,
+                             "has_more": has_more, "format": fmt})
+
+    async def project_audit(request: Request) -> Response:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repo = f"{owner}/{name}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return failure
+        try:
+            out = await run_in_threadpool(read_project_audit, session, repo, request.query_params)
+        except Exception:
+            return private(_store_unavailable())
+        if out.status != 200:
+            return private(JSONResponse(out.body, status_code=out.status))
+        fmt = out.body.pop("format")
+        if fmt == "json":
+            return private(JSONResponse(out.body))
+        media, ext, render = AUDIT_FORMATS[fmt]
+        response = Response(render(out.body["audit"]), media_type=media)
+        response.headers["Content-Disposition"] = f'attachment; filename="audit-{owner}-{name}.{ext}"'
+        return private(response)
+
     # --- reading pull requests and deploys with the user's token (ADR 0007) -------------------
 
     def rights(session: Any, repo: str, *interactions: str) -> dict[str, bool]:
@@ -1596,7 +1730,73 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
-    return Starlette(
+    # --- proactive alerts (alerts.py): checks every TRADVIA_ALERT_INTERVAL_S -----------------
+    discord = alert_discord or _alert_discord()
+    ledger = alerts.AlertLedger()
+    cost_alert_factor = alerts.cost_factor(os.environ.get("TRADVIA_COST_ALERT_FACTOR"))
+    run_stale = alerts.run_stale_minutes(os.environ.get("TRADVIA_RUN_STALE_MINUTES"))
+
+    def waiting_deploys(repo: str) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        assert auth is not None
+        runs = auth.github.list_runs(token, repo, "waiting")[:MAX_DEPLOY_RUNS]
+        return runs, {r["id"]: auth.github.list_pending_deployments(token, repo, r["id"]) for r in runs}
+
+    def tick(at: float | None = None) -> None:
+        """One round of checks over every registered project. A failing check is skipped and
+        its remembered alerts kept, so a GitHub outage does not repeat them afterwards."""
+        assert db is not None
+        now_s = clock() if at is None else at
+        for repo in repos:
+            try:
+                pid = project_id_of(repo)
+            except Exception:
+                continue
+            slug = project_slug(repo)
+            found: list[alerts.Alert] = []
+
+            def check(kind: str, produce: Callable[[], list[alerts.Alert]]) -> None:
+                try:
+                    active = produce()
+                except Exception:
+                    return
+                found.extend(ledger.fresh(active, slug, (kind,)))
+
+            if auth is not None and token:
+                def deploys() -> list[alerts.Alert]:
+                    runs, pend = waiting_deploys(repo)
+                    return alerts.stuck_deploys(runs, pend, now_s, repo, slug, deploy_wait_alert)
+                check(pending.DEPLOY_STUCK, deploys)
+            check(pending.COST_OUTLIER, lambda: alerts.cost_outliers(
+                db.list_plan_costs(pid), repo, slug, cost_alert_factor))
+            check(pending.RUN_DEAD, lambda: alerts.dead_runs(
+                [r for wf in ("agent.yml", "claude.yml") for r in db.list_runs(pid, wf, 200) or []],
+                now_s, repo, slug, run_stale))
+            if found:
+                alerts.deliver(found, sender, discord, db, pid, slug, subscriber_can(repo))
+
+    def alert_loop() -> None:
+        interval = alerts.alert_interval(os.environ.get("TRADVIA_ALERT_INTERVAL_S"))
+        while True:
+            time.sleep(interval)
+            try:
+                tick()
+            except Exception:
+                pass
+
+    def start_alerts() -> None:
+        threading.Thread(target=alert_loop, name="alerts", daemon=True).start()
+
+    # Off unless a channel exists: Discord configured, or Web Push on. Tests call `tick` directly.
+    alerts_on = db is not None and (discord is not None or sender is not None)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        if alerts_on:
+            start_alerts()
+        yield
+
+    app = Starlette(
+        lifespan=lifespan,
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
         routes=[
             Route("/api/auth/login", auth_login, methods=["GET"]),
@@ -1626,6 +1826,7 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/audit", project_audit, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
@@ -1659,6 +1860,8 @@ def create_app(
             Route("/api/github/{path:path}", github, methods=["GET"]),
         ]
     )
+    app.state.alert_tick = tick
+    return app
 
 
 app = create_app()

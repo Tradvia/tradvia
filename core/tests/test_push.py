@@ -280,7 +280,8 @@ def test_prefs_default_to_all_on_and_reject_unknown_kinds(app):
     ana = login(app, "ana")
     r = ana.get(f"/api/projects/{REPO}/push/prefs")
     assert r.json()["kinds"] == {k: True for k in (
-        "plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit")}
+        "plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+        "deploy_stuck", "cost_outlier", "run_dead")}
     for bad in ({"kinds": {"title": True}}, {"kinds": {"plan_ready": "no"}}, {"kinds": []}, {}):
         out = ana.put(f"/api/projects/{REPO}/push/prefs", json=bad, headers=headers(ana))
         assert out.status_code == 400
