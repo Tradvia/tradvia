@@ -6,8 +6,11 @@ Run with: uvicorn tradvia.api:app
 
 from __future__ import annotations
 
+import contextlib
+import csv
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -15,7 +18,8 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, NamedTuple
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Callable, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -56,7 +60,9 @@ from .actions import (
     runs_awaiting_approval,
 )
 from .auth import (
+    GRANTABLE,
     API_TOKEN_DEFAULT_DAYS,
+    API_TOKEN_MAX_DAYS,
     CSRF_HEADER,
     SESSION_COOKIE,
     STATE_COOKIE,
@@ -69,12 +75,15 @@ from .auth import (
     load_config,
     role_refusal,
 )
-from . import pending, push
+from . import alerts, pending, push
+from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
-from . import orchestrator
-from .connections import Connections, ConnectionInputError
+from . import mcp_server, orchestrator
+from .budget import SETTINGS_KEY, monthly_check, settings_budget, settings_view, store_month_spend, \
+    validate_settings
+from .connections import BY_KEY, Connections, ConnectionInputError, redact, resolve as resolve_connections
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
-from .policy import Interactions, PolicyError
+from .policy import Interactions, PolicyError, ROLES, role_rank
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
@@ -95,6 +104,11 @@ CHAT_HISTORY = 100
 VIA_API_TOKEN = "api_token"
 # What a bearer API token may do (ADR 0009); everything else needs a signed-in session.
 TOKEN_ACTIONS = ("create_card", "start_card")
+# The policy interaction each agent tool needs (ADR 0012). Reads have none of their own and need
+# the triage floor of starting a card; adjusting a plan needs `write`, as in the panel.
+AGENT_INTERACTION = {"create_card": "start_card", "start_card": "start_card",
+                     "reply_plan": "approve_plan", "reorder_backlog": "start_card",
+                     "approve_plan": "approve_plan", "reject_plan": "approve_plan"}
 # What the GitHub App needs for each panel action (docs/github-app.md).
 APP_PERMISSION = {
     "merge_pr": "Contents: Read and write",
@@ -176,6 +190,12 @@ def default_fetch(url: str, headers: dict[str, str]) -> Upstream:
     )
 
 
+def _alert_discord() -> Chat | None:
+    """The Discord channel for alerts when `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set."""
+    bot, channel = os.environ.get("DISCORD_BOT_TOKEN", ""), os.environ.get("DISCORD_CHANNEL_ID", "")
+    return DiscordREST(bot, channel) if bot and channel else None
+
+
 def registered_projects() -> list[str]:
     """Repositories accepted by the API: `TRADVIA_PROJECTS`, default `TRADVIA_REPO`."""
     default = os.environ.get("TRADVIA_REPO", "Tradvia/tradvia")
@@ -217,6 +237,32 @@ def _store_unavailable() -> JSONResponse:
     return JSONResponse({"error": "storage unavailable"}, status_code=503)
 
 
+AUDIT_COLUMNS = ("created_at", "actor_login", "action", "issue_number", "result", "detail", "via")
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def audit_csv(rows: list[dict[str, Any]]) -> str:
+    """CSV of audit rows; a cell a spreadsheet would run as a formula gets a leading quote."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(AUDIT_COLUMNS)
+    for row in rows:
+        cells = ["" if row[c] is None else str(row[c]) for c in AUDIT_COLUMNS]
+        writer.writerow(["'" + c if c.startswith(_FORMULA_START) else c for c in cells])
+    return out.getvalue()
+
+
+def audit_jsonl(rows: list[dict[str, Any]]) -> str:
+    return "".join(json.dumps({c: row[c] for c in AUDIT_COLUMNS}) + "\n" for row in rows)
+
+
+# file formats besides json: format -> (media type, file extension, renderer)
+AUDIT_FORMATS: dict[str, tuple[str, str, Callable[[list[dict[str, Any]]], str]]] = {
+    "csv": ("text/csv", "csv", audit_csv),
+    "jsonl": ("application/x-ndjson", "jsonl", audit_jsonl),
+}
+
+
 def per_page(value: str | None) -> int:
     try:
         n = int(value) if value else DEFAULT_PER_PAGE
@@ -236,10 +282,14 @@ def github_issue(
     # "tradvia_last_marker" is not a GitHub field either: the marker emoji (🛑🔴🟡🟠⛔🟢)
     # leading the agent's last comment, so the dashboard can tell a card the agent gave up
     # on (🔴, BLOCKED) from one still waiting on a human, however the CI run looks (#87).
+    # "tradvia_last_marker_at" is when that comment was posted: a run that started after it is
+    # a new attempt, which the board shows as AGENT_WORKING until the agent posts again (#152).
     if comments:
-        marker = pending.last_agent_marker({"state": r["state"], "comments": comments})
+        comment = pending.last_agent_marker_comment({"state": r["state"], "comments": comments})
+        marker = pending.marker_in(comment)
         if marker:
             extra["tradvia_last_marker"] = marker
+            extra["tradvia_last_marker_at"] = comment.get("created_at")
     return {
         **extra,
         "number": r["number"],
@@ -314,6 +364,7 @@ def create_app(
     chat_runner: Callable[..., Any] | None = None,
     spawn: Callable[[Callable[[], None]], None] | None = None,
     push_sender: push.Sender | None = None,
+    alert_discord: Chat | None = None,
 ) -> Starlette:
     """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
     background thread of the orchestrator conversation (tests inject fakes)."""
@@ -745,6 +796,8 @@ def create_app(
         counts = await run_in_threadpool(
             lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
         )
+        budgets = await run_in_threadpool(
+            lambda: [monthly_budget(session, r, x) for r, x in zip(repos, roles)])
         response = JSONResponse(
             {
                 "enabled": True,
@@ -755,8 +808,9 @@ def create_app(
                 "projects": [
                     {"slug": project_slug(r), "external_id": r, "role": role,
                      "role_reason": reason, "notice": role_refusal(reason),
-                     "pending_count": n, **rights}
-                    for r, (role, reason), rights, n in zip(repos, statuses, can, counts)
+                     "pending_count": n, "monthly_budget": mb, **rights}
+                    for r, (role, reason), rights, n, mb in zip(
+                        repos, statuses, can, counts, budgets)
                 ],
             }
         )
@@ -857,7 +911,8 @@ def create_app(
 
     def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
         """What the panel may show as buttons; the routes check again on every request."""
-        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False}
+        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False,
+                  "can_budget": False}
         if role is None:
             return rights
         try:
@@ -868,7 +923,36 @@ def create_app(
             "can_start": policy.allows("start_card", role),
             "can_approve": policy.allows("approve_plan", role),
             "can_manage_connections": policy.allows("manage_connections", role),
+            "can_budget": policy.allows("budget_control", role),
         }
+
+    def project_budget(repo: str) -> tuple[Any, dict[str, Any] | None]:
+        """(Budget, monthly cap) of this project and the stored row (ADR 0018). Per project only."""
+        row = db.get_setting(project_id_of(repo), SETTINGS_KEY) if db is not None else None
+        return settings_budget(row["value"] if row else None), row
+
+    def monthly_budget(session: Any, repo: str, role: str | None = None) -> dict[str, Any]:
+        """Ceiling and spend of the UTC month for the panel; `cap_usd` is null without a ceiling.
+
+        `level` is ok, warn or stop; "unknown" when the spend cannot be read.
+        """
+        out: dict[str, Any] = {"cap_usd": None, "spent_usd": None, "level": "ok"}
+        if role is None:  # no role in this project: nothing about its budget is shown
+            return out
+        try:
+            (_, cap), _ = project_budget(repo)
+        except Exception:
+            out["level"] = "unknown"
+            return out
+        if cap is None or db is None:
+            return out
+        out["cap_usd"] = cap
+        try:
+            spent = store_month_spend(db, project_id_of(repo))
+        except Exception:
+            out["level"] = "unknown"
+            return out
+        return {"cap_usd": cap, "spent_usd": spent, "level": monthly_check(spent, cap)}
 
     class Done(NamedTuple):
         number: int | None
@@ -1185,10 +1269,37 @@ def create_app(
     def start_thread(job: Callable[[], None]) -> None:
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
+    def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
+        """The project's own `orchestrator` connection (ADR 0009): an AI provider with its API
+        key, or None, and then the chat is off for the project (ADR 0013: no Claude Code or
+        subscription fallback). Never raises: an unreadable policy or a connections lookup
+        failure is None too, the same as an unset connection.
+        """
+        if connections is None:
+            return None
+        try:
+            # `fresh=False`: execute() already did a fresh role+policy check for this request
+            # moments ago (POLICY_TTL is 60s); re-fetching .tradvia.yml here would double that
+            # GitHub call for nothing, since the role was already established.
+            access = auth.can(session, repo, "start_card", fresh=False)
+            defaults = access.policy.providers if access.policy else {}
+            chosen = resolve_connections(defaults, db.list_connection_roles(pid)).get("orchestrator", {})
+            provider, model_name = chosen.get("provider"), chosen.get("model")
+            if provider not in orchestrator.LITELLM_PROVIDERS or provider not in BY_KEY:
+                return None
+            secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
+            return orchestrator.model_for_connection(provider, model_name, secret)
+        except Exception:
+            return None
+
     def work_chat(session: Any, repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
         def work(token: str) -> Done:
             text, refs = orchestrator.parse_message(data)
             pid = project_id_of(repo)
+            # `chat_model` (test injection) always wins; production resolves per project.
+            model = chat_model or chat_model_for(session, repo, pid)
+            if model is None:  # no AI provider with an API key: the chat is off (ADR 0013)
+                raise Conflict(orchestrator.NO_API_KEY)
             with chat_lock:
                 if pid in chat_working:
                     raise Conflict("The orchestrator is still working on the previous message.")
@@ -1201,7 +1312,7 @@ def create_app(
 
             def job() -> None:
                 try:
-                    orchestrator.run(ctx, chat_model)
+                    orchestrator.run(ctx, model)
                 except Exception:  # never leave the conversation silent
                     try:
                         db.append_message(pid, {"author": orchestrator.AUTHOR, "kind": "warning",
@@ -1264,11 +1375,16 @@ def create_app(
         if role is None:
             return read_refused(repo, reason)
         pid = project_id_of(repo)
+        can_start = panel_rights(session, repo, role)["can_start"]
+        # Only someone who may chat needs to know why it is off; ready means an AI provider
+        # with an API key answers it (ADR 0013).
+        ready = can_start and (chat_model is not None or chat_model_for(session, repo, pid) is not None)
         return Outcome(200, {
             "messages": db.list_messages(pid, CHAT_HISTORY),
             "working": pid in chat_working,
             "cost": db.project_cost(pid),
-            "can_chat": panel_rights(session, repo, role)["can_start"],
+            "can_chat": ready,
+            "chat_off_reason": "no_api_key" if can_start and not ready else None,
         })
 
     async def chat_history(request: Request) -> Response:
@@ -1328,9 +1444,12 @@ def create_app(
                 return private(JSONResponse({"error": "invalid json"}, status_code=400))
             days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
             role = data.get("role", "triage")
-            if isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str):
+            kind = data.get("kind", "agent")
+            if (isinstance(days, bool) or not isinstance(days, int) or not isinstance(role, str)
+                    or not isinstance(kind, str)):
                 return private(JSONResponse(
-                    {"error": "role must be text and expires_in_days a number"}, status_code=400))
+                    {"error": "role and kind must be text and expires_in_days a number"},
+                    status_code=400))
 
             def work() -> Outcome:
                 pid = project_id_of(repo)
@@ -1342,16 +1461,162 @@ def create_app(
                         record_audit(pid, session.login, "revoke_token", None, "ok",
                                      f"token={number}", None)
                         return Outcome(200, {"ok": True})
-                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days)
+                    token_id, raw, expires_at = auth.create_api_token(session, repo, role, days, kind)
                 except AuthError as e:
                     record_audit(pid, session.login, "create_token", None, "denied", str(e), None)
                     return Outcome(e.status, {"error": str(e)})
+                role_set = "write" if kind == "manager" else role
                 record_audit(pid, session.login, "create_token", None, "ok",
-                             f"token={token_id} role={role} days={days}", None)
+                             f"token={token_id} kind={kind} role={role_set} days={days}", None)
                 return Outcome(201, {
-                    "id": token_id, "token": raw, "role": role, "expires_at": expires_at,
-                    "login": session.login, "project": repo,
+                    "id": token_id, "token": raw, "role": role_set, "kind": kind,
+                    "expires_at": expires_at, "login": session.login, "project": repo,
                 })
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
+    async def token_list(request: Request) -> Response:
+        """The signed-in person's own tokens in this project (never a token value), and what they
+        need to connect their agent: their role, the roles a token may have, the MCP addresses."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+
+        def work() -> Outcome:
+            role = auth.role_of(session, repo)
+            if role is None:
+                return Outcome(403, {"error": f"You have no access to {repo}."})
+            now = auth.now()
+            tokens = []
+            for t in db.list_api_tokens(session.login, project_id_of(repo)):
+                row = {**t, "active": t["revoked_at"] is None and t["expires_at"] > now}
+                if t.get("kind") == "manager":
+                    row["grants"] = [{**g, "active": g["revoked_at"] is None and g["expires_at"] > now}
+                                     for g in db.list_grants(t["id"])]
+                tokens.append(row)
+            return Outcome(200, {
+                "login": session.login, "project": repo, "role": role,
+                "roles": [r for r in ROLES if role_rank(r) <= role_rank(role)],
+                "default_days": API_TOKEN_DEFAULT_DAYS, "max_days": API_TOKEN_MAX_DAYS,
+                "mcp_http": f"/api/projects/{repo}/mcp", "tokens": tokens,
+                "can_make_manager": role == "admin", "grantable": list(GRANTABLE),
+            })
+
+        try:
+            out = await run_in_threadpool(work)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    # --- project settings (ADR 0018): the budget, per project, on Tradvia --------------------
+
+    async def budget_route(request: Request) -> Response:
+        """GET: the project's budget for anyone with a role in it. PUT: change it, with the
+        `budget_control` interaction (admin by default), a session and CSRF, audited."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+        data: Any = None
+        if request.method == "PUT":
+            try:
+                data = await request.json()
+            except ValueError:
+                data = None
+
+        def work() -> Outcome:
+            pid = project_id_of(repo)
+            role = auth.role_of(session, repo)
+            if role is None:
+                return Outcome(403, {"error": f"You have no access to {repo}."})
+            try:
+                policy = auth.policy_for(session, repo, fresh=request.method == "PUT")
+            except Exception:
+                return Outcome(403, {"error": "The project's .tradvia.yml cannot be read or is invalid."})
+            allowed = policy.allows("budget_control", role)
+            if request.method == "PUT":
+                if not allowed:
+                    record_audit(pid, session.login, "set_budget", None, "denied",
+                                 f"role {role} below {policy.interactions.budget_control}", None)
+                    return Outcome(403, {"error": f"Your role in {repo} is '{role}'; changing the "
+                                                  f"budget needs at least "
+                                                  f"'{policy.interactions.budget_control}'."})
+                try:
+                    value = validate_settings(data)
+                except ValueError as e:
+                    return Outcome(400, {"error": str(e)})
+                db.set_setting(pid, SETTINGS_KEY, value, session.login, auth.now())
+                record_audit(pid, session.login, "set_budget", None, "ok",
+                             " ".join(f"{k}={v}" for k, v in value.items()), None)
+            row = db.get_setting(pid, SETTINGS_KEY)
+            return Outcome(200, {
+                "project": repo, **settings_view(row["value"] if row else None),
+                "updated_by": row["updated_by"] if row else None,
+                "updated_at": row["updated_at"] if row else None,
+                "can_edit": allowed, "file_budget_ignored": policy.file_budget_ignored,
+                "month": monthly_budget(session, repo, role),
+            })
+
+        try:
+            out = await run_in_threadpool(work)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    def grant_route(revoke: bool) -> Callable[[Request], Any]:
+        """Grant or revoke one permission of an AI manager token (ADR 0014): an admin's session
+        only (cookie + CSRF), never a bearer token, and only on the admin's own manager token."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            try:
+                data = {} if revoke else await request.json()
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                return private(JSONResponse({"error": "invalid json"}, status_code=400))
+            token_id = request.path_params["token_id"]
+            permission = data.get("permission")
+            days = data.get("expires_in_days", API_TOKEN_DEFAULT_DAYS)
+            if not revoke and (not isinstance(permission, str) or isinstance(days, bool)
+                               or not isinstance(days, int)):
+                return private(JSONResponse(
+                    {"error": "permission must be text and expires_in_days a number"},
+                    status_code=400))
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                action = "revoke_grant" if revoke else "grant"
+                try:
+                    if revoke:
+                        grant_id = request.path_params["grant_id"]
+                        if not auth.revoke_grant(session, repo, token_id, grant_id):
+                            return Outcome(404, {"error": "Grant not found."})
+                        record_audit(pid, session.login, action, None, "ok",
+                                     f"token={token_id} grant={grant_id}", None)
+                        return Outcome(200, {"ok": True})
+                    grant_id, expires_at = auth.grant(session, repo, token_id, permission, days)
+                except AuthError as e:
+                    record_audit(pid, session.login, action, None, "denied", str(e), None)
+                    return Outcome(e.status, {"error": str(e)})
+                record_audit(pid, session.login, action, None, "ok",
+                             f"token={token_id} permission={permission} days={days}", None)
+                return Outcome(201, {"id": grant_id, "token_id": token_id,
+                                     "permission": permission, "expires_at": expires_at})
 
             try:
                 out = await run_in_threadpool(work)
@@ -1409,6 +1674,119 @@ def create_app(
                 return private(_store_unavailable())
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
+
+    # --- agents (ADR 0012): the orchestrator's tools, for an API token of this project -------
+
+    def work_agent_tool(session: Any, repo: str, tool: str, args: dict[str, Any],
+                        key: str | None) -> Callable[[str], Done]:
+        def work(token: str) -> Done:
+            ctx = orchestrator.ToolContext(
+                store=db, project_id=project_id_of(repo), repo=repo, github=auth.github,
+                token=token, login=session.login, clock=clock, actor=session.login,
+                via=orchestrator.AGENT_VIA, key=key, **manager_of(session),
+            )
+            out = orchestrator.call_tool(ctx, tool, args)
+            if "error" in out:
+                raise ActionError(str(out["error"]))
+            number = args.get("number")
+            return Done(number if isinstance(number, int) else None, tool, {"result": out["result"]})
+        return work
+
+    def manager_of(session: Any) -> dict[str, Any]:
+        """`manager` and its current `grants` for an AI manager token (ADR 0014), else nothing."""
+        scope = session.rec.get("api_token") or {}
+        if scope.get("kind") != "manager":
+            return {}
+        return {"manager": True, "grants": auth.active_grants(scope["id"])}
+
+    async def agent_session(request: Request) -> tuple[str, Any, Response | None]:
+        """(repo, session, failure): an API token issued for that very project, and only one."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return repo, None, _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return repo, None, failure
+        scope = session.rec.get("api_token")
+        if not scope:
+            return repo, None, private(JSONResponse(
+                {"error": "Agents use an API token."}, status_code=403))
+        if scope["project_id"] != project_id_of(repo):
+            return repo, None, private(JSONResponse(
+                {"error": "This token was issued for another project."}, status_code=403))
+        return repo, session, None
+
+    async def agent_tools(request: Request) -> Response:
+        _, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        catalog = await run_in_threadpool(lambda: orchestrator.agent_catalog(**manager_of(session)))
+        return private(JSONResponse({"tools": catalog}))
+
+    async def agent_call(request: Request) -> Response:
+        repo, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        key = request.headers.get(IDEMPOTENCY_HEADER)
+        if key is not None and not _KEY_RE.fullmatch(key):
+            return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+        try:
+            data = await request.json()
+        except ValueError:
+            data = None
+        if (not isinstance(data, dict) or not isinstance(data.get("tool"), str)
+                or not isinstance(data.get("args", {}), dict)):
+            return private(JSONResponse(
+                {"error": 'send {"tool": "name", "args": {...}}'}, status_code=400))
+        tool, args = data["tool"], data.get("args", {})
+        number = args.get("number")
+        try:
+            out = await run_in_threadpool(
+                perform, session, repo, "agent_call", AGENT_INTERACTION.get(tool, "start_card"),
+                number if isinstance(number, int) and not isinstance(number, bool) else None,
+                key, work_agent_tool(session, repo, tool, args, key),
+            )
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    class AgentCalls:
+        """The tools of one agent request, for MCP over HTTP: the same guards as `agent_call`."""
+
+        def __init__(self, session: Any, repo: str, key: str | None):
+            self.session, self.repo, self.key = session, repo, key
+
+        def tools(self) -> list[dict[str, Any]]:
+            return orchestrator.agent_catalog(**manager_of(self.session))
+
+        def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            number = args.get("number")
+            outcome = perform(
+                self.session, self.repo, "agent_call", AGENT_INTERACTION.get(name, "start_card"),
+                number if isinstance(number, int) and not isinstance(number, bool) else None,
+                self.key, work_agent_tool(self.session, self.repo, name, args, self.key),
+            )
+            if outcome.status >= 400:
+                raise mcp_server.ToolFailed(str(outcome.body.get("error") or "the call failed"))
+            return outcome.body
+
+    async def agent_mcp(request: Request) -> Response:
+        """MCP over HTTP (ADR 0012), for clients that only reach a URL, such as Manus."""
+        repo, session, failure = await agent_session(request)
+        if session is None:
+            return failure
+        key = request.headers.get(IDEMPOTENCY_HEADER)
+        if key is not None and not _KEY_RE.fullmatch(key):
+            return private(JSONResponse({"error": "invalid idempotency key"}, status_code=400))
+        try:
+            message = await request.json()
+        except ValueError:
+            message = None
+        reply = await run_in_threadpool(mcp_server.handle, message,
+                                        AgentCalls(session, repo, key))
+        if reply is None:  # a notification is accepted, with nothing to answer
+            return private(Response(status_code=202))
+        return private(JSONResponse(reply))
 
     # --- project connections (connections.py, ADR 0009) --------------------------------------
     # Never log or echo the request body here: it carries the secret.
@@ -1517,6 +1895,79 @@ def create_app(
         except Exception:
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
+
+    def audit_time(params: Any, name: str) -> float | None:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            raise ValueError(f"'{name}' must be an ISO 8601 date or date and time.") from None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp()
+
+    def audit_int(params: Any, name: str, default: int, low: int, high: int | None) -> int:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = low - 1
+        if value < low or (high is not None and value > high):
+            span = f"between {low} and {high}" if high is not None else f"at least {low}"
+            raise ValueError(f"'{name}' must be a whole number {span}.")
+        return value
+
+    def read_project_audit(session: Any, repo: str, params: Any) -> Outcome:
+        """The project's audit log by period and page; same role rule as the card audit."""
+        assert auth is not None and db is not None
+        role, reason = auth.role_status(session, repo)
+        if role is None:
+            return read_refused(repo, reason)
+        fmt = params.get("format") or "json"
+        try:
+            if fmt != "json" and fmt not in AUDIT_FORMATS:
+                raise ValueError("'format' must be json, csv or jsonl.")
+            since, until = audit_time(params, "from"), audit_time(params, "to")
+            limit = audit_int(params, "limit", 100, 1, 1000)
+            offset = audit_int(params, "offset", 0, 0, None)
+        except ValueError as e:
+            return Outcome(400, {"error": str(e)})
+        rows = db.query_audit(project_id_of(repo), since, until, limit, offset)
+        has_more = len(rows) > limit
+        # known secret values are not kept by the panel (they live on GitHub): the shapes of
+        # provider keys and tokens are what can be recognised here
+        clean = [
+            {k: redact(v) if isinstance(v, str) else v for k, v in row.items()}
+            for row in rows[:limit]
+        ]
+        return Outcome(200, {"audit": clean, "limit": limit, "offset": offset,
+                             "has_more": has_more, "format": fmt})
+
+    async def project_audit(request: Request) -> Response:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repo = f"{owner}/{name}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return failure
+        try:
+            out = await run_in_threadpool(read_project_audit, session, repo, request.query_params)
+        except Exception:
+            return private(_store_unavailable())
+        if out.status != 200:
+            return private(JSONResponse(out.body, status_code=out.status))
+        fmt = out.body.pop("format")
+        if fmt == "json":
+            return private(JSONResponse(out.body))
+        media, ext, render = AUDIT_FORMATS[fmt]
+        response = Response(render(out.body["audit"]), media_type=media)
+        response.headers["Content-Disposition"] = f'attachment; filename="audit-{owner}-{name}.{ext}"'
+        return private(response)
 
     # --- reading pull requests and deploys with the user's token (ADR 0007) -------------------
 
@@ -1634,7 +2085,73 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
-    return Starlette(
+    # --- proactive alerts (alerts.py): checks every TRADVIA_ALERT_INTERVAL_S -----------------
+    discord = alert_discord or _alert_discord()
+    ledger = alerts.AlertLedger()
+    cost_alert_factor = alerts.cost_factor(os.environ.get("TRADVIA_COST_ALERT_FACTOR"))
+    run_stale = alerts.run_stale_minutes(os.environ.get("TRADVIA_RUN_STALE_MINUTES"))
+
+    def waiting_deploys(repo: str) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        assert auth is not None
+        runs = auth.github.list_runs(token, repo, "waiting")[:MAX_DEPLOY_RUNS]
+        return runs, {r["id"]: auth.github.list_pending_deployments(token, repo, r["id"]) for r in runs}
+
+    def tick(at: float | None = None) -> None:
+        """One round of checks over every registered project. A failing check is skipped and
+        its remembered alerts kept, so a GitHub outage does not repeat them afterwards."""
+        assert db is not None
+        now_s = clock() if at is None else at
+        for repo in repos:
+            try:
+                pid = project_id_of(repo)
+            except Exception:
+                continue
+            slug = project_slug(repo)
+            found: list[alerts.Alert] = []
+
+            def check(kind: str, produce: Callable[[], list[alerts.Alert]]) -> None:
+                try:
+                    active = produce()
+                except Exception:
+                    return
+                found.extend(ledger.fresh(active, slug, (kind,)))
+
+            if auth is not None and token:
+                def deploys() -> list[alerts.Alert]:
+                    runs, pend = waiting_deploys(repo)
+                    return alerts.stuck_deploys(runs, pend, now_s, repo, slug, deploy_wait_alert)
+                check(pending.DEPLOY_STUCK, deploys)
+            check(pending.COST_OUTLIER, lambda: alerts.cost_outliers(
+                db.list_plan_costs(pid), repo, slug, cost_alert_factor))
+            check(pending.RUN_DEAD, lambda: alerts.dead_runs(
+                [r for wf in ("agent.yml", "claude.yml") for r in db.list_runs(pid, wf, 200) or []],
+                now_s, repo, slug, run_stale))
+            if found:
+                alerts.deliver(found, sender, discord, db, pid, slug, subscriber_can(repo))
+
+    def alert_loop() -> None:
+        interval = alerts.alert_interval(os.environ.get("TRADVIA_ALERT_INTERVAL_S"))
+        while True:
+            time.sleep(interval)
+            try:
+                tick()
+            except Exception:
+                pass
+
+    def start_alerts() -> None:
+        threading.Thread(target=alert_loop, name="alerts", daemon=True).start()
+
+    # Off unless a channel exists: Discord configured, or Web Push on. Tests call `tick` directly.
+    alerts_on = db is not None and (discord is not None or sender is not None)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        if alerts_on:
+            start_alerts()
+        yield
+
+    app = Starlette(
+        lifespan=lifespan,
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
         routes=[
             Route("/api/auth/login", auth_login, methods=["GET"]),
@@ -1660,10 +2177,21 @@ def create_app(
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/settings/budget", budget_route,
+                  methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants", grant_route(False),
+                  methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants/{grant_id:int}",
+                  grant_route(True), methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/audit", project_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/agent/tools", agent_tools, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/agent/call", agent_call, methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/mcp", agent_mcp, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),
@@ -1699,6 +2227,8 @@ def create_app(
             Route("/api/github/{path:path}", github, methods=["GET"]),
         ]
     )
+    app.state.alert_tick = tick
+    return app
 
 
 app = create_app()

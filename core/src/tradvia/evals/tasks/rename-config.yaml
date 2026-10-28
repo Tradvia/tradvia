@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+id: rename-config
+title: Rename env var TRADVIA_FOO to TRADVIA_BAR
+body: Rename the variable everywhere in core and keep a fallback to the old name.
+expect:
+  min_steps: 2
+  max_steps: 5
+  must_mention: [TRADVIA_BAR, fallback]
+  forbidden_paths: [LICENSE.md, .github/]

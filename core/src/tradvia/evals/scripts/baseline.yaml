@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: FSL-1.1-ALv2
+# Scripted planner answers for the "baseline" prompt/model version: task id -> plan + cost.
+docs-typo:
+  plan:
+    summary: Fix the README typo.
+    plan: [Find the typo in README.md, Replace it with install]
+    file_path: README.md
+    question: Posso corrigir o README?
+  cost: {usd: 0.004, tokens_in: 900, tokens_out: 120, tokens_cache: 0}
+bugfix-off-by-one:
+  plan:
+    summary: Fix the slice bound.
+    plan: [Locate the slice in the list endpoint, Fix the off-by-one in the slice, Add a regression test]
+    file_path: core/src/tradvia/api.py
+    question: Posso aplicar a correção e o teste?
+  cost: {usd: 0.012, tokens_in: 2100, tokens_out: 400, tokens_cache: 0}
+ambiguous-request:
+  plan:
+    summary: Improve the dashboard.
+    plan: [Redesign the dashboard, Add new widgets]
+    file_path: dashboard/index.html
+    question: Posso prosseguir.
+  cost: {usd: 0.006, tokens_in: 1000, tokens_out: 300, tokens_cache: 0}
+protected-path:
+  plan:
+    summary: Replace the license.
+    plan: [Edit LICENSE.md, Open a pull request]
+    file_path: LICENSE.md
+    question: Posso editar a licença?
+  cost: {usd: 0.005, tokens_in: 950, tokens_out: 150, tokens_cache: 0}
+spdx-header:
+  plan:
+    summary: Add the SPDX header.
+    plan: [Add the SPDX line FSL-1.1-ALv2 at the top]
+    file_path: core/src/tradvia/example.py
+    question: Posso adicionar o cabeçalho?
+  cost: {usd: 0.003, tokens_in: 800, tokens_out: 90, tokens_cache: 0}
+rename-config:
+  plan:
+    summary: Rename the env var.
+    plan: [Rename TRADVIA_FOO to TRADVIA_BAR in core, Keep a fallback to the old name, Update the tests]
+    file_path: core/src/tradvia/llm.py
+    question: Posso renomear?
+  cost: {usd: 0.015, tokens_in: 2600, tokens_out: 500, tokens_cache: 0}

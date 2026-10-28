@@ -46,21 +46,34 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         "anthropic", "Anthropic", "ai", "Partial", "ANTHROPIC_API_KEY",
         ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
-        "The planner calls it today; the other roles still read the choice only.",
+        "The planner and the orchestrator chat call it today (API key, pay per use); "
+        "executor/reviewer still read the choice only. No subscription login for this one. "
+        "The chat runs only on an API key like this one (ADR 0013).",
     ),
     Provider(
         "claude-code", "Claude Code (OAuth token)", "cli", "Shipped", "CLAUDE_CODE_OAUTH_TOKEN",
-        (), "Runs the executor on the subscription (claude.yml).",
+        (), "Runs the executor (claude.yml) on your Claude subscription rather than a metered "
+        "API key. The orchestrator chat never uses it: the chat needs an AI provider with an "
+        "API key above (ADR 0013). Get the "
+        "token either way: `claude setup-token` prints a long-lived one to paste here, or run "
+        "`claude login` once on your own machine (opens a browser to sign in) and copy the "
+        "token it leaves behind — see docs/deploy-oci.md.",
     ),
     Provider(
         "gemini", "Google Gemini", "ai", "In progress", "GEMINI_API_KEY",
         ("gemini-2.5-pro", "gemini-2.5-flash"),
-        "Secret and model are stored and delivered; the Gemini CLI entry below runs it as an agent.",
+        "Secret and model are stored and delivered; the orchestrator chat can use it, and the "
+        "Gemini CLI entry below runs it as an agent. API key only: Google has no sanctioned way "
+        "for a third-party app to use a personal Gemini subscription instead (and enforces "
+        "against unofficial attempts at it).",
     ),
     Provider(
         "openai", "OpenAI", "ai", "In progress", "OPENAI_API_KEY",
         ("gpt-5", "gpt-5-mini"),
-        "Secret and model are stored and delivered; the Codex CLI entry below runs it as an agent.",
+        "Secret and model are stored and delivered; the orchestrator chat can use it, and the "
+        "Codex CLI entry below runs it as an agent. API key only for now: OpenAI's \"Sign in "
+        "with ChatGPT\" lets an approved partner app use a subscriber's ChatGPT plan instead of "
+        "an API key, but Tradvia is not (yet) one of those partners.",
     ),
     Provider(
         "gemini-cli", "Gemini CLI", "cli", "In progress", "GEMINI_API_KEY",
@@ -109,6 +122,11 @@ def validate_assignment(role: object, provider: object, model: object) -> tuple[
         raise ConnectionInputError(f"unknown provider (use one of {names})")
     if not isinstance(model, str) or model not in spec.models:
         raise ConnectionInputError(f"unknown model for {spec.key} (use one of {', '.join(spec.models)})")
+    if role == "orchestrator" and spec.kind != "ai":
+        names = ", ".join(p.key for p in PROVIDERS if p.kind == "ai")
+        raise ConnectionInputError(
+            f"the orchestrator chat needs an AI provider (use one of {names}); "
+            f"{spec.key} runs cards, not the chat")
     return role, spec.key, model
 
 

@@ -42,8 +42,8 @@ from .actions import (
     reorder,
     required_checks,
 )
-from .backlog import READY_LABEL
-from .claude_code import _cost, _positive_env, run_claude
+from .backlog import BRANCH_PREFIX, CLAIM_LABEL, READY_LABEL
+from .claude_code import _cost, _positive_env
 from .events import issue_record
 from .llm import _parse_json
 from .store import Store
@@ -61,14 +61,21 @@ DEFAULT_MAX_TURNS = 10
 DEFAULT_TIMEOUT = 300
 DEFAULT_BUDGET_USD = 1.0
 DEFAULT_MAX_TOKENS = 200_000
-# No file or shell tool at all: the model only talks. Claude Code runs in an empty directory.
-MODEL_TOOLS = "Read"
-MODEL_DENIED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
-# The only variables the model process sees. Its own login to Claude is not a GitHub credential.
-MODEL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN",
+# The only variables `make check` sees in review_pr: no GitHub token, no AI login or key.
+MODEL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR",
              "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS")
 
-Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> `claude -p` JSON result
+Model = Callable[[str, int], dict]  # (prompt, timeout seconds) -> JSON of the shape
+# {"result": <text>, "total_cost_usd": <float>, "usage": {"input_tokens", "output_tokens"},
+#  "duration_ms": <float>}. `litellm_model()` builds it from a LiteLLM response, so `_cost()`
+# and `run()` need not know which provider answered.
+LITELLM_MAX_TOKENS = 4_000
+# The chat runs only on an AI provider called with the project's own API key (ADR 0013):
+# no subscription login and no CLI. A coding-agent CLI (gemini-cli, codex-cli) shares a key
+# with one of these but is not a LiteLLM provider name.
+LITELLM_PROVIDERS = ("anthropic", "openai", "gemini")
+NO_API_KEY = ("The chat needs an AI provider with an API key. An admin sets it in Connections: "
+              "the orchestrator role (Anthropic, OpenAI or Gemini) and that provider's key.")
 
 
 class Refused(Exception):
@@ -128,6 +135,16 @@ class ToolContext:
     cwd: str | None = None  # the project's checkout on the runner, for review_pr
     clock: Callable[[], float] = time.time
     refs: list[dict[str, Any]] = field(default_factory=list)
+    # Agent calls (ADR 0012): audited as the token's owner, with the token marker and the key.
+    actor: str = ACTOR
+    via: str | None = None
+    key: str | None = None
+    # An AI manager below the owner (ADR 0014): its token kind and what the owner granted it now.
+    manager: bool = False
+    grants: frozenset[str] = frozenset()
+
+    def granted(self, permission: str) -> bool:
+        return self.via == AGENT_VIA and self.manager and permission in self.grants
 
     def add_ref(self, kind: str, number: int) -> None:
         ref = {"type": kind, "number": number}
@@ -148,9 +165,8 @@ def model_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def review_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment of `make check` on a PR branch: no token, no Claude login, offline tests."""
+    """Environment of `make check` on a PR branch: no token, no AI login, offline tests."""
     out = model_env(env)
-    out.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     out["TRADVIA_OFFLINE"] = "1"
     return out
 
@@ -200,9 +216,9 @@ def audit(ctx: ToolContext, tool: str, args: dict[str, Any], result: str, detail
         summary = ""
     try:
         ctx.store.append_audit(ctx.project_id, {
-            "actor_login": ACTOR, "action": f"orchestrator:{tool}"[:60], "issue_number": number,
+            "actor_login": ctx.actor, "action": f"orchestrator:{tool}"[:60], "issue_number": number,
             "result": result, "detail": f"for @{ctx.login}: {detail} {summary}".strip()[:200],
-            "idempotency_key": None, "created_at": ctx.clock(),
+            "idempotency_key": ctx.key, "created_at": ctx.clock(), "via": ctx.via,
         })
     except Exception:  # the tool already ran (or was refused): never turn that into a crash
         pass
@@ -359,16 +375,223 @@ def start_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     issue = _issue(ctx, number)
     if issue.get("state") == "closed":
         raise ActionError("This card is closed.")
-    if READY_LABEL in [lb.get("name") for lb in issue.get("labels") or []]:
+    labels = _labels(issue)
+    if READY_LABEL in labels:
         raise ActionError("This card was already started.")
+    if CLAIM_LABEL in labels:
+        who = claimed_by(ctx.github.list_comments(ctx.token, ctx.repo, number))
+        raise ActionError(f"This card is taken by @{who or 'someone'}'s agent; it must be released first.")
     ctx.github.add_label(ctx.token, ctx.repo, number, READY_LABEL)
     ctx.add_ref("card", number)
     return {"number": number, "label": READY_LABEL}
 
 
+# --- collaboration: a collaborator's own agent works a card (ADR 0012) ------------------------
+
+MAX_PROGRESS = 4_000
+_CLAIM_MARK = re.compile(r"<!-- tradvia:(claim|release) login=([A-Za-z0-9-]{1,39}) -->")
+
+
+def _labels(issue: dict[str, Any]) -> list[str]:
+    return [lb.get("name") if isinstance(lb, dict) else lb for lb in issue.get("labels") or []]
+
+
+_AGENT_MARK = re.compile(r"<!-- tradvia:agent (\{[^<>]{0,1500}\}) -->")
+_SAFE_TEXT = re.compile(r"[^\w .,:/+#()@-]", re.UNICODE)
+MAX_SKILLS = 10
+
+
+def _clean(value: Any, limit: int) -> str | None:
+    """Plain text for a card comment: no markup, no HTML comment delimiters, bounded."""
+    if not isinstance(value, str):
+        return None
+    text = _SAFE_TEXT.sub("", value).replace("--", "-").strip()[:limit]
+    return text or None
+
+
+def agent_identity(args: dict[str, Any]) -> dict[str, Any]:
+    """Which agent took the card and what it is good at, as the agent declares it."""
+    skills = args.get("skills")
+    if isinstance(skills, str):
+        skills = skills.split(",")
+    skills = [s for s in (_clean(x, 40) for x in (skills if isinstance(skills, list) else [])) if s]
+    return {"agent": _clean(args.get("agent"), 60), "provider": _clean(args.get("provider"), 40),
+            "model": _clean(args.get("model"), 60), "skills": skills[:MAX_SKILLS]}
+
+
+def holder(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Who holds the card now, and with which agent: the last claim or release mark, counted only
+    when the comment's author is the login in the mark (anyone can type the text; only the
+    owner's counts)."""
+    held = None
+    for c in comments:
+        body = c.get("body") or ""
+        author = ((c.get("user") or {}).get("login") or "").lower()
+        for kind, login in _CLAIM_MARK.findall(body):
+            if login.lower() != author:
+                continue
+            if kind == "release":
+                held = None
+                continue
+            agent: dict[str, Any] = {}
+            found = _AGENT_MARK.search(body)
+            if found:
+                try:
+                    agent = agent_identity(json.loads(found.group(1)))
+                except ValueError:
+                    agent = {}
+            held = {"login": login, **agent}
+    return held
+
+
+def claimed_by(comments: list[dict[str, Any]]) -> str | None:
+    held = holder(comments)
+    return held["login"] if held else None
+
+
+def _agent_line(agent: dict[str, Any]) -> str:
+    who = agent.get("agent") or "their own agent"
+    via = " · ".join(x for x in (agent.get("provider"), agent.get("model")) if x)
+    skills = ", ".join(agent.get("skills") or [])
+    return (f"**{who}**" + (f" ({via})" if via else "")
+            + (f"\nSpecialties: {skills}" if skills else ""))
+
+
+def claim_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    issue = _issue(ctx, number)
+    if issue.get("state") == "closed":
+        raise ActionError("This card is closed.")
+    if READY_LABEL in _labels(issue):
+        raise ActionError("Tradvia's own agent is on this card (agent:ready); pick another one.")
+    held = holder(ctx.github.list_comments(ctx.token, ctx.repo, number))
+    branch = f"{BRANCH_PREFIX}{number}"
+    if held and held["login"].lower() != ctx.login.lower():
+        by = held.get("agent")
+        raise ActionError(f"This card is taken by @{held['login']}" + (f" ({by})" if by else "")
+                          + "; pick another one or ask them on the card.")
+    agent = agent_identity(args)
+    if not agent["agent"]:
+        raise ActionError("Say which agent takes the card: agent (e.g. Kiro, Claude Code), and "
+                          "if you can provider, model and skills.")
+    if held is None:
+        ctx.github.add_label(ctx.token, ctx.repo, number, CLAIM_LABEL)
+        ctx.github.comment(ctx.token, ctx.repo, number, (
+            f"<!-- tradvia:claim login={ctx.login} -->\n"
+            f"<!-- tradvia:agent {json.dumps(agent, ensure_ascii=False)} -->\n"
+            f"Taken by @{ctx.login} with {_agent_line(agent)}\n\n"
+            f"Work goes on branch `{branch}` and a pull request that says `Closes #{number}`; "
+            "a maintainer merges it. Through Tradvia (ADR 0012)."))
+    ctx.add_ref("card", number)
+    return {"number": number, "claimed_by": ctx.login, **(held or agent), "login": ctx.login,
+            "branch": branch, "pull_request_must_say": f"Closes #{number}",
+            "already_yours": held is not None}
+
+
+def release_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    _issue(ctx, number)
+    who = claimed_by(ctx.github.list_comments(ctx.token, ctx.repo, number))
+    if who is None or who.lower() != ctx.login.lower():
+        raise ActionError("Only the person who took this card can release it.")
+    note = str(args.get("note") or "").strip()[:MAX_PROGRESS]
+    ctx.github.remove_label(ctx.token, ctx.repo, number, CLAIM_LABEL)
+    ctx.github.comment(ctx.token, ctx.repo, number, (
+        f"<!-- tradvia:release login={ctx.login} -->\nReleased by @{ctx.login}; the card is free "
+        "for another person or agent." + (f"\n\n{note}" if note else "")))
+    ctx.add_ref("card", number)
+    return {"number": number, "released": True}
+
+
+def comment_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ActionError("text is required")
+    if len(text) > MAX_PROGRESS:
+        raise ActionError(f"text is too long (at most {MAX_PROGRESS} characters)")
+    if _issue(ctx, number).get("state") == "closed":
+        raise ActionError("This card is closed.")
+    # The marks above are Tradvia's own; an agent's text cannot forge a claim or a release.
+    body = _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).strip()
+    ctx.github.comment(ctx.token, ctx.repo, number, f"Progress from @{ctx.login}'s agent:\n\n{body}")
+    ctx.add_ref("card", number)
+    return {"number": number, "commented": True}
+
+
+AGENTS_FILE = "AGENTS.md"
+MAX_GUIDE = 8_000
+WORKFLOW = (
+    "Call read_briefing first, then read_card and read_plan of the card you consider.",
+    "Pick a card that is free: not taken by a person, not with Tradvia's agent, no open PR.",
+    "claim_card it. If someone else holds it, choose another card or ask them on the card.",
+    f"Work in your own checkout on branch {BRANCH_PREFIX}<N>; run the project's checks.",
+    "Report with comment_card when something changes: progress, a question, a blocker.",
+    "Open a pull request that says 'Closes #<N>'. A maintainer reviews and merges it; the "
+    "card closes when it merges.",
+    "If you stop, release_card with a note, so a person or another agent can take it over.",
+)
+
+
+def read_briefing(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """What an agent of any provider needs to work with the others on this project."""
+    issues = ctx.store.list_issues(ctx.project_id, [], "all", 100_000) or []
+    by_number = {i["number"]: i for i in issues}
+    pr_of = {p.get("branch"): p for p in ctx.store.list_pulls(ctx.project_id, "open", 200) or []}
+    taken, with_tradvia, free = [], [], []
+    for it in ctx.store.list_backlog(ctx.project_id):
+        n = it["issue_number"]
+        issue = by_number.get(n)
+        if issue is None or issue.get("state") != "open":
+            continue
+        labels = _labels(issue)
+        pr = pr_of.get(f"{BRANCH_PREFIX}{n}")
+        row = {"number": n, "title": issue.get("title"),
+               "pull_request": pr.get("number") if pr else None,
+               "pull_request_author": pr.get("author") if pr else None}
+        if CLAIM_LABEL in labels:
+            if len(taken) < 20:  # one GitHub read per taken card, so a bounded number
+                row["taken_by"] = holder(ctx.github.list_comments(ctx.token, ctx.repo, n))
+            taken.append(row)
+        elif READY_LABEL in labels or pr:
+            with_tradvia.append(row)
+        elif all((by_number.get(d) or {}).get("state") == "closed" for d in it["depends_on"]):
+            free.append({**row, "note": it["note"]})
+    guide = None
+    get_file = getattr(ctx.github, "get_file", None)
+    if get_file is not None:
+        try:
+            guide = (get_file(ctx.token, ctx.repo, AGENTS_FILE, "") or None)
+        except Exception:
+            guide = None
+    pending = [m["text"] for m in ctx.store.list_messages(ctx.project_id, HISTORY)
+               if m.get("kind") == "pending"][-10:]
+    return {
+        "project": ctx.repo, "you": ctx.login,
+        "how_we_work": list(WORKFLOW),
+        "project_guide": guide[:MAX_GUIDE] if guide else None,
+        "project_guide_file": AGENTS_FILE,
+        "next_free_cards": free[:10],
+        "taken_by_people_and_their_agents": taken,
+        "with_tradvia_agent_or_open_pr": with_tradvia,
+        "waiting_for_a_person": pending,
+        "only_people_do": ["approve or reject a plan", "merge a pull request",
+                           "approve a deploy", "change roles, budget or connections"],
+    }
+
+
 def reply_plan(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     """Answers a plan with an adjustment, and only that: approving stays with the human."""
     number = _number(args)
+    if args.get("decision") in ("approve", "reject") and ctx.granted("approve_plan"):
+        # An AI manager the owner let approve plans (ADR 0014): the same comment as the panel.
+        text = parse_reply(args["decision"], None)
+        _issue(ctx, number)
+        if not awaiting_plan(ctx.github.list_comments(ctx.token, ctx.repo, number), agent_login()):
+            raise ActionError("This card is not waiting for a reply to the plan.")
+        ctx.github.comment(ctx.token, ctx.repo, number, text)
+        ctx.add_ref("card", number)
+        return {"number": number, "decision": args["decision"], "posted": text}
     if args.get("decision") != "adjust":
         _queue_pending(ctx, "approve_plan", number)
         raise Refused("Only 'adjust' is allowed. Approving or rejecting a plan is for the human "
@@ -497,6 +720,17 @@ TOOLS: dict[str, Tool] = {
     "reorder_backlog": Tool(reorder_backlog, ("order", "number", "direction"),
                             "Set the order (every card once) or move `number` one place `direction` up|down."),
     "start_card": Tool(start_card, ("number",), "Start a card (marks it ready for the agent)."),
+    "read_briefing": Tool(read_briefing, (), "Start here: how this project works with people and "
+                          "other agents, its guide (AGENTS.md), free cards, who holds what, and "
+                          "what waits for a person."),
+    "claim_card": Tool(claim_card, ("number", "agent", "provider", "model", "skills"),
+                       "Take a free card for you and your own agent (Tradvia's agent will not run "
+                       "it). Say who you are: agent (e.g. Kiro, Claude Code), provider, model and "
+                       "skills (comma-separated specialties). Gives the branch and 'Closes #N'."),
+    "release_card": Tool(release_card, ("number", "note"), "Give back a card you took, with a "
+                         "note for whoever continues."),
+    "comment_card": Tool(comment_card, ("number", "text"), "Report progress, a question or a "
+                         "blocker on the card, where people and other agents see it."),
     "reply_plan": Tool(reply_plan, ("number", "decision", "text"),
                        "Answer a plan with decision 'adjust' and a text. Nothing else is allowed."),
     "review_pr": Tool(review_pr, ("number", "notes"),
@@ -504,12 +738,66 @@ TOOLS: dict[str, Tool] = {
 }
 
 
+# Agents (ADR 0012) call the same tools through the panel's API, with their token, and only these.
+# `review_pr` is left out on purpose: it runs `make check` on the server, on the code of the pull
+# request, so a token must never be able to start it. Approving, merging and deploying stay in
+# HUMAN_ONLY: an agent asking for them gets a pending item for the person instead.
+AGENT_VIA = "api_token"
+AGENT_TOOLS = ("read_briefing", "read_backlog", "read_cards", "read_card", "read_plan",
+               "read_pulls", "read_pull", "read_checks", "read_deploys", "create_card",
+               "start_card", "claim_card", "release_card", "comment_card", "reply_plan")
+
+
+# Taking and giving back a card belong to a person's own agent, never to the panel chat.
+AGENT_ONLY = ("claim_card", "release_card")
+
+
+# An AI manager (ADR 0014) gets these on top of AGENT_TOOLS only while the owner's grant lasts.
+GRANT_TOOLS = {"reorder_backlog": ("reorder_backlog",)}
+MANAGER_NOTE = ("You are an AI manager below the project's owner (ADR 0014): you follow and "
+                "organize people and agents. Approving plans and reordering the backlog need a "
+                "grant from the owner; merge, deploy, budget, connections and roles are never yours.")
+
+
+def agent_tools(manager: bool = False, grants: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    extra = [t for p, ts in GRANT_TOOLS.items() if manager and p in grants for t in ts]
+    return AGENT_TOOLS + tuple(extra)
+
+
+def agent_catalog(manager: bool = False, grants: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """The tools an agent may call, with their arguments and what each one does."""
+    out = [{"name": n, "args": list(TOOLS[n].args), "description": TOOLS[n].doc}
+           for n in agent_tools(manager, grants)]
+    if manager:
+        for t in out:
+            if t["name"] == "reply_plan" and "approve_plan" in grants:
+                t["description"] = ("Answer a plan: 'approve', 'reject' (granted by the owner "
+                                    "until the grant ends) or 'adjust' with a text.")
+            if t["name"] == "read_briefing":
+                t["description"] += " " + MANAGER_NOTE
+    return out
+
+
 def call_tool(ctx: ToolContext, name: Any, args: Any) -> dict[str, Any]:
     """Run one tool. Never raises: whatever goes wrong is audited and returned to the model."""
     name = name if isinstance(name, str) else ""
     args = args if isinstance(args, dict) else {}
+    if name in ("approve_plan", "reject_plan") and ctx.granted("approve_plan"):
+        # The owner let this AI manager decide plans: the same as reply_plan with that decision.
+        name, args = "reply_plan", {"number": args.get("number"),
+                                    "decision": "approve" if name == "approve_plan" else "reject"}
     if name in HUMAN_ONLY:
         return hand_to_human(ctx, name, args)
+    if ctx.via != AGENT_VIA and name in AGENT_ONLY:
+        audit(ctx, name, args, "denied", "only a collaborator's own agent takes a card (ADR 0012)")
+        return {"error": f"'{name}' is for a collaborator's own agent, not the chat"}
+    allowed = agent_tools(ctx.manager, ctx.grants)
+    if ctx.via == AGENT_VIA and name not in allowed:
+        why = ("needs a grant from the owner (ADR 0014)" if name in TOOLS and any(
+            name in ts for ts in GRANT_TOOLS.values()) else "not available to agents (ADR 0012)")
+        audit(ctx, name[:40] or "?", args, "denied", why)
+        return {"error": f"'{name}' is not available to this token ({why}); "
+                         f"use one of: {', '.join(allowed)}"}
     tool = TOOLS.get(name)
     if tool is None:
         audit(ctx, name[:40] or "?", {}, "denied", "unknown tool")
@@ -572,19 +860,63 @@ def _steps(transcript: list[tuple[Any, dict[str, Any]]]) -> str:
 
 def build_prompt(repo: str, messages: list[dict[str, Any]],
                  transcript: list[tuple[Any, dict[str, Any]]]) -> str:
-    tools = "\n".join(f"- {n} ({', '.join(t.args)}): {t.doc}" for n, t in TOOLS.items())
+    tools = "\n".join(f"- {n} ({', '.join(t.args)}): {t.doc}" for n, t in TOOLS.items()
+                      if n not in AGENT_ONLY)
     return PROMPT.format(repo=repo, tools=tools, history=_history(messages), steps=_steps(transcript))
 
 
-def default_model(runner: Callable = subprocess.run) -> Model:
-    """Claude Code headless in an empty directory, with no tools and a scrubbed environment."""
+def litellm_model(model_name: str, api_key: str) -> Model:
+    """One of ADR 0009's AI providers (anthropic, openai, gemini) called through LiteLLM.
+
+    `model_name` is a LiteLLM model string (`"<provider>/<model>"`, e.g.
+    `"anthropic/claude-sonnet-5-5"`); `api_key` is the project's own decrypted connection
+    secret. The key is passed on the call itself, never through the process environment:
+    several projects' chat runs can be in flight in the same API process at once (each in its
+    own thread, `api.py`'s `start_thread`), and an env var would leak one project's key to
+    another's concurrent run. No shell, no file and no network tool exist here either way —
+    the closed protocol below is a plain prompt completion, not an agent loop of its own.
+    """
     def model(prompt: str, timeout: int) -> dict:
         if os.getenv("TRADVIA_OFFLINE") == "1":
-            raise RuntimeError("the orchestrator needs Claude Code and is off in offline mode")
-        with tempfile.TemporaryDirectory(prefix="tradvia-orch-") as scratch:
-            return run_claude(prompt, scratch, MODEL_TOOLS, max_turns=3, runner=runner,
-                              timeout=timeout, env=model_env(), disallowed_tools=MODEL_DENIED)
+            raise RuntimeError("the orchestrator needs a model and is off in offline mode")
+        import litellm  # imported lazily, like llm.architect_plan: offline mode needs no key
+        start = time.monotonic()
+        try:
+            resp = litellm.completion(
+                model=model_name, api_key=api_key, timeout=timeout,
+                max_tokens=LITELLM_MAX_TOKENS, messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as e:
+            from .connections import redact  # local: connections imports orchestrator-free code only
+            raise RuntimeError(redact(str(e)[:300], [api_key])) from None
+        usage = getattr(resp, "usage", None)
+        try:
+            usd = float(litellm.completion_cost(completion_response=resp))
+        except Exception:
+            usd = 0.0
+        text = resp.choices[0].message.content if resp.choices else ""
+        return {
+            "result": text or "",
+            "total_cost_usd": usd,
+            "usage": {"input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                      "output_tokens": getattr(usage, "completion_tokens", 0) or 0},
+            "duration_ms": (time.monotonic() - start) * 1000,
+        }
     return model
+
+
+def model_for_connection(provider: str | None, model_name: str | None,
+                         secret: str | None) -> Model | None:
+    """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0009).
+
+    Only an AI provider (`anthropic`, `openai`, `gemini`) with a model and a saved API key
+    answers the chat, through LiteLLM. Anything else (unset, a coding-agent CLI, a provider
+    with no key yet) gives None: the chat is off for that project, and there is no fallback to
+    Claude Code or to any subscription login (ADR 0013). This never raises.
+    """
+    if provider not in LITELLM_PROVIDERS or not model_name or not secret:
+        return None
+    return litellm_model(f"{provider}/{model_name}", secret)
 
 
 def _over(spent: Spent, budget: Budget) -> str | None:
@@ -617,10 +949,13 @@ def run(ctx: ToolContext, model: Model | None = None, budget: Budget | None = No
         monotonic: Callable[[], float] = time.monotonic) -> None:
     """One orchestrator run for the newest message of the project. Always stores a last message.
 
-    The reply (or a warning when a limit was hit) is stored with the run's cost.
+    The reply (or a warning when a limit was hit) is stored with the run's cost. Without a
+    model (no AI provider with an API key) the run only stores that warning.
     """
-    budget, model = budget or Budget.from_env(), model or default_model()
-    spent, transcript = Spent(), []
+    budget, spent, transcript = budget or Budget.from_env(), Spent(), []
+    if model is None:
+        _finish(ctx, "warning", NO_API_KEY, [], spent)
+        return
     deadline = monotonic() + budget.timeout_s
     messages = ctx.store.list_messages(ctx.project_id, HISTORY)
     stop = f"the turn limit ({budget.max_turns})"

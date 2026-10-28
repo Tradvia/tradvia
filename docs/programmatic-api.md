@@ -13,6 +13,7 @@ design in [ADR 0009](adr/0009-programmatic-activity-api.md).
 | Start a card (`agent:ready`) with a token | Shipped |
 | `tradvia token` and `tradvia card` CLI | Shipped |
 | Approve plans, merge or deploy with a token | Not available (panel only) |
+| Agent tools over MCP: read cards, create, start, adjust a plan ([mcp.md](mcp.md)) | In progress (offline tests) |
 | Quick task without a plan or approval | Planned |
 
 It needs sign-in with GitHub to be configured ([github-app.md](github-app.md)).

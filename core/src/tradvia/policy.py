@@ -13,7 +13,7 @@ from typing import Protocol
 
 import yaml
 
-from .budget import Budget, parse_budget
+from .budget import Budget
 from .connections import ConnectionInputError, validate_assignment
 from .risk import DESTRUCTIVE_EXTERNAL, RISK_LEVELS
 
@@ -65,7 +65,12 @@ class Policy:
     interactions: Interactions = Interactions()
     stagnation: Stagnation = Stagnation()
     risk: RiskPolicy = RiskPolicy()
+    # Budgets are the project's setting on Tradvia (ADR 0018), applied by `with_budget`; the file
+    # has no say. These are the defaults until the project's setting is read.
     budget: Budget = Budget()
+    monthly_usd: float | None = None  # project ceiling per UTC month; None = no ceiling
+    # True when `.tradvia.yml` still has a `budget` section: ignored, and the panel says so.
+    file_budget_ignored: bool = False
     # Default provider and model per flow role: `{role: {"provider": ..., "model": ...}}`.
     providers: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -152,9 +157,9 @@ def parse_policy(text: str | None) -> Policy:
     raw_risk = _section(data, "risk", RISK_LEVELS)
     risk = RiskPolicy(**{k: v if v == "free" else _role(v, f"risk.{k}")
                          for k, v in raw_risk.items()})
-    # Never raises: invalid budget values fall back to the safe defaults.
+    # A `budget` section is accepted but ignored: budgets are set on Tradvia (ADR 0018).
     return Policy(view=view, interactions=interactions, stagnation=stagnation, risk=risk,
-                  budget=parse_budget(data.get("budget")), providers=_providers(data))
+                  file_budget_ignored="budget" in data, providers=_providers(data))
 
 
 def _providers(data: dict) -> dict[str, dict[str, str]]:
@@ -195,3 +200,13 @@ def role_of(github: RoleSource, login: str | None) -> str | None:
 def load_policy(github: RoleSource) -> Policy:
     """Read .tradvia.yml from the default branch only (never a PR branch or the working tree)."""
     return parse_policy(github.get_file(POLICY_FILE, github.base))
+
+
+def with_budget(policy: Policy, setting: object) -> Policy:
+    """`policy` with the project's budget setting (ADR 0018) in force; never raises."""
+    from dataclasses import replace
+
+    from .budget import settings_budget
+
+    budget, monthly = settings_budget(setting)
+    return replace(policy, budget=budget, monthly_usd=monthly)
