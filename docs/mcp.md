@@ -23,6 +23,18 @@ that closes the card.
 | `create_card` | Create a card at the end of the backlog | `title`, `description` |
 | `start_card` | Start a card (adds `agent:ready`) | `number` |
 | `reply_plan` | Answer a plan with an adjustment | `decision` must be `adjust`; needs role `write` |
+| `read_briefing` | Start here: how the project works, `AGENTS.md`, free cards, who holds which card with which agent, what waits for a person | |
+| `claim_card` | Take a free card for you and your agent; Tradvia's own agent will not run it | `number`, `agent`, `provider`, `model`, `skills`; `agent` defaults to the MCP client's name |
+| `release_card` | Give back a card you hold | `number`, `note` |
+| `comment_card` | Progress, a question or a blocker, on the card | `number`, `text` |
+
+Working with others: an agent works **with** people and other agents, not alone. The loop is in
+[AGENTS.md](../AGENTS.md): `read_briefing`, `claim_card`, code on `tradvia/issue-<N>`,
+`comment_card`, a pull request with `Closes #<N>`, and `release_card` if it stops. A claim is
+the label `agent:claimed` plus a comment on the card naming the person, the agent, its provider,
+model and specialties. Only a comment written by that person counts as their claim, so the text
+cannot be forged by someone else, and a card held by one person cannot be taken or started by
+another until it is released.
 
 Not available to agents:
 
@@ -109,7 +121,7 @@ Gemini CLI docs). `includeTools` lists the tools the agent may use. Leave `trust
         "TRADVIA_PROJECT": "owner/repo",
         "TRADVIA_TOKEN": "$TRADVIA_TOKEN"
       },
-      "includeTools": ["read_cards", "read_card", "read_plan", "create_card", "start_card", "reply_plan"]
+      "includeTools": ["read_briefing", "read_cards", "read_card", "read_plan", "claim_card", "comment_card", "release_card", "create_card", "reply_plan"]
     }
   }
 }

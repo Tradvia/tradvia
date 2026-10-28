@@ -381,6 +381,13 @@ class HttpGitHub:
     def add_label(self, token: str, repo: str, number: int, label: str) -> None:
         self._call(token, "POST", f"/repos/{repo}/issues/{number}/labels", json={"labels": [label]})
 
+    def remove_label(self, token: str, repo: str, number: int, label: str) -> None:
+        try:
+            self._call(token, "DELETE", f"/repos/{repo}/issues/{number}/labels/{quote(label, safe='')}")
+        except GitHubError as e:
+            if e.status != 404:  # 404: the issue does not have that label any more
+                raise
+
     def comment(self, token: str, repo: str, number: int, body: str) -> None:
         self._call(token, "POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
 

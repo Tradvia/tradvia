@@ -42,7 +42,7 @@ from .actions import (
     reorder,
     required_checks,
 )
-from .backlog import READY_LABEL
+from .backlog import BRANCH_PREFIX, CLAIM_LABEL, READY_LABEL
 from .claude_code import _cost, _positive_env
 from .events import issue_record
 from .llm import _parse_json
@@ -369,11 +369,209 @@ def start_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     issue = _issue(ctx, number)
     if issue.get("state") == "closed":
         raise ActionError("This card is closed.")
-    if READY_LABEL in [lb.get("name") for lb in issue.get("labels") or []]:
+    labels = _labels(issue)
+    if READY_LABEL in labels:
         raise ActionError("This card was already started.")
+    if CLAIM_LABEL in labels:
+        who = claimed_by(ctx.github.list_comments(ctx.token, ctx.repo, number))
+        raise ActionError(f"This card is taken by @{who or 'someone'}'s agent; it must be released first.")
     ctx.github.add_label(ctx.token, ctx.repo, number, READY_LABEL)
     ctx.add_ref("card", number)
     return {"number": number, "label": READY_LABEL}
+
+
+# --- collaboration: a collaborator's own agent works a card (ADR 0012) ------------------------
+
+MAX_PROGRESS = 4_000
+_CLAIM_MARK = re.compile(r"<!-- tradvia:(claim|release) login=([A-Za-z0-9-]{1,39}) -->")
+
+
+def _labels(issue: dict[str, Any]) -> list[str]:
+    return [lb.get("name") if isinstance(lb, dict) else lb for lb in issue.get("labels") or []]
+
+
+_AGENT_MARK = re.compile(r"<!-- tradvia:agent (\{[^<>]{0,1500}\}) -->")
+_SAFE_TEXT = re.compile(r"[^\w .,:/+#()@-]", re.UNICODE)
+MAX_SKILLS = 10
+
+
+def _clean(value: Any, limit: int) -> str | None:
+    """Plain text for a card comment: no markup, no HTML comment delimiters, bounded."""
+    if not isinstance(value, str):
+        return None
+    text = _SAFE_TEXT.sub("", value).replace("--", "-").strip()[:limit]
+    return text or None
+
+
+def agent_identity(args: dict[str, Any]) -> dict[str, Any]:
+    """Which agent took the card and what it is good at, as the agent declares it."""
+    skills = args.get("skills")
+    if isinstance(skills, str):
+        skills = skills.split(",")
+    skills = [s for s in (_clean(x, 40) for x in (skills if isinstance(skills, list) else [])) if s]
+    return {"agent": _clean(args.get("agent"), 60), "provider": _clean(args.get("provider"), 40),
+            "model": _clean(args.get("model"), 60), "skills": skills[:MAX_SKILLS]}
+
+
+def holder(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Who holds the card now, and with which agent: the last claim or release mark, counted only
+    when the comment's author is the login in the mark (anyone can type the text; only the
+    owner's counts)."""
+    held = None
+    for c in comments:
+        body = c.get("body") or ""
+        author = ((c.get("user") or {}).get("login") or "").lower()
+        for kind, login in _CLAIM_MARK.findall(body):
+            if login.lower() != author:
+                continue
+            if kind == "release":
+                held = None
+                continue
+            agent: dict[str, Any] = {}
+            found = _AGENT_MARK.search(body)
+            if found:
+                try:
+                    agent = agent_identity(json.loads(found.group(1)))
+                except ValueError:
+                    agent = {}
+            held = {"login": login, **agent}
+    return held
+
+
+def claimed_by(comments: list[dict[str, Any]]) -> str | None:
+    held = holder(comments)
+    return held["login"] if held else None
+
+
+def _agent_line(agent: dict[str, Any]) -> str:
+    who = agent.get("agent") or "their own agent"
+    via = " · ".join(x for x in (agent.get("provider"), agent.get("model")) if x)
+    skills = ", ".join(agent.get("skills") or [])
+    return (f"**{who}**" + (f" ({via})" if via else "")
+            + (f"\nSpecialties: {skills}" if skills else ""))
+
+
+def claim_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    issue = _issue(ctx, number)
+    if issue.get("state") == "closed":
+        raise ActionError("This card is closed.")
+    if READY_LABEL in _labels(issue):
+        raise ActionError("Tradvia's own agent is on this card (agent:ready); pick another one.")
+    held = holder(ctx.github.list_comments(ctx.token, ctx.repo, number))
+    branch = f"{BRANCH_PREFIX}{number}"
+    if held and held["login"].lower() != ctx.login.lower():
+        by = held.get("agent")
+        raise ActionError(f"This card is taken by @{held['login']}" + (f" ({by})" if by else "")
+                          + "; pick another one or ask them on the card.")
+    agent = agent_identity(args)
+    if not agent["agent"]:
+        raise ActionError("Say which agent takes the card: agent (e.g. Kiro, Claude Code), and "
+                          "if you can provider, model and skills.")
+    if held is None:
+        ctx.github.add_label(ctx.token, ctx.repo, number, CLAIM_LABEL)
+        ctx.github.comment(ctx.token, ctx.repo, number, (
+            f"<!-- tradvia:claim login={ctx.login} -->\n"
+            f"<!-- tradvia:agent {json.dumps(agent, ensure_ascii=False)} -->\n"
+            f"Taken by @{ctx.login} with {_agent_line(agent)}\n\n"
+            f"Work goes on branch `{branch}` and a pull request that says `Closes #{number}`; "
+            "a maintainer merges it. Through Tradvia (ADR 0012)."))
+    ctx.add_ref("card", number)
+    return {"number": number, "claimed_by": ctx.login, **(held or agent), "login": ctx.login,
+            "branch": branch, "pull_request_must_say": f"Closes #{number}",
+            "already_yours": held is not None}
+
+
+def release_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    _issue(ctx, number)
+    who = claimed_by(ctx.github.list_comments(ctx.token, ctx.repo, number))
+    if who is None or who.lower() != ctx.login.lower():
+        raise ActionError("Only the person who took this card can release it.")
+    note = str(args.get("note") or "").strip()[:MAX_PROGRESS]
+    ctx.github.remove_label(ctx.token, ctx.repo, number, CLAIM_LABEL)
+    ctx.github.comment(ctx.token, ctx.repo, number, (
+        f"<!-- tradvia:release login={ctx.login} -->\nReleased by @{ctx.login}; the card is free "
+        "for another person or agent." + (f"\n\n{note}" if note else "")))
+    ctx.add_ref("card", number)
+    return {"number": number, "released": True}
+
+
+def comment_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    number = _number(args)
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ActionError("text is required")
+    if len(text) > MAX_PROGRESS:
+        raise ActionError(f"text is too long (at most {MAX_PROGRESS} characters)")
+    if _issue(ctx, number).get("state") == "closed":
+        raise ActionError("This card is closed.")
+    # The marks above are Tradvia's own; an agent's text cannot forge a claim or a release.
+    body = _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).strip()
+    ctx.github.comment(ctx.token, ctx.repo, number, f"Progress from @{ctx.login}'s agent:\n\n{body}")
+    ctx.add_ref("card", number)
+    return {"number": number, "commented": True}
+
+
+AGENTS_FILE = "AGENTS.md"
+MAX_GUIDE = 8_000
+WORKFLOW = (
+    "Call read_briefing first, then read_card and read_plan of the card you consider.",
+    "Pick a card that is free: not taken by a person, not with Tradvia's agent, no open PR.",
+    "claim_card it. If someone else holds it, choose another card or ask them on the card.",
+    f"Work in your own checkout on branch {BRANCH_PREFIX}<N>; run the project's checks.",
+    "Report with comment_card when something changes: progress, a question, a blocker.",
+    "Open a pull request that says 'Closes #<N>'. A maintainer reviews and merges it; the "
+    "card closes when it merges.",
+    "If you stop, release_card with a note, so a person or another agent can take it over.",
+)
+
+
+def read_briefing(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """What an agent of any provider needs to work with the others on this project."""
+    issues = ctx.store.list_issues(ctx.project_id, [], "all", 100_000) or []
+    by_number = {i["number"]: i for i in issues}
+    pr_of = {p.get("branch"): p for p in ctx.store.list_pulls(ctx.project_id, "open", 200) or []}
+    taken, with_tradvia, free = [], [], []
+    for it in ctx.store.list_backlog(ctx.project_id):
+        n = it["issue_number"]
+        issue = by_number.get(n)
+        if issue is None or issue.get("state") != "open":
+            continue
+        labels = _labels(issue)
+        pr = pr_of.get(f"{BRANCH_PREFIX}{n}")
+        row = {"number": n, "title": issue.get("title"),
+               "pull_request": pr.get("number") if pr else None,
+               "pull_request_author": pr.get("author") if pr else None}
+        if CLAIM_LABEL in labels:
+            if len(taken) < 20:  # one GitHub read per taken card, so a bounded number
+                row["taken_by"] = holder(ctx.github.list_comments(ctx.token, ctx.repo, n))
+            taken.append(row)
+        elif READY_LABEL in labels or pr:
+            with_tradvia.append(row)
+        elif all((by_number.get(d) or {}).get("state") == "closed" for d in it["depends_on"]):
+            free.append({**row, "note": it["note"]})
+    guide = None
+    get_file = getattr(ctx.github, "get_file", None)
+    if get_file is not None:
+        try:
+            guide = (get_file(ctx.token, ctx.repo, AGENTS_FILE, "") or None)
+        except Exception:
+            guide = None
+    pending = [m["text"] for m in ctx.store.list_messages(ctx.project_id, HISTORY)
+               if m.get("kind") == "pending"][-10:]
+    return {
+        "project": ctx.repo, "you": ctx.login,
+        "how_we_work": list(WORKFLOW),
+        "project_guide": guide[:MAX_GUIDE] if guide else None,
+        "project_guide_file": AGENTS_FILE,
+        "next_free_cards": free[:10],
+        "taken_by_people_and_their_agents": taken,
+        "with_tradvia_agent_or_open_pr": with_tradvia,
+        "waiting_for_a_person": pending,
+        "only_people_do": ["approve or reject a plan", "merge a pull request",
+                           "approve a deploy", "change roles, budget or connections"],
+    }
 
 
 def reply_plan(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -507,6 +705,17 @@ TOOLS: dict[str, Tool] = {
     "reorder_backlog": Tool(reorder_backlog, ("order", "number", "direction"),
                             "Set the order (every card once) or move `number` one place `direction` up|down."),
     "start_card": Tool(start_card, ("number",), "Start a card (marks it ready for the agent)."),
+    "read_briefing": Tool(read_briefing, (), "Start here: how this project works with people and "
+                          "other agents, its guide (AGENTS.md), free cards, who holds what, and "
+                          "what waits for a person."),
+    "claim_card": Tool(claim_card, ("number", "agent", "provider", "model", "skills"),
+                       "Take a free card for you and your own agent (Tradvia's agent will not run "
+                       "it). Say who you are: agent (e.g. Kiro, Claude Code), provider, model and "
+                       "skills (comma-separated specialties). Gives the branch and 'Closes #N'."),
+    "release_card": Tool(release_card, ("number", "note"), "Give back a card you took, with a "
+                         "note for whoever continues."),
+    "comment_card": Tool(comment_card, ("number", "text"), "Report progress, a question or a "
+                         "blocker on the card, where people and other agents see it."),
     "reply_plan": Tool(reply_plan, ("number", "decision", "text"),
                        "Answer a plan with decision 'adjust' and a text. Nothing else is allowed."),
     "review_pr": Tool(review_pr, ("number", "notes"),
@@ -519,8 +728,13 @@ TOOLS: dict[str, Tool] = {
 # request, so a token must never be able to start it. Approving, merging and deploying stay in
 # HUMAN_ONLY: an agent asking for them gets a pending item for the person instead.
 AGENT_VIA = "api_token"
-AGENT_TOOLS = ("read_backlog", "read_cards", "read_card", "read_plan", "read_pulls", "read_pull",
-               "read_checks", "read_deploys", "create_card", "start_card", "reply_plan")
+AGENT_TOOLS = ("read_briefing", "read_backlog", "read_cards", "read_card", "read_plan",
+               "read_pulls", "read_pull", "read_checks", "read_deploys", "create_card",
+               "start_card", "claim_card", "release_card", "comment_card", "reply_plan")
+
+
+# Taking and giving back a card belong to a person's own agent, never to the panel chat.
+AGENT_ONLY = ("claim_card", "release_card")
 
 
 def agent_catalog() -> list[dict[str, Any]]:
@@ -535,6 +749,9 @@ def call_tool(ctx: ToolContext, name: Any, args: Any) -> dict[str, Any]:
     args = args if isinstance(args, dict) else {}
     if name in HUMAN_ONLY:
         return hand_to_human(ctx, name, args)
+    if ctx.via != AGENT_VIA and name in AGENT_ONLY:
+        audit(ctx, name, args, "denied", "only a collaborator's own agent takes a card (ADR 0012)")
+        return {"error": f"'{name}' is for a collaborator's own agent, not the chat"}
     if ctx.via == AGENT_VIA and name not in AGENT_TOOLS:
         audit(ctx, name[:40] or "?", args, "denied", "not available to agents (ADR 0012)")
         return {"error": f"'{name}' is not available to agents; use one of: {', '.join(AGENT_TOOLS)}"}
@@ -600,7 +817,8 @@ def _steps(transcript: list[tuple[Any, dict[str, Any]]]) -> str:
 
 def build_prompt(repo: str, messages: list[dict[str, Any]],
                  transcript: list[tuple[Any, dict[str, Any]]]) -> str:
-    tools = "\n".join(f"- {n} ({', '.join(t.args)}): {t.doc}" for n, t in TOOLS.items())
+    tools = "\n".join(f"- {n} ({', '.join(t.args)}): {t.doc}" for n, t in TOOLS.items()
+                      if n not in AGENT_ONLY)
     return PROMPT.format(repo=repo, tools=tools, history=_history(messages), steps=_steps(transcript))
 
 

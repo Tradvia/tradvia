@@ -12,6 +12,9 @@ from .events import issue_record
 from .store import Store
 
 READY_LABEL = "agent:ready"
+# A card a collaborator's own agent took through MCP (ADR 0012). No workflow listens to it, so
+# Tradvia's own planner and executor never run on it.
+CLAIM_LABEL = "agent:claimed"
 BRANCH_PREFIX = "tradvia/issue-"
 
 # "Depende do #44 (…)" anywhere in the body, up to the end of that sentence or line.
@@ -42,7 +45,7 @@ def backlog_status(
         return "concluído"
     number = item["issue_number"]
     has_pr = any(p.get("branch") == f"{BRANCH_PREFIX}{number}" for p in pulls)
-    if has_pr or (issue is not None and READY_LABEL in issue["labels"]):
+    if has_pr or (issue is not None and {READY_LABEL, CLAIM_LABEL} & set(issue["labels"])):
         return "em andamento"
     for dep in item["depends_on"]:
         found = dep_issues.get(dep)
