@@ -4,13 +4,16 @@
 
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 from langgraph.types import Command
 
+import tradvia.cli as cli
 from tradvia.cli import make_executor, make_planner
-from tradvia.claude_code import ClaudeCodeExecutor, _cost, claude_code_plan, run_claude
+from tradvia.claude_code import (ClaudeCodeExecutor, _cost, claude_code_plan, parse_plan,
+                                 run_claude)
 from tradvia.events import parse_tokens
 from tradvia.graph import build_graph, tokens_line
 from tradvia.llm import architect_plan
@@ -413,3 +416,104 @@ def test_planner_failure_is_announced_and_posts_no_plan(error):
     assert len(chat.messages) == 1 and str(error) in chat.messages[0]
     assert "agent:ready" in chat.messages[0]
     assert gh.prs == [] and gh.branches == []
+
+
+def sequence_runner(results):
+    """A fake `claude` that answers `results` one call at a time, in order."""
+    calls, answers = [], iter(results)
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=claude_output(next(answers)), stderr="")
+
+    runner.calls = calls
+    return runner
+
+
+def test_unusable_planner_answer_is_repaired_once_and_both_calls_are_counted():
+    runner = sequence_runner(["Here is the plan, not JSON", json.dumps(PLAN)])
+    plan = claude_code_plan("T", "B", 1, runner=runner, cwd=".")
+    assert plan["plan"] == ["a", "b"] and plan["question"] == "Posso?"
+    assert len(runner.calls) == 2
+    repair = runner.calls[1][2]  # the prompt of the second call
+    assert "could not be used" in repair and "Here is the plan, not JSON" in repair
+    assert plan["_cost"]["usd"] == pytest.approx(1.0) and plan["_tool_calls"] == 6
+
+
+def test_second_unusable_answer_fails_and_quotes_what_came_back():
+    runner = sequence_runner(["first answer", "second answer, still not JSON"])
+    with pytest.raises(ValueError, match="second answer, still not JSON"):
+        claude_code_plan("T", "B", 1, runner=runner, cwd=".")
+    assert len(runner.calls) == 2
+
+
+def test_cli_errors_are_not_repeated(tmp_path):
+    calls = []
+
+    def failing(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stdout=claude_output("boom", is_error=True), stderr="")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        claude_code_plan("T", "B", 1, runner=failing, cwd=str(tmp_path))
+    assert len(calls) == 1
+
+
+def test_excerpt_quotes_the_text_around_the_parser_error():
+    # An unescaped quote ends the string early, the kind of break behind #129 and #130.
+    answer = '{"summary": "s", "plan": ["' + "y" * 400 + ' the "fast" path"], "question": "q"}'
+    with pytest.raises(ValueError) as e:
+        parse_plan(answer)
+    message = str(e.value)
+    assert "Near the error" in message and "fast" in message
+    assert '{"summary"' not in message
+
+
+def test_prose_answer_quotes_its_start():
+    with pytest.raises(ValueError, match="The answer began: «I cannot plan this»"):
+        parse_plan("I cannot plan this")
+
+
+def test_excerpt_masks_secret_shapes():
+    secret = "sk-" + "a" * 30
+    with pytest.raises(ValueError) as e:
+        parse_plan(f"here is my key {secret} and no plan")
+    assert secret not in str(e.value) and "***" in str(e.value)
+
+
+def test_planner_failure_comment_quotes_the_second_answer():
+    runner = sequence_runner(["first, not JSON", "second, not JSON either"])
+    gh, chat = FakeGitHub(), FakeChat()
+    app = build_graph(gh, chat, planner=lambda t, b, n: claude_code_plan(t, b, n, runner=runner))
+    result, _ = start(app)
+    assert result["status"] == "WAITING_HUMAN" and gh.prs == []
+    assert len(runner.calls) == 2
+    assert "second, not JSON either" in chat.messages[0] and "agent:ready" in chat.messages[0]
+
+
+def test_run_without_a_plan_exits_non_zero(monkeypatch):
+    card = {"id": "CARD-1", "status": "WAITING_HUMAN", "history": [], "plan_error": "no plan"}
+    monkeypatch.setattr(cli, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "run", lambda *a: card)
+    monkeypatch.setattr(sys, "argv", ["tradvia", "--issue", "1"])
+    with pytest.raises(SystemExit, match="Planning failed: no plan"):
+        cli.main()
+
+
+def test_run_with_a_plan_exits_zero(monkeypatch, capsys):
+    card = {"id": "CARD-1", "status": "AGENT_WORKING", "history": [], "plan_error": None}
+    monkeypatch.setattr(cli, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "run", lambda *a: card)
+    monkeypatch.setattr(sys, "argv", ["tradvia", "--issue", "1"])
+    cli.main()
+    assert "CARD-1" in capsys.readouterr().out
+
+
+def test_litellm_answer_that_is_not_json_is_quoted(monkeypatch):
+    message = SimpleNamespace(content="Sorry, no plan")
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+    fake = SimpleNamespace(completion=lambda **kw: reply, completion_cost=lambda **kw: 0.0)
+    monkeypatch.setitem(sys.modules, "litellm", fake)
+    monkeypatch.setenv("TRADVIA_OFFLINE", "0")
+    with pytest.raises(ValueError, match="The answer began: «Sorry, no plan»"):
+        architect_plan("T", "B", 1)

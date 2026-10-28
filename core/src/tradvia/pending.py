@@ -19,7 +19,12 @@ AGENT_QUESTION = "agent_question"
 PR_OPENED = "pr_opened"
 BUDGET_LIMIT = "budget_limit"
 ADJUST_LIMIT = "adjust_limit"
-KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT)
+# Proactive alerts (alerts.py): sent by Web Push like the kinds above, but never in the inbox.
+DEPLOY_STUCK = "deploy_stuck"
+COST_OUTLIER = "cost_outlier"
+RUN_DEAD = "run_dead"
+ALERT_KINDS = (DEPLOY_STUCK, COST_OUTLIER, RUN_DEAD)
+KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT) + ALERT_KINDS
 
 # The policy interaction that answers each kind (docs/projects.md).
 ROLE_FOR_KIND = {
@@ -28,6 +33,9 @@ ROLE_FOR_KIND = {
     ADJUST_LIMIT: "approve_plan",
     PR_OPENED: "merge_pr",
     BUDGET_LIMIT: "budget_control",
+    DEPLOY_STUCK: "approve_deploy",
+    COST_OUTLIER: "budget_control",
+    RUN_DEAD: "approve_plan",
 }
 
 # graph.py posts "Limite de N ajustes atingido"; the budget stop uses the same style.
@@ -71,13 +79,24 @@ def last_agent_marker(card: dict[str, Any], agent: str | None = None) -> str | N
     Used by the dashboard to tell BLOCKED (🔴) apart from the other markers, which all mean
     the card still waits on a human even when the underlying CI run looks "successful" or
     is still "in_progress" (card #87): the agent's own word is more current than the run's."""
+    return marker_in(last_agent_marker_comment(card, agent))
+
+
+def marker_in(comment: dict[str, Any] | None) -> str | None:
+    """The marker emoji a comment leads with, or None."""
+    m = AGENT_MARKERS_RE.search((comment or {}).get("body") or "")
+    return m.group(0) if m else None
+
+
+def last_agent_marker_comment(
+    card: dict[str, Any], agent: str | None = None
+) -> dict[str, Any] | None:
+    """The agent's last comment on an open card when it leads with a marker, else None. Its
+    `created_at` is when the marker was posted: a run started after it is a new attempt (#152)."""
     if card.get("state") == "closed":
         return None
     comment = _last_agent_comment(card.get("comments") or [], agent or agent_login())
-    if comment is None:
-        return None
-    m = AGENT_MARKERS_RE.search(comment.get("body") or "")
-    return m.group(0) if m else None
+    return comment if marker_in(comment) else None
 
 
 def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
