@@ -185,6 +185,11 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         result = app.invoke({"id": card_id, "project_id": github.repo, "status": "BACKLOG",
                              "source": {"provider": "github", "issue_number": issue}}, config)
 
+    if chat_kind == "github" and not os.getenv("DATABASE_URL") and wait_timeout == 0:
+        print("⚠ DATABASE_URL is not set: checkpoints are in memory, so durable waiting is "
+              "disabled. Waiting for the reply in this job instead (--wait 3600).", flush=True)
+        wait_timeout = 3600
+
     while result.get("__interrupt__"):
         pending = result["__interrupt__"][0].value
         print(f"⏸  {card_id} WAITING_HUMAN — answer in {chat.name} (timeout {wait_timeout}s)", flush=True)

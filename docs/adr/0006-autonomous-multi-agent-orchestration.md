@@ -165,3 +165,9 @@ and Gemini report tokens but no price, so their US$ is an estimate from `budget.
 (API-equivalent USD per million input, output and cached tokens, with a fallback row), marked
 as estimated and never as a real price (`usd_reported` stays false). Codex has no turn flag,
 so its turn and US$ limits reject the run only after it ends; the timeout is what bounds it.
+
+## Note: waiting across jobs in CI
+
+The durable wait does not change this decision. With `DATABASE_URL` set, a CI job started with
+`--wait 0` leaves the card in `WAITING_HUMAN` and a later job resumes it from the checkpoint
+(see `docs/durable-execution.md`).
