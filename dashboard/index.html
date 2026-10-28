@@ -66,6 +66,16 @@
   .soon-badge { font-size: var(--fs-xs); border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 6px; color: var(--muted); }
   .view[hidden] { display: none; }
   .settings-section, .help-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: var(--s4); margin-bottom: var(--s4); }
+  .faq-search { width: 100%; max-width: 560px; margin: 8px 0; padding: 8px 10px; background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius); font: inherit; }
+  .faq-cats { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+  .faq-chip { font-size: var(--fs-sm); padding: 4px 10px; border-radius: 999px; }
+  .faq-chip.on { border-color: var(--brand); color: var(--brand); }
+  .faq-list h3 { margin: 18px 0 6px; font-size: var(--fs-md); color: var(--muted); }
+  details.faq { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); margin: 6px 0; padding: 0 12px; max-width: 820px; }
+  details.faq summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+  details.faq .faq-a { padding: 0 0 10px; }
+  details.faq .faq-a p { margin: 6px 0; }
+  details.faq .faq-a ul { margin: 6px 0; padding-left: 20px; }
   .budget-form { display: grid; gap: 8px; max-width: 460px; }
   .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
   .budget-row input { width: 9em; }
@@ -1987,7 +1997,7 @@ const I18N = {
     "settings.notifications": "Notificações", "settings.notificationsNote": "Avisos de aprovações pendentes e falhas (#47).",
     "settings.prefs": "Preferências", "settings.language": "Idioma", "settings.theme": "Tema",
     "theme.dark": "Escuro", "theme.light": "Claro", "theme.system": "Sistema",
-    "help.title": "Ajuda e documentação", "help.readme": "README", "help.kpis": "Indicadores do painel",
+    "help.title": "Ajuda", "help.intro": "Perguntas frequentes sobre como usar o Tradvia. Busque por uma palavra ou escolha um tema.", "help.search": "Buscar na ajuda (ex.: aprovar plano, token, orçamento)", "help.all": "Todos", "help.none": "Nada encontrado. Tente outra palavra.", "help.more": "Mais documentação", "help.docsNote": "status real de cada funcionalidade", "help.readme": "README", "help.kpis": "Indicadores do painel",
     "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
     freeOnly: "Só cards livres",
@@ -2137,7 +2147,7 @@ const I18N = {
     "settings.notifications": "Notifications", "settings.notificationsNote": "Alerts for pending approvals and failures (#47).",
     "settings.prefs": "Preferences", "settings.language": "Language", "settings.theme": "Theme",
     "theme.dark": "Dark", "theme.light": "Light", "theme.system": "System",
-    "help.title": "Help and documentation", "help.readme": "README", "help.kpis": "Dashboard KPIs",
+    "help.title": "Help", "help.intro": "Frequently asked questions on how to use Tradvia. Search for a word or pick a topic.", "help.search": "Search help (e.g. approve plan, token, budget)", "help.all": "All", "help.none": "Nothing found. Try another word.", "help.more": "More documentation", "help.docsNote": "real status of each capability", "help.readme": "README", "help.kpis": "Dashboard KPIs",
     "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
     freeOnly: "Only free cards",
@@ -3526,24 +3536,139 @@ function drawPolicySettings(box, p) {
   }
 }
 
+// Help: frequently asked questions (#101). Plain text; a line starting with "- " is a bullet.
+const HELP_CATS = [{"id": "start", "pt": "Primeiros passos", "en": "Getting started"}, {"id": "board", "pt": "Quadro e cards", "en": "Board and cards"}, {"id": "ai", "pt": "IAs e agentes", "en": "AIs and agents"}, {"id": "review", "pt": "Revisão, merge e deploy", "en": "Review, merge and deploy"}, {"id": "settings", "pt": "Configurações e segurança", "en": "Settings and security"}, {"id": "trouble", "pt": "Problemas comuns", "en": "Common problems"}];
+const HELP_FAQ = [
+  {"id": "what", "cat": "start", "q": {"pt": "O que é o Tradvia?", "en": "What is Tradvia?"}, "a": {"pt": ["O Tradvia é o painel onde pessoas e agentes de IA trabalham juntos nos cards de um repositório do GitHub. Cada card é uma issue; o agente planeja, uma pessoa aprova, o agente executa e abre um pull request, e uma pessoa revisa e faz o merge.", "Tudo fica vinculado ao repositório: cards, custos, orçamento, papéis, tokens e auditoria de um projeto nunca aparecem em outro."], "en": ["Tradvia is the panel where people and AI agents work together on the cards of a GitHub repository. Each card is an issue: the agent plans, a person approves, the agent carries it out and opens a pull request, and a person reviews and merges it.", "Everything is bound to the repository: cards, costs, budget, roles, tokens and audit of one project never show up in another."]}},
+  {"id": "signin", "cat": "start", "q": {"pt": "Como eu entro?", "en": "How do I sign in?"}, "a": {"pt": ["Clique em \"Entrar com GitHub\" no topo da página e autorize. O Tradvia não tem senha própria: sua identidade é a sua conta do GitHub.", "Depois de entrar, o topo mostra seu login e o seu papel no projeto aberto."], "en": ["Click \"Sign in with GitHub\" at the top of the page and authorize. Tradvia has no password of its own: your identity is your GitHub account.", "Once signed in, the top shows your login and your role in the open project."]}},
+  {"id": "roles", "cat": "start", "q": {"pt": "O que cada papel pode fazer?", "en": "What can each role do?"}, "a": {"pt": ["O papel vem do GitHub (read < triage < write < maintain < admin). Os padrões são:", "- read: vê o painel do projeto.", "- triage: também inicia cards.", "- write: também aprova, rejeita ou ajusta planos e chama o assistente.", "- maintain: também faz merge de PR, atualiza o branch do PR, aprova deploys e assume a sessão ao vivo.", "- admin: também altera orçamento, conexões e papéis e risco do projeto.", "Um admin pode mudar esses mínimos em Configurações, por projeto. Gerenciar conexões fica sempre com admin."], "en": ["The role comes from GitHub (read < triage < write < maintain < admin). The defaults are:", "- read: sees the project's panel.", "- triage: also starts cards.", "- write: also approves, rejects or adjusts plans and mentions the assistant.", "- maintain: also merges PRs, updates the PR branch, approves deploys and takes over the live session.", "- admin: also changes the budget, connections, and the project's roles and risk.", "An admin can change these minimums in Settings, per project. Managing connections always stays with admin."]}},
+  {"id": "invite", "cat": "start", "q": {"pt": "Como adiciono uma pessoa ao projeto?", "en": "How do I add a person to the project?"}, "a": {"pt": ["O acesso segue o GitHub. No repositório, vá em Settings → Collaborators → Add people, escolha a pessoa e o papel (para trabalhar em cards, Write é o comum).", "A pessoa aceita o convite (chega por e-mail e em github.com/notifications) e entra no Tradvia com a conta dela. Para o pull request ser aceito, ela também assina o CLA quando o robô pedir no primeiro PR."], "en": ["Access follows GitHub. In the repository, go to Settings → Collaborators → Add people, pick the person and the role (Write is the usual one to work on cards).", "The person accepts the invitation (by e-mail and at github.com/notifications) and signs in to Tradvia with their own account. For their pull request to be accepted, they also sign the CLA when the bot asks on their first PR."]}},
+  {"id": "project", "cat": "start", "q": {"pt": "Por que não vejo meu projeto?", "en": "Why don't I see my project?"}, "a": {"pt": ["O projeto aparece quando você tem acesso ao repositório no GitHub e o GitHub App do Tradvia está instalado nele. Se você acabou de ser convidado, aceite o convite no GitHub, saia do Tradvia e entre de novo."], "en": ["A project shows up when you have access to its repository on GitHub and the Tradvia GitHub App is installed on it. If you were just invited, accept the invitation on GitHub, then sign out of Tradvia and back in."]}},
+  {"id": "columns", "cat": "board", "q": {"pt": "O que significa cada coluna do quadro?", "en": "What does each board column mean?"}, "a": {"pt": ["- Backlog: issues abertas que ainda não começaram. \"Na fila do agente\" indica que o card já foi mandado ao agente e espera a execução.", "- Agente trabalhando: há uma execução do agente rodando agora para o card.", "- Aguardando humano: o agente postou um plano ou uma pergunta e espera uma pessoa.", "- Bloqueado: a execução falhou ou o agente parou sem nada para aprovar; veja o card.", "- Em revisão (PR): o agente abriu um pull request que espera revisão e merge.", "- Concluído: cards fechados (os mais recentes; o restante fica no GitHub)."], "en": ["- Backlog: open issues not started yet. \"Queued for the agent\" means the card was sent to the agent and waits for a run.", "- Agent working: an agent run is going on right now for the card.", "- Waiting for a human: the agent posted a plan or a question and waits for a person.", "- Blocked: the run failed or the agent stopped with nothing to approve; open the card.", "- In review (PR): the agent opened a pull request waiting for review and merge.", "- Done: closed cards (the most recent; the rest are on GitHub)."]}},
+  {"id": "create", "cat": "board", "q": {"pt": "Como crio um card?", "en": "How do I create a card?"}, "a": {"pt": ["Use \"Novo card\" no topo da coluna Backlog, com título e descrição do que precisa ser feito. Também vale criar uma issue direto no GitHub: ela aparece no Backlog.", "Uma boa descrição diz o objetivo, o que está fora do escopo e como saber que ficou pronto."], "en": ["Use \"New card\" at the top of the Backlog column, with a title and a description of what needs to be done. Creating an issue straight on GitHub works too: it shows up in Backlog.", "A good description says the goal, what is out of scope and how to tell it is done."]}},
+  {"id": "startcard", "cat": "board", "q": {"pt": "Como mando um card para o agente?", "en": "How do I send a card to the agent?"}, "a": {"pt": ["No card do Backlog, clique em \"Iniciar\" (papel triage ou acima, por padrão). O Tradvia marca a issue com agent:ready e o agente começa pelo plano.", "Cada execução consome a cota do provedor de IA do projeto e conta no orçamento. Se o teto mensal foi atingido, nenhum card novo inicia."], "en": ["On the Backlog card, click \"Start\" (triage role or above, by default). Tradvia labels the issue agent:ready and the agent begins with the plan.", "Each run uses the project's AI provider quota and counts against the budget. When the monthly ceiling is reached, no new card starts."]}},
+  {"id": "approve", "cat": "board", "q": {"pt": "Como aprovo, rejeito ou ajusto o plano?", "en": "How do I approve, reject or adjust the plan?"}, "a": {"pt": ["Clique no card para abrir os detalhes. Quando há um plano esperando, aparecem \"Aprovar plano\", \"Rejeitar plano\" e \"Ajustar\" (descreva o que mudar). Precisa do papel write, por padrão.", "Também dá para responder na própria issue do GitHub com Aprovado, Rejeitado ou o ajuste. O agente retoma de onde parou, sem refazer o plano."], "en": ["Click the card to open its details. When a plan is waiting, \"Approve plan\", \"Reject plan\" and \"Adjust\" (describe the change) show up. It needs the write role, by default.", "You can also answer on the GitHub issue itself with Aprovado (approve), Rejeitado (reject) or the change. The agent resumes where it stopped, without planning again."]}},
+  {"id": "who", "cat": "board", "q": {"pt": "Como sei quem está trabalhando num card?", "en": "How do I know who is working on a card?"}, "a": {"pt": ["Quando uma pessoa ou a IA dela pega um card, o card mostra \"Com @login\", o agente usado e as especialidades declaradas. Clique no card para ver a linha do tempo e a auditoria."], "en": ["When a person or their AI takes a card, the card shows \"With @login\", the agent used and its declared specialties. Click the card to see its timeline and audit."]}},
+  {"id": "cost", "cat": "board", "q": {"pt": "O que é o custo que aparece no card?", "en": "What is the cost shown on a card?"}, "a": {"pt": ["É uma estimativa em dólares e tokens do que o planejamento e a execução gastaram, calculada pelo preço de API equivalente. Não é fatura: com assinatura, a cobrança real segue o seu plano com o fornecedor."], "en": ["It is an estimate in dollars and tokens of what planning and execution used, priced at the equivalent API rate. It is not an invoice: with a subscription, the real charge follows your plan with the provider."]}},
+  {"id": "pending", "cat": "board", "q": {"pt": "O que é o sino de pendências?", "en": "What is the pending bell?"}, "a": {"pt": ["O sino conta o que espera você neste momento: planos para responder, PRs para revisar, deploys para aprovar, filas paradas. Clique para ver a lista e abrir cada item."], "en": ["The bell counts what is waiting for you right now: plans to answer, PRs to review, deploys to approve, stuck queues. Click it to see the list and open each item."]}},
+  {"id": "connectai", "cat": "ai", "q": {"pt": "Como conecto a minha IA (Claude Code, Antigravity, Kiro, Gemini CLI, Codex…)?", "en": "How do I connect my AI (Claude Code, Antigravity, Kiro, Gemini CLI, Codex…)?"}, "a": {"pt": ["No painel, abra a seção \"Conectar minha IA\":", "- escolha o papel do token (nunca passa do seu) e a validade (padrão 30 dias, máximo 90) e clique em \"Gerar token\";", "- copie o token na hora: ele não aparece de novo. Guarde fora do git, na variável TRADVIA_TOKEN ou no cofre do seu cliente;", "- configure o MCP do Tradvia no seu cliente com o trecho que a seção mostra: MCP local (comando tradvia mcp) ou MCP por HTTP com o cabeçalho Authorization: Bearer;", "- peça para a IA seguir o AGENTS.md do repositório.", "Com isso a IA lê o briefing do projeto, pega um card livre, trabalha no branch tradvia/issue-N e abre um PR com Closes #N."], "en": ["On the panel, open the \"Connect my AI\" section:", "- pick the token's role (never above yours) and its validity (30 days by default, 90 at most) and click \"Create token\";", "- copy the token right away: it is not shown again. Keep it out of git, in the TRADVIA_TOKEN variable or your client's vault;", "- set up the Tradvia MCP server in your client with the snippet the section shows: local MCP (the tradvia mcp command) or MCP over HTTP with the Authorization: Bearer header;", "- ask the AI to follow the repository's AGENTS.md.", "The AI then reads the project briefing, takes a free card, works on branch tradvia/issue-N and opens a PR with Closes #N."]}},
+  {"id": "claim", "cat": "ai", "q": {"pt": "Como a minha IA pega um card sem atropelar ninguém?", "en": "How does my AI take a card without stepping on anyone?"}, "a": {"pt": ["Pela ferramenta claim_card do MCP. Ela marca o card com agent:claimed e deixa na issue quem pegou, qual agente e quais especialidades. Outro colaborador vê isso no quadro e escolhe outro card.", "Quando desistir ou terminar sem PR, a IA usa release_card para devolver o card ao Backlog. Para avisar algo, usa comment_card."], "en": ["Through the MCP claim_card tool. It labels the card agent:claimed and leaves on the issue who took it, which agent and which specialties. Other collaborators see it on the board and pick another card.", "When it gives up or ends without a PR, the AI uses release_card to put the card back in Backlog. To say something, it uses comment_card."]}},
+  {"id": "alone", "cat": "ai", "q": {"pt": "A IA pode tocar o projeto sozinha?", "en": "Can the AI run the project on its own?"}, "a": {"pt": ["Não. A IA sempre trabalha junto com pessoas e outros agentes: ela pega cards e abre PRs, mas aprovar plano, fazer merge e aprovar deploy continuam com uma pessoa que tenha o papel exigido."], "en": ["No. The AI always works together with people and other agents: it takes cards and opens PRs, but approving plans, merging and approving deploys stay with a person who holds the required role."]}},
+  {"id": "manager", "cat": "ai", "q": {"pt": "O que é a IA gestora?", "en": "What is the AI manager?"}, "a": {"pt": ["É uma IA abaixo do dono do projeto, com um token do tipo gestor. Por padrão ela só acompanha e organiza: lê o quadro, comenta e sugere.", "Um admin pode conceder, por até 90 dias, reordenar o backlog e aprovar planos, e retirar quando quiser. Ela nunca faz merge, deploy, nem mexe em orçamento, conexões ou papéis."], "en": ["It is an AI below the project's owner, with a manager-type token. By default it only follows and organizes: it reads the board, comments and suggests.", "An admin can grant it, for up to 90 days, reordering the backlog and approving plans, and take that back at any time. It never merges, deploys, or touches budget, connections or roles."]}},
+  {"id": "revoke", "cat": "ai", "q": {"pt": "Como revogo um token?", "en": "How do I revoke a token?"}, "a": {"pt": ["Em \"Conectar minha IA\", na lista \"Meus tokens neste projeto\", clique em \"Revogar\". O token para de funcionar na hora. Se achar que um token vazou, revogue e gere outro."], "en": ["In \"Connect my AI\", in the \"My tokens in this project\" list, click \"Revoke\". The token stops working at once. If you think a token leaked, revoke it and create a new one."]}},
+  {"id": "chat", "cat": "ai", "q": {"pt": "Por que a conversa com o orquestrador está desligada?", "en": "Why is the chat with the orchestrator off?"}, "a": {"pt": ["O chat do orquestrador só roda com um provedor de IA configurado por chave de API (Anthropic, OpenAI ou Gemini) em Conexões. Sem chave, ele fica desligado e o painel diz o motivo. O token de assinatura do Claude Code serve só ao executor, nunca ao chat.", "Isso não impede o trabalho: os cards, os agentes e a sua IA conectada por MCP continuam funcionando."], "en": ["The orchestrator chat runs only with an AI provider set up with an API key (Anthropic, OpenAI or Gemini) in Connections. Without a key it is off and the panel says why. The Claude Code subscription token runs the executor only, never the chat.", "This does not stop the work: cards, agents and your AI connected through MCP keep working."]}},
+  {"id": "merge", "cat": "review", "q": {"pt": "Como reviso e faço merge de um PR?", "en": "How do I review and merge a PR?"}, "a": {"pt": ["Abra o card que está em \"Em revisão (PR)\". O detalhe mostra o resumo, os arquivos alterados e os checks. Com tudo verde, use \"Merge (squash)\" (papel maintain, por padrão). Se o branch estiver atrás do main, use \"Atualizar branch\" antes.", "Essa função depende das permissões do GitHub App no repositório; se o botão não funcionar, faça o merge no GitHub."], "en": ["Open the card in \"In review (PR)\". The details show the summary, the changed files and the checks. When all is green, use \"Merge (squash)\" (maintain role, by default). If the branch is behind main, use \"Update branch\" first.", "This depends on the GitHub App permissions on the repository; if the button does not work, merge on GitHub."]}},
+  {"id": "workflows", "cat": "review", "q": {"pt": "O PR de um colaborador externo não roda os checks. O que faço?", "en": "A PR from an outside collaborator does not run its checks. What do I do?"}, "a": {"pt": ["O GitHub segura os workflows de quem contribui pela primeira vez. No detalhe do PR, um mantenedor clica em \"Aprovar workflows\" depois de olhar o código, e os checks rodam."], "en": ["GitHub holds the workflows of first-time contributors. In the PR details, a maintainer clicks \"Approve workflows\" after looking at the code, and the checks run."]}},
+  {"id": "deploy", "cat": "review", "q": {"pt": "Como aprovo um deploy?", "en": "How do I approve a deploy?"}, "a": {"pt": ["Os deploys de produção que esperam aprovação aparecem em \"Deploys pendentes\". Aprove ou rejeite (papel maintain, por padrão). Um deploy antigo parado bloqueia a fila: o painel avisa, e cancelar o substituído libera a fila.", "Uma mudança só chega ao app.tradvia.org depois do merge no main e da aprovação do deploy."], "en": ["Production deploys waiting for approval show up in \"Pending deploys\". Approve or reject them (maintain role, by default). An old stuck deploy blocks the queue: the panel warns you, and cancelling the replaced one frees the queue.", "A change reaches app.tradvia.org only after the merge into main and the deploy approval."]}},
+  {"id": "budget", "cat": "settings", "q": {"pt": "Onde defino o orçamento?", "en": "Where do I set the budget?"}, "a": {"pt": ["Em Configurações → Orçamento do projeto (admin, por padrão). Há limites por card (custo em US$, minutos e passos) e um teto mensal opcional, que começa sem teto.", "Em 80% de qualquer limite o agente é avisado; em 100% ele para e o card espera uma pessoa. Atingido o teto mensal, nenhum card novo inicia."], "en": ["In Settings → Project budget (admin, by default). There are per-card limits (cost in US$, minutes and steps) and an optional monthly ceiling, which starts with no ceiling.", "At 80% of any limit the agent is warned; at 100% it stops and the card waits for a person. Once the monthly ceiling is reached, no new card starts."]}},
+  {"id": "policy", "cat": "settings", "q": {"pt": "Onde mudo quem pode fazer o quê?", "en": "Where do I change who can do what?"}, "a": {"pt": ["Em Configurações → Papéis e risco do projeto, só admin. Ali fica o papel mínimo de cada ação (iniciar card, aprovar plano, merge, deploy…) e quem precisa aprovar cada nível de risco das ações do agente. Vale na hora, para pessoas, agentes e tokens deste projeto."], "en": ["In Settings → Project roles and risk, admin only. It holds the minimum role of each action (start a card, approve a plan, merge, deploy…) and who must approve each risk level of the agent's actions. It takes effect at once for people, agents and tokens of this project."]}},
+  {"id": "yml", "cat": "settings", "q": {"pt": "Por que mudar o .tradvia.yml não muda o orçamento nem os papéis?", "en": "Why does changing .tradvia.yml not change the budget or the roles?"}, "a": {"pt": ["Porque essas configurações agora ficam no Tradvia, por projeto, e não em arquivo. As seções budget, interactions e risk do .tradvia.yml são ignoradas, e a tela de Configurações avisa quando elas ainda estão lá."], "en": ["Because these settings now live on Tradvia, per project, not in a file. The budget, interactions and risk sections of .tradvia.yml are ignored, and the Settings screen tells you when they are still there."]}},
+  {"id": "isolation", "cat": "settings", "q": {"pt": "Os dados de um projeto podem aparecer em outro?", "en": "Can one project's data show up in another?"}, "a": {"pt": ["Não. Cada projeto é o seu repositório: cards, custos, orçamento, papéis, tokens e auditoria ficam separados. Um token gerado num projeto não funciona em outro."], "en": ["No. Each project is its repository: cards, costs, budget, roles, tokens and audit are kept apart. A token created in one project does not work in another."]}},
+  {"id": "connections", "cat": "settings", "q": {"pt": "Para que serve a tela Conexões?", "en": "What is the Connections screen for?"}, "a": {"pt": ["Ali um admin escolhe o provedor e o modelo de cada papel do fluxo e guarda os segredos de cada provedor (chave de API ou o token da assinatura do Claude Code). Os segredos nunca vão para o repositório.", "Hoje só o chat do orquestrador usa de fato essa escolha; para os outros papéis ela ainda é só lida."], "en": ["There an admin picks the provider and model of each flow role and keeps each provider's secrets (an API key or the Claude Code subscription token). Secrets never go into the repository.", "Today only the orchestrator chat actually uses that choice; for the other roles it is only read."]}},
+  {"id": "audit", "cat": "settings", "q": {"pt": "O que fica registrado na auditoria?", "en": "What goes into the audit log?"}, "a": {"pt": ["Toda ação feita pelo painel ou por token: iniciar card, responder plano, merge, atualizar branch, aprovar workflows, aprovar ou rejeitar deploy, mudar orçamento, conexões e papéis, inclusive as tentativas negadas. No detalhe do card aparece a auditoria daquele card."], "en": ["Every action taken through the panel or a token: starting a card, answering a plan, merging, updating a branch, approving workflows, approving or rejecting a deploy, changing budget, connections and roles, including denied attempts. The card details show that card's audit."]}},
+  {"id": "empty", "cat": "trouble", "q": {"pt": "O painel está vazio ou sem cards. O que confiro?", "en": "The panel is empty or has no cards. What do I check?"}, "a": {"pt": ["- Use o endereço app.tradvia.org e entre com o GitHub. Em outro endereço o painel lê o GitHub sem login e esbarra no limite de 60 requisições por hora.", "- Saia e entre de novo: uma sessão antiga pode deixar a tela sem dados.", "- Confira se o endereço não tem filtros (from, to, executor, fcard, status), que reduzem os cards.", "- Leia a mensagem na barra acima do quadro. Sem mensagem, abra o console do navegador (F12) e anote o primeiro erro em vermelho.", "- Recarregue sem cache: Ctrl+Shift+R (Cmd+Shift+R no Mac)."], "en": ["- Use app.tradvia.org and sign in with GitHub. At another address the panel reads GitHub without signing in and hits the limit of 60 requests per hour.", "- Sign out and back in: an old session can leave the screen without data.", "- Make sure the address has no filters (from, to, executor, fcard, status), which narrow the cards.", "- Read the message in the bar above the board. With no message, open the browser console (F12) and note the first red error.", "- Reload without cache: Ctrl+Shift+R (Cmd+Shift+R on Mac)."]}},
+  {"id": "nothingrunning", "cat": "trouble", "q": {"pt": "Por que nenhum card está em \"Agente trabalhando\"?", "en": "Why is no card in \"Agent working\"?"}, "a": {"pt": ["Essa coluna só mostra cards com uma execução do agente rodando naquele momento. Se nenhum card foi iniciado, ou se todos já terminaram, ela fica vazia. Inicie um card do Backlog para o agente começar."], "en": ["That column only shows cards with an agent run going on at that moment. If no card was started, or all of them finished, it stays empty. Start a card from Backlog for the agent to begin."]}},
+  {"id": "nobutton", "cat": "trouble", "q": {"pt": "Não aparece o botão que eu esperava (Iniciar, Merge, Aprovar…).", "en": "The button I expected (Start, Merge, Approve…) is missing."}, "a": {"pt": ["Os botões só aparecem para quem tem o papel exigido naquele projeto. Confira o seu papel no topo da página e em Configurações. Se você acabou de ganhar acesso no GitHub, saia e entre de novo."], "en": ["Buttons only show up for whoever holds the required role in that project. Check your role at the top of the page and in Settings. If you were just given access on GitHub, sign out and back in."]}},
+  {"id": "blocked", "cat": "trouble", "q": {"pt": "Um card foi para \"Bloqueado\". E agora?", "en": "A card went to \"Blocked\". Now what?"}, "a": {"pt": ["Abra o card e leia o último comentário do agente e a execução que falhou. Corrija o que faltou (descrição, permissão, orçamento) e inicie o card de novo, ou peça um ajuste no plano."], "en": ["Open the card and read the agent's last comment and the failed run. Fix what was missing (description, permission, budget) and start the card again, or ask for a change to the plan."]}},
+  {"id": "missing", "cat": "trouble", "q": {"pt": "Uma função descrita aqui não aparece no painel.", "en": "A feature described here is missing from the panel."}, "a": {"pt": ["A versão publicada pode ser anterior: o painel só é atualizado depois do merge no main e da aprovação do deploy de produção. A página Documentação mostra o status real de cada funcionalidade."], "en": ["The published version may be older: the panel is updated only after the merge into main and the production deploy approval. The Documentation page shows the real status of each capability."]}},
+];
+
+// Lower case without accents, so "aprovacao" finds "aprovação".
+function foldText(s) {
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+// The FAQ entries that match `query` (every word, in the question or the answer) and `cat`.
+function helpMatches(faq, query, cat, language) {
+  const words = foldText(query).split(/\s+/).filter(Boolean);
+  return faq.filter((f) => {
+    if (cat && f.cat !== cat) return false;
+    const text = foldText(f.q[language] + " " + f.a[language].join(" "));
+    return words.every((w) => text.includes(w));
+  });
+}
+
+let helpQuery = "";
+let helpCat = "";
+
+function helpAnswer(lines) {
+  const box = el("div", null, "faq-a");
+  let list = null;
+  for (const line of lines) {
+    if (line.startsWith("- ")) {
+      if (!list) { list = el("ul"); box.append(list); }
+      list.append(el("li", line.slice(2)));
+    } else {
+      list = null;
+      box.append(el("p", line));
+    }
+  }
+  return box;
+}
+
 function renderHelp() {
   const root = document.getElementById("view-help");
   root.textContent = "";
-  root.append(el("h2", t("help.title")));
-  const base = safeGithubUrl("https://github.com/" + getRepo());
-  if (!base) return;
-  const sec = el("div", null, "help-section");
+  root.append(el("h2", t("help.title")), el("p", t("help.intro"), "sub"));
+  const search = el("input", null, "faq-search");
+  Object.assign(search, { type: "search", placeholder: t("help.search"), value: helpQuery });
+  search.setAttribute("aria-label", t("help.search"));
+  const chips = el("div", null, "faq-cats");
+  const list = el("div", null, "faq-list");
+  const drawChips = () => {
+    chips.replaceChildren();
+    for (const c of [{ id: "", pt: t("help.all"), en: t("help.all") }, ...HELP_CATS]) {
+      const b = el("button", c[lang], "faq-chip" + (helpCat === c.id ? " on" : ""));
+      b.type = "button";
+      b.setAttribute("aria-pressed", helpCat === c.id ? "true" : "false");
+      b.addEventListener("click", () => { helpCat = c.id; drawChips(); drawList(); });
+      chips.append(b);
+    }
+  };
+  const drawList = () => {
+    list.replaceChildren();
+    const found = helpMatches(HELP_FAQ, helpQuery, helpCat, lang);
+    if (!found.length) { list.append(el("p", t("help.none"), "sub")); return; }
+    for (const c of HELP_CATS) {
+      const items = found.filter((f) => f.cat === c.id);
+      if (!items.length) continue;
+      list.append(el("h3", c[lang]));
+      for (const f of items) {
+        const d = el("details", null, "faq");
+        d.id = "faq-" + f.id;
+        if (helpQuery.trim()) d.open = true;
+        d.append(el("summary", f.q[lang]), helpAnswer(f.a[lang]));
+        list.append(d);
+      }
+    }
+  };
+  search.addEventListener("input", () => { helpQuery = search.value; drawList(); });
+  drawChips();
+  drawList();
+  root.append(search, chips, list);
+
+  // Reference material, outside the app.
+  const more = el("div", null, "help-section");
+  more.append(el("h3", t("help.more")));
   const ul = el("ul");
-  for (const [key, path] of [["help.readme", "/blob/main/README.md"], ["help.kpis", "/blob/main/docs/dashboard-kpis.md"],
-    ["help.projects", "/blob/main/docs/projects.md"], ["help.adr", "/tree/main/docs/adr"]]) {
-    const a = el("a", t(key));
-    a.href = base + path;
-    const li = el("li");
-    li.append(a);
-    ul.append(li);
+  const docs = el("a", t("docs"));
+  docs.href = "docs.html";
+  const li0 = el("li");
+  li0.append(docs, document.createTextNode(" — " + t("help.docsNote")));
+  ul.append(li0);
+  const base = safeGithubUrl("https://github.com/" + getRepo());
+  if (base) {
+    for (const [key, path] of [["help.readme", "/blob/main/README.md"], ["help.kpis", "/blob/main/docs/dashboard-kpis.md"],
+      ["help.projects", "/blob/main/docs/projects.md"], ["help.adr", "/tree/main/docs/adr"]]) {
+      const a = el("a", t(key));
+      a.href = base + path;
+      const li = el("li");
+      li.append(a);
+      ul.append(li);
+    }
   }
-  sec.append(ul);
-  root.append(sec);
+  more.append(ul);
+  root.append(more);
 }
 
 function renderView() {
