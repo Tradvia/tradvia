@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
@@ -20,9 +21,10 @@ from typing import Callable
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .budget import Budget, check, format_usage, warning_notice
+from .budget import Budget, check, format_monthly, format_usage, monthly_check, warning_notice
 from .checkpoints import make_checkpointer
 from .claude_code import StagnationError
+from .guardrails import block_message, review
 from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .policy import Policy, role_of
@@ -108,7 +110,8 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
 def build_graph(github: GitHub, chat: Chat,
                 planner: Callable[[str, str, int], dict] = architect_plan,
                 checkpointer=None, executor=None, cwd: str = ".",
-                policy: Policy | None = None, budget: Budget | None = None):
+                policy: Policy | None = None, budget: Budget | None = None,
+                month_spend: Callable[[], float] | None = None):
     policy = policy or Policy()
     budget = budget or Budget()
 
@@ -128,10 +131,53 @@ def build_graph(github: GitHub, chat: Chat,
             github.comment(number, text)
         return transition(card["status"], "WAITING_HUMAN", by, "Budget exhausted")
 
+    def say(card: Card, text: str) -> None:
+        number = card["source"]["issue_number"]
+        if _chat_is_issue_thread(chat, github, number):
+            chat.post(text)
+        else:
+            github.comment(number, text)
+
+    warned_months: set[str] = set()
+
+    def monthly_gate(card: Card) -> dict | None:
+        """Project ceiling, checked only when a card starts; None lets the card start."""
+        cap = policy.monthly_usd
+        if month_spend is None or cap is None:
+            return None
+        try:
+            spent = float(month_spend())
+        except Exception as e:  # never loosen the lock: an unreadable spend stops the start
+            say(card, f"🛑 **{card['id']}** — could not read this month's spend ({type(e).__name__}) "
+                      "to check `budget.monthly_usd`; the card was not started. Restart it "
+                      "(remove and add the `agent:ready` label) once the store is reachable.")
+            return {"plan_error": "Monthly spend unreadable",
+                    **transition(card.get("status", "BACKLOG"), "BACKLOG", "human",
+                                 "Monthly spend unreadable")}
+        level = monthly_check(spent, cap)
+        if level == "stop":
+            say(card, f"🛑 **{card['id']}** — monthly budget exhausted; no new card starts this "
+                      f"month. {format_monthly(spent, cap)}. Raise `budget.monthly_usd` in "
+                      "`.tradvia.yml`, then restart the card (remove and add the "
+                      "`agent:ready` label).")
+            return {"plan_error": "Monthly budget exhausted",
+                    **transition(card.get("status", "BACKLOG"), "BACKLOG", "human",
+                                 "Monthly budget exhausted")}
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        if level == "warn" and month not in warned_months:
+            warned_months.add(month)
+            say(card, f"🟠 **{card['id']}** — {spent / cap * 100:.0f}% of the monthly budget "
+                      f"used. {format_monthly(spent, cap)}. New cards stop at 100%.")
+        return None
+
     def start_work(card: Card) -> dict:
+        blocked = monthly_gate(card)
+        if blocked is not None:
+            return blocked
         number = card["source"]["issue_number"]
         issue = github.get_issue(number)
         return {
+            "plan_error": None,
             "title": issue["title"],
             "description": issue["body"],
             "source": {**card["source"], "issue_url": issue["url"]},
@@ -231,6 +277,14 @@ def build_graph(github: GitHub, chat: Chat,
             github.comment(number, text)
         return transition(card["status"], "WAITING_HUMAN", "@Agent-Architect", "Replan limit reached")
 
+    def block(card: Card, guard: dict) -> dict:
+        """Guardrail hit: tell the chat, keep the reason on the card, wait for a human."""
+        chat.post(block_message(card["id"], guard))
+        rules = ", ".join(sorted({f["rule"] for f in guard["findings"]}))
+        return {"guardrail": guard,
+                **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
+                             f"Guardrail: {rules} ({guard['phase']})")}
+
     def _describe_action(card: Card, action: str) -> str:
         if action == "open_pull_request":
             number = card["source"]["issue_number"]
@@ -241,16 +295,27 @@ def build_graph(github: GitHub, chat: Chat,
     def risk_gate(card: Card) -> dict:
         """Pass straight through when the policy says free; else announce and suspend."""
         action = card.get("pending_action") or "open_pull_request"
+        # Guardrail review comes first: nothing blocked reaches approval or execution.
+        texts = {"card/title": card.get("title", ""),
+                 "card/plan": "\n".join(s["title"] for s in card.get("plan", [])),
+                 "card/action": _describe_action(card, action)}
+        if card.get("file_content"):
+            texts[card.get("file_path") or "card/file_content"] = card["file_content"]
+        guard = {"phase": "pre_execution", **review(texts)}
+        if guard["state"] == "blocked":
+            return block(card, guard)
         level = classify(action)
         required = policy.risk_requirement(level)
         if required is None:
-            return {"risk": {"action": action, "level": level, "state": "approved"}}
+            return {"guardrail": guard,
+                    "risk": {"action": action, "level": level, "state": "approved"}}
         # The gate state is keyed by the card thread and carries the project (repo) id.
         project = getattr(github, "repo", None)
         chat.post(f"🟠 **{card['id']}** — ação `{action}` (risco `{level}`) precisa de aprovação "
                   f"de quem tem o papel `{required}` ou superior. Responda **Aprovado** ou "
                   f"**Rejeitado**.\nSerá feito: {_describe_action(card, action)}")
-        return {"risk": {"project_id": project, "action": action, "level": level,
+        return {"guardrail": guard,
+                "risk": {"project_id": project, "action": action, "level": level,
                          "required_role": required, "state": "pending"},
                 **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
                              f"Risk gate: {action} ({level}) needs {required}")}
@@ -281,6 +346,8 @@ def build_graph(github: GitHub, chat: Chat,
                 **transition(card["status"], "AGENT_WORKING", by, "Risk gate: action approved")}
 
     def route_risk_gate(card: Card) -> str:
+        if card["guardrail"]["state"] == "blocked":
+            return END
         return "risk_wait" if card["risk"]["state"] == "pending" else "open_pr"
 
     def route_risk_wait(card: Card) -> str:
@@ -366,20 +433,26 @@ def build_graph(github: GitHub, chat: Chat,
                 extra += ("\n\n### Ignored scratch files\n"
                           + "\n".join(f"- `{s}`" for s in scratch)
                           + "\n\nNot included in this PR; a human should review them.")
-        github.create_branch(branch)
-        for path, content in files.items():
-            github.put_file(branch, path, content, f"{_conventional_title(card['title'])} (#{number})")
         body = (f"Closes #{number}\n\nOpened by **@Agent-Coder** after human approval in "
                 f"{getattr(chat, 'name', 'chat')}.\n\n"
                 f"Card `{card['id']}` · estimated cost so far (API-equivalent): "
                 f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}\n"
                 f"{format_usage(add_usage(card.get('usage'), used), budget)}{extra}")
+        # Guardrail review before any branch or pull request exists.
+        guard = {"phase": "pre_pr",
+                 **review({**files, "pull_request/body": body,
+                           "pull_request/title": _conventional_title(card["title"])})}
+        if guard["state"] == "blocked":
+            return {"cost": cost, "usage": used, **block(card, guard)}
+        github.create_branch(branch)
+        for path, content in files.items():
+            github.put_file(branch, path, content, f"{_conventional_title(card['title'])} (#{number})")
         url = github.open_pull_request(branch, _conventional_title(card["title"]), body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
             github.comment(number, f"🤖 Pull request opened: {url}")
         chat.post(f"🟢 PR aberto para **{card['id']}**: {url}")
-        return {"assignee": "@Agent-Coder", "branch": branch, "cost": cost, "usage": used, "pull_request_url": url,
+        return {"guardrail": guard, "assignee": "@Agent-Coder", "branch": branch, "cost": cost, "usage": used, "pull_request_url": url,
                 "plan": [{**s, "done": True} for s in card["plan"]],
                 **transition(card["status"], "IN_REVIEW_PR", "@Agent-Coder", "Pull request opened")}
 
@@ -393,12 +466,13 @@ def build_graph(github: GitHub, chat: Chat,
     g.add_node("open_pr", open_pr)
     g.add_node("replan_limit", replan_limit)
     g.add_edge(START, "start_work")
-    g.add_edge("start_work", "plan")
+    g.add_conditional_edges("start_work", lambda c: END if c.get("plan_error") else "plan",
+                            ["plan", END])
     g.add_conditional_edges("plan", lambda c: END if c.get("plan_error") else "ask_human",
                             ["ask_human", END])
     g.add_edge("ask_human", "wait_human")
     g.add_conditional_edges("wait_human", route_after_reply, ["risk_gate", "plan", "replan_limit", END])
-    g.add_conditional_edges("risk_gate", route_risk_gate, ["risk_wait", "open_pr"])
+    g.add_conditional_edges("risk_gate", route_risk_gate, ["risk_wait", "open_pr", END])
     g.add_conditional_edges("risk_wait", route_risk_wait, ["risk_wait", "open_pr", END])
     g.add_edge("open_pr", END)
     g.add_edge("replan_limit", END)
