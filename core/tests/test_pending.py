@@ -144,6 +144,17 @@ def test_last_agent_marker(c, marker):
     assert pending.last_agent_marker(c) == marker
 
 
+def test_the_marker_comment_carries_the_time_the_marker_was_posted():
+    # #152: the dashboard compares this time with the start of the newest run.
+    comment = {"author": AGENT, "body": "\U0001F534 planejamento falhou.",
+               "created_at": "2026-01-06T00:00:00Z"}
+    c = {"number": 30, "state": "open", "comments": [comment]}
+    assert pending.last_agent_marker_comment(c) == comment
+    assert pending.marker_in(comment) == "\U0001F534"
+    assert pending.marker_in(None) is None
+    assert pending.last_agent_marker_comment({**c, "state": "closed"}) is None
+
+
 def test_affected_cards():
     ops = [
         ("issue", {"number": 1}),

@@ -236,6 +236,8 @@ def main() -> None:
     print("history:")
     for h in card.get("history", []):
         print(f"  {h['at']}  {h['from']:>13} -> {h['to']:<13} by {h['by']}: {h['reason']}")
+    if card.get("plan_error"):  # no plan was published: fail the run, so Actions shows it red
+        sys.exit(f"Planning failed: {card['plan_error']}")
 
 
 if __name__ == "__main__":

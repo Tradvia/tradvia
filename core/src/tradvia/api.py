@@ -77,7 +77,7 @@ from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
 from .budget import SETTINGS_KEY, monthly_check, settings_budget, settings_view, store_month_spend, \
     validate_settings
-from .connections import Connections, ConnectionInputError, redact
+from .connections import BY_KEY, Connections, ConnectionInputError, redact, resolve as resolve_connections
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -271,10 +271,14 @@ def github_issue(
     # "tradvia_last_marker" is not a GitHub field either: the marker emoji (🛑🔴🟡🟠⛔🟢)
     # leading the agent's last comment, so the dashboard can tell a card the agent gave up
     # on (🔴, BLOCKED) from one still waiting on a human, however the CI run looks (#87).
+    # "tradvia_last_marker_at" is when that comment was posted: a run that started after it is
+    # a new attempt, which the board shows as AGENT_WORKING until the agent posts again (#152).
     if comments:
-        marker = pending.last_agent_marker({"state": r["state"], "comments": comments})
+        comment = pending.last_agent_marker_comment({"state": r["state"], "comments": comments})
+        marker = pending.marker_in(comment)
         if marker:
             extra["tradvia_last_marker"] = marker
+            extra["tradvia_last_marker_at"] = comment.get("created_at")
     return {
         **extra,
         "number": r["number"],
@@ -1224,10 +1228,37 @@ def create_app(
     def start_thread(job: Callable[[], None]) -> None:
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
+    def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
+        """The project's own `orchestrator` connection (ADR 0009): an AI provider with its API
+        key, or None, and then the chat is off for the project (ADR 0013: no Claude Code or
+        subscription fallback). Never raises: an unreadable policy or a connections lookup
+        failure is None too, the same as an unset connection.
+        """
+        if connections is None:
+            return None
+        try:
+            # `fresh=False`: execute() already did a fresh role+policy check for this request
+            # moments ago (POLICY_TTL is 60s); re-fetching .tradvia.yml here would double that
+            # GitHub call for nothing, since the role was already established.
+            access = auth.can(session, repo, "start_card", fresh=False)
+            defaults = access.policy.providers if access.policy else {}
+            chosen = resolve_connections(defaults, db.list_connection_roles(pid)).get("orchestrator", {})
+            provider, model_name = chosen.get("provider"), chosen.get("model")
+            if provider not in orchestrator.LITELLM_PROVIDERS or provider not in BY_KEY:
+                return None
+            secret = connections.runner_env(pid).get(BY_KEY[provider].env or "")
+            return orchestrator.model_for_connection(provider, model_name, secret)
+        except Exception:
+            return None
+
     def work_chat(session: Any, repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
         def work(token: str) -> Done:
             text, refs = orchestrator.parse_message(data)
             pid = project_id_of(repo)
+            # `chat_model` (test injection) always wins; production resolves per project.
+            model = chat_model or chat_model_for(session, repo, pid)
+            if model is None:  # no AI provider with an API key: the chat is off (ADR 0013)
+                raise Conflict(orchestrator.NO_API_KEY)
             with chat_lock:
                 if pid in chat_working:
                     raise Conflict("The orchestrator is still working on the previous message.")
@@ -1240,7 +1271,7 @@ def create_app(
 
             def job() -> None:
                 try:
-                    orchestrator.run(ctx, chat_model)
+                    orchestrator.run(ctx, model)
                 except Exception:  # never leave the conversation silent
                     try:
                         db.append_message(pid, {"author": orchestrator.AUTHOR, "kind": "warning",
@@ -1303,11 +1334,16 @@ def create_app(
         if role is None:
             return read_refused(repo, reason)
         pid = project_id_of(repo)
+        can_start = panel_rights(session, repo, role)["can_start"]
+        # Only someone who may chat needs to know why it is off; ready means an AI provider
+        # with an API key answers it (ADR 0013).
+        ready = can_start and (chat_model is not None or chat_model_for(session, repo, pid) is not None)
         return Outcome(200, {
             "messages": db.list_messages(pid, CHAT_HISTORY),
             "working": pid in chat_working,
             "cost": db.project_cost(pid),
-            "can_chat": panel_rights(session, repo, role)["can_start"],
+            "can_chat": ready,
+            "chat_off_reason": "no_api_key" if can_start and not ready else None,
         })
 
     async def chat_history(request: Request) -> Response:

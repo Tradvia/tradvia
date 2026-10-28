@@ -12,10 +12,10 @@ import json
 import os
 import subprocess
 import threading
-from typing import Callable, Mapping
+from typing import Callable, Mapping, TypeVar
 
 from .connections import redact
-from .llm import _parse_json
+from .llm import PlanError, answer_excerpt, parse_answer
 from .stagnation import DEFAULT_REPEAT_LIMIT, StagnationMonitor, reflective_message
 
 PLAN_TOOLS = "Read,Glob,Grep"
@@ -143,19 +143,61 @@ def _reported(data: dict) -> dict:
             "tokens_reported": isinstance(data.get("usage"), dict)}
 
 
+REPAIR_CHARS = 8000
+
+
 def parse_plan(text: str, label: str = "Claude Code") -> dict:
     """Parse and validate a planner answer; shared by every coding agent adapter."""
-    try:
-        plan = _parse_json(text)
-    except ValueError as e:
-        raise ValueError(f"{label} plan is not valid JSON: {e}") from None
+    answer = text or ""
+    plan = parse_answer(answer, f"{label} plan")
     steps = plan.get("plan")
     if not (isinstance(steps, list) and steps and all(isinstance(s, str) for s in steps)):
-        raise ValueError(f"{label} plan is missing a non-empty 'plan' list of strings")
+        raise PlanError(f"{label} plan is missing a non-empty 'plan' list of strings",
+                        answer, answer_excerpt(answer))
     if not isinstance(plan.get("question"), str) or not plan["question"]:
-        raise ValueError(f"{label} plan is missing 'question'")
+        raise PlanError(f"{label} plan is missing 'question'", answer, answer_excerpt(answer))
     plan.setdefault("summary", "")
     return plan
+
+
+def repair_prompt(prompt: str, error: PlanError) -> str:
+    """The planner prompt again, with the previous answer and why it could not be used."""
+    return (f"{prompt}\n\nYour previous answer could not be used: {error.reason}.\n"
+            f"Previous answer:\n{error.answer[:REPAIR_CHARS]}\n\n"
+            "Answer again with ONLY the JSON object requested above: no markdown fences and no "
+            "text before or after it. Inside strings, escape double quotes and backslashes.")
+
+
+T = TypeVar("T")
+
+
+def plan_with_repair(ask: Callable[[str], T], answer_of: Callable[[T], str], prompt: str,
+                     label: str) -> tuple[dict, list[T]]:
+    """Ask the planner; when its answer is not a usable plan, ask once more and say why.
+
+    Returns the plan and every answer that was paid for, so the caller can add up the cost.
+    Errors of the CLI itself (missing binary, timeout, turn limit) are not repeated.
+    """
+    first = ask(prompt)
+    try:
+        return parse_plan(answer_of(first), label), [first]
+    except PlanError as error:
+        problem = error
+    second = ask(repair_prompt(prompt, problem))
+    return parse_plan(answer_of(second), label), [first, second]
+
+
+def add_costs(costs: list[dict]) -> dict:
+    """Sum the cost dicts of several planner calls; a figure is reported if any call reported it."""
+    total = {"usd": 0.0, "tokens_in": 0, "tokens_out": 0, "tokens_cache": 0, "duration_s": 0.0,
+             "usd_reported": False, "tokens_reported": False}
+    for cost in costs:
+        for key in ("usd", "tokens_in", "tokens_out", "tokens_cache", "duration_s"):
+            total[key] += cost.get(key) or 0
+        for key in ("usd_reported", "tokens_reported"):
+            total[key] = total[key] or bool(cost.get(key))
+    total["duration_s"] = round(total["duration_s"], 3)
+    return total
 
 
 def claude_code_plan(title: str, body: str, number: int, runner: Callable = subprocess.run,
@@ -165,11 +207,15 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
     `notice` is an optional system notice (budget warning) appended to the prompt.
     """
     prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
-    data = run_claude(prompt + (f"\n\n{notice}" if notice else ""), cwd,
-                      PLAN_TOOLS, max_turns=plan_max_turns(), runner=runner)
-    plan = parse_plan(data.get("result", ""))
-    plan["_cost"] = {**_cost(data), **_reported(data)}
-    plan["_tool_calls"] = _count(data, "num_turns")
+    prompt += f"\n\n{notice}" if notice else ""
+
+    def ask(text: str) -> dict:
+        return run_claude(text, cwd, PLAN_TOOLS, max_turns=plan_max_turns(), runner=runner)
+
+    plan, runs = plan_with_repair(ask, lambda data: data.get("result") or "", prompt,
+                                  "Claude Code")
+    plan["_cost"] = add_costs([{**_cost(data), **_reported(data)} for data in runs])
+    plan["_tool_calls"] = sum(_count(data, "num_turns") for data in runs)
     return plan
 
 
