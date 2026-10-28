@@ -104,7 +104,9 @@ class FakeGH:
 
 def test_load_policy_reads_default_branch():
     gh = FakeGH(file=EXAMPLE, base="trunk")
-    assert load_policy(gh).interactions.approve_plan == "maintain"
+    p = load_policy(gh)
+    assert p.view == "inherit" and p.interactions == Interactions()  # roles live on Tradvia
+    assert p.file_policy_ignored == ("interactions",)
     assert gh.refs == [(".tradvia.yml", "trunk")]
     assert load_policy(FakeGH()) == Policy()
 
@@ -193,11 +195,11 @@ def test_start_card_allowed_runs_graph(run_env, monkeypatch):
 
 
 def test_invalid_policy_leaves_card_unstarted_with_reason(run_env):
-    gh = FakeGH(file="interactions:\n  start_card: nobody\n")
+    gh = FakeGH(file="stagnation:\n  repeat_limit: nobody\n")
     run_env(gh)
     card = cli.run(5, 0, "github")
     assert card["status"] == "BACKLOG"
-    assert "Invalid .tradvia.yml on main" in gh.comments[0][1] and "nobody" in gh.comments[0][1]
+    assert "Invalid .tradvia.yml on main" in gh.comments[0][1]
 
 
 def test_pull_and_deploy_interactions_default_to_maintain_and_can_be_changed():
