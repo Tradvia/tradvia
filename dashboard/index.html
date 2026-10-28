@@ -176,6 +176,9 @@
   .conn .prov { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: grid; gap: 4px; font-size: 12px; }
   .conn .prov h4 { margin: 0; font-size: 13px; }
   .conn .prov .row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .free-only { display: block; margin: 0 0 6px; }
+  .card .claim { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+  .card .claim-skills { font-size: 11px; overflow-wrap: anywhere; }
   .agentc { display: grid; gap: 10px; font-size: 13px; }
   .agentc .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .agentc pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
@@ -296,6 +299,62 @@ function branchMatchesIssue(ref, n) {
   return ref === "tradvia/issue-" + n || ref.startsWith("claude/issue-" + n + "-");
 }
 
+// A card a collaborator took with their own agent through MCP (ADR 0012). The claim is a comment
+// with two marks; it counts only when its author is the login in the mark, the same rule as the
+// server (orchestrator.holder), so text typed by someone else cannot fake a claim.
+const CLAIM_LABEL = "agent:claimed";
+const CLAIM_MARK = /<!-- tradvia:(claim|release) login=([A-Za-z0-9-]{1,39}) -->/g;
+const AGENT_MARK = /<!-- tradvia:agent (\{[^<>]{0,1500}\}) -->/;
+
+function labelNames(issue) {
+  return (issue.labels || []).map((l) => (typeof l === "string" ? l : l && l.name));
+}
+
+function isClaimed(issue) {
+  return labelNames(issue).includes(CLAIM_LABEL);
+}
+
+function claimText(v, max) {
+  return typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null;
+}
+
+// comments: the issue's comments, oldest first. Returns {login, agent, provider, model, skills} or null.
+function claimHolder(comments) {
+  let held = null;
+  for (const c of comments || []) {
+    const body = (c && c.body) || "";
+    const author = ((c && c.user && c.user.login) || "").toLowerCase();
+    for (const m of body.matchAll(CLAIM_MARK)) {
+      if (m[2].toLowerCase() !== author) continue;
+      if (m[1] === "release") { held = null; continue; }
+      let a = {};
+      const found = body.match(AGENT_MARK);
+      if (found) { try { a = JSON.parse(found[1]) || {}; } catch (e) { a = {}; } }
+      const skills = Array.isArray(a.skills) ? a.skills.map((x) => claimText(x, 40)).filter(Boolean).slice(0, 10) : [];
+      held = { login: m[2], agent: claimText(a.agent, 60), provider: claimText(a.provider, 40),
+               model: claimText(a.model, 60), skills };
+    }
+  }
+  return held;
+}
+
+// One line for the board: "@bia · Kiro (Anthropic · claude-sonnet-5-5)".
+function claimLine(h) {
+  if (!h) return "";
+  const via = [h.provider, h.model].filter(Boolean).join(" · ");
+  return "@" + h.login + (h.agent ? " · " + h.agent : "") + (via ? " (" + via + ")" : "");
+}
+
+// The board's cards: agent:ready ones plus the claimed ones, once each, never a pull request.
+function mergeCards(ready, claimed) {
+  const seen = new Set();
+  return ready.concat(claimed).filter((i) => {
+    if (!i || i.pull_request || seen.has(i.number)) return false;
+    seen.add(i.number);
+    return true;
+  });
+}
+
 // agentRuns: runs of agent.yml only.
 function deriveCardState(issue, prs, agentRuns) {
   if (issue.state === "closed") return "DONE";
@@ -303,6 +362,8 @@ function deriveCardState(issue, prs, agentRuns) {
     (p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number)
   );
   if (hasOpenPr) return "IN_REVIEW_PR";
+  // A collaborator's own agent is on it: Tradvia's agent never runs a claimed card.
+  if (isClaimed(issue)) return "AGENT_WORKING";
   // tradvia_last_marker (store-backed mode only, #87) is the agent's own last word on the
   // card: more current than the CI run, which can look "successful" even though the agent
   // caught an internal error and posted no plan, or still be "in_progress" because the same
@@ -1332,16 +1393,37 @@ const BACKLOG_STATUS_KEY = { "pronto": "pronto", "bloqueado": "bloqueado", "em a
 
 async function loadData(repo) {
   dataSource = STORE_API ? "Tradvia" : "GitHub";
-  const [agent, claude, issues, prs] = await Promise.all([
+  const [agent, claude, issues, prs, claimed] = await Promise.all([
     getData(repo, "/actions/workflows/agent.yml/runs?per_page=30"),
     getData(repo, "/actions/workflows/claude.yml/runs?per_page=30"),
     getData(repo, "/issues?labels=agent:ready&state=all&per_page=50"),
     getData(repo, "/pulls?state=all&per_page=50"),
+    getData(repo, "/issues?labels=" + CLAIM_LABEL + "&state=open&per_page=50").catch(() => []),
   ]);
   const agentRuns = tagRuns("agent.yml", agent);
   const runs = agentRuns.concat(tagRuns("claude.yml", claude))
     .sort((a, b) => Date.parse(b.run_started_at || b.created_at) - Date.parse(a.run_started_at || a.created_at));
-  return { agentRuns, runs, issues: issues.filter((i) => !i.pull_request), prs, backlog: await loadBacklog(repo) };
+  const cards = mergeCards(issues, Array.isArray(claimed) ? claimed : []);
+  await loadClaims(repo, cards);
+  return { agentRuns, runs, issues: cards, prs, backlog: await loadBacklog(repo) };
+}
+
+// Who holds each claimed card, read from its comments (at most 20 cards, newest comments last).
+const claimCache = new Map(); // "repo#n" -> {updated, holder}
+async function loadClaims(repo, cards) {
+  const todo = cards.filter(isClaimed).slice(0, 20);
+  await Promise.all(todo.map(async (issue) => {
+    const key = repo + "#" + issue.number;
+    const hit = claimCache.get(key);
+    if (hit && hit.updated === issue.updated_at) { issue.claim = hit.holder; return; }
+    try {
+      const comments = await getJson(GH_API + "/repos/" + repo + "/issues/" + issue.number + "/comments?per_page=100");
+      issue.claim = claimHolder(Array.isArray(comments) ? comments : []);
+      claimCache.set(key, { updated: issue.updated_at, holder: issue.claim });
+    } catch (e) {
+      issue.claim = null;
+    }
+  }));
 }
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
@@ -1600,6 +1682,8 @@ const I18N = {
     "help.title": "Ajuda e documentação", "help.readme": "README", "help.kpis": "Indicadores do painel",
     "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
+    freeOnly: "Só cards livres",
+    claimedBy: "Com", claimedUnknown: "um colaborador (abrir o card para ver)", claimSkills: "Especialidades",
     agentTitle: "Conectar minha IA",
     agentIntro: "Use a IA do seu fornecedor (Claude Code, Kiro, Gemini CLI, Codex, Manus…) neste projeto, junto com as outras pessoas e agentes. Gere um token, configure o MCP do Tradvia no seu cliente e siga o AGENTS.md do repositório: a IA lê o briefing, pega um card livre dizendo quem é e no que é boa, trabalha no branch tradvia/issue-N e abre um PR com Closes #N. Aprovar plano, merge e deploy continuam com uma pessoa.",
     agentRole: "Papel do token", agentDays: "Validade (dias)", agentCreate: "Gerar token",
@@ -1703,6 +1787,8 @@ const I18N = {
     "help.title": "Help and documentation", "help.readme": "README", "help.kpis": "Dashboard KPIs",
     "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
+    freeOnly: "Only free cards",
+    claimedBy: "With", claimedUnknown: "a collaborator (open the card to see)", claimSkills: "Specialties",
     agentTitle: "Connect my AI",
     agentIntro: "Use your own provider's AI (Claude Code, Kiro, Gemini CLI, Codex, Manus…) on this project, together with the other people and agents. Create a token, set up the Tradvia MCP server in your client and follow the repository's AGENTS.md: the AI reads the briefing, takes a free card saying who it is and what it is good at, works on branch tradvia/issue-N and opens a PR with Closes #N. Approving plans, merging and deploying stay with a person.",
     agentRole: "Token role", agentDays: "Valid for (days)", agentCreate: "Create token",
@@ -2057,16 +2143,38 @@ async function loadRecent() {
   renderRecent();
 }
 
+// "Only free cards": the backlog cards nobody holds and nothing blocks (status "pronto"), the
+// ones a person or their agent can take now. A per-viewer convenience, so browser storage.
+let backlogFreeOnly = false;
+try { backlogFreeOnly = localStorage.getItem("tradvia.backlogFreeOnly") === "1"; } catch (e) { /* no storage */ }
+
+function freeBacklog(backlog) {
+  return backlog.filter((b) => b.status === "pronto");
+}
+
 function renderBacklogColumn(root, backlog) {
   const c = el("div", null, "col BACKLOG_ITEMS");
   const h = el("h3");
-  h.append(el("span", t("backlog")), el("span", String(backlog.length)));
+  const free = freeBacklog(backlog).length;
+  h.append(el("span", t("backlog")), el("span", backlogFreeOnly ? free + "/" + backlog.length : String(backlog.length)));
   c.append(h);
+  const toggle = el("label", null, "sub free-only");
+  const box = el("input");
+  box.type = "checkbox";
+  box.checked = backlogFreeOnly;
+  box.addEventListener("change", () => {
+    backlogFreeOnly = box.checked;
+    try { localStorage.setItem("tradvia.backlogFreeOnly", backlogFreeOnly ? "1" : "0"); } catch (e) { /* no storage */ }
+    render();
+  });
+  toggle.append(box, document.createTextNode(" " + t("freeOnly") + " (" + free + ")"));
+  c.append(toggle);
   const me = myRights();
   const canStart = !!(me && me.can_start);
   if (canStart) c.append(renderNewCard());
   const inBacklog = new Set(backlog.map((b) => b.issue_number));
   for (const [i, b] of backlog.entries()) {
+    if (backlogFreeOnly && b.status !== "pronto") continue;
     const card = el("div", null, "card");
     card.id = "bl-" + b.issue_number;
     const key = BACKLOG_STATUS_KEY[b.status] || "bloqueado";
@@ -2152,6 +2260,15 @@ function renderBoard(issues, prs, agentRuns, backlog) {
     a.target = "_blank"; a.rel = "noopener";
     a.addEventListener("click", (e) => e.stopPropagation());
     card.append(el("div", "#" + issue.number, "n"), a);
+    if (isClaimed(issue)) {
+      const who = el("div", null, "claim");
+      who.append(el("span", t("claimedBy") + " ", "sub"),
+                 el("span", issue.claim ? claimLine(issue.claim) : t("claimedUnknown")));
+      card.append(who);
+      if (issue.claim && issue.claim.skills.length) {
+        card.append(el("div", t("claimSkills") + ": " + issue.claim.skills.join(", "), "sub claim-skills"));
+      }
+    }
     const cost = cardCosts(issue, issue.tradvia_plan_cost, prs);
     if (cost) {
       card.append(el("div", "$" + cost.usd.toFixed(4) + " · " + formatTokens(cost.in + cost.out + cost.cache) +
