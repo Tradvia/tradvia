@@ -197,8 +197,19 @@ class Store(Protocol):
         """Revoke a token of this login and project. False if there is none (or already revoked)."""
 
     def list_api_tokens(self, login: str, project_id: int) -> list[dict[str, Any]]:
-        """This login's tokens in one project, newest first: id, role, created_at, expires_at,
-        revoked_at. Never the hash or the encrypted GitHub token."""
+        """This login's tokens in one project, newest first: id, role, kind, created_at,
+        expires_at, revoked_at. Never the hash or the encrypted GitHub token."""
+
+    # AI manager grants (ADR 0014). Times are epoch seconds.
+    def create_grant(self, rec: dict[str, Any]) -> int:
+        """`rec`: token_id, permission, granted_by, created_at, expires_at. Returns the id."""
+
+    def list_grants(self, token_id: int) -> list[dict[str, Any]]:
+        """Every grant of one token, newest first: id, permission, granted_by, created_at,
+        expires_at, revoked_at."""
+
+    def revoke_grant(self, grant_id: int, token_id: int, now: float) -> bool:
+        """Revoke one grant of this token. False if there is none (or already revoked)."""
 
 
 def project_slug(external_id: str) -> str:
@@ -226,6 +237,7 @@ class MemoryStore:
         self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.api_tokens: dict[int, dict[str, Any]] = {}
+        self.grants: dict[int, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self.subscriptions: dict[tuple[int, str], dict[str, Any]] = {}
         self.prefs: dict[tuple[int, str], dict[str, bool]] = {}
@@ -586,7 +598,8 @@ class MemoryStore:
     def create_api_token(self, rec: dict[str, Any]) -> int:
         with self._lock:
             token_id = len(self.api_tokens) + 1
-            self.api_tokens[token_id] = {**copy.deepcopy(rec), "id": token_id, "revoked_at": None}
+            self.api_tokens[token_id] = {"kind": "agent", **copy.deepcopy(rec), "id": token_id,
+                                         "revoked_at": None}
             return token_id
 
     def get_api_token(self, token_hash: str) -> dict[str, Any] | None:
@@ -610,6 +623,26 @@ class MemoryStore:
             rows = [{k: rec[k] for k in _API_TOKEN_PUBLIC} for rec in self.api_tokens.values()
                     if rec["login"] == login and rec["project_id"] == project_id]
         return sorted(rows, key=lambda r: r["id"], reverse=True)
+
+    def create_grant(self, rec: dict[str, Any]) -> int:
+        with self._lock:
+            grant_id = len(self.grants) + 1
+            self.grants[grant_id] = {**copy.deepcopy(rec), "id": grant_id, "revoked_at": None}
+            return grant_id
+
+    def list_grants(self, token_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [{k: g[k] for k in _GRANT_FIELDS} for g in self.grants.values()
+                    if g["token_id"] == token_id]
+        return sorted(rows, key=lambda r: r["id"], reverse=True)
+
+    def revoke_grant(self, grant_id: int, token_id: int, now: float) -> bool:
+        with self._lock:
+            g = self.grants.get(grant_id)
+            if g is None or g["token_id"] != token_id or g["revoked_at"] is not None:
+                return False
+            g["revoked_at"] = now
+            return True
 
 
 _INSERT_DELIVERY = (
@@ -878,14 +911,30 @@ _SET_PREFS_SQL = """
     ON CONFLICT (login, project_id) DO UPDATE SET kinds = excluded.kinds
 """
 _CREATE_API_TOKEN_SQL = """
-    INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at)
-    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+    INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at,
+                            kind)
+    VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s), %s)
     RETURNING id
 """
+_CREATE_GRANT_SQL = """
+    INSERT INTO manager_grants (token_id, permission, granted_by, created_at, expires_at)
+    VALUES (%s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+    RETURNING id
+"""
+_LIST_GRANTS_SQL = """
+    SELECT id, permission, granted_by, extract(epoch from created_at)::float8,
+           extract(epoch from expires_at)::float8, extract(epoch from revoked_at)::float8
+    FROM manager_grants WHERE token_id = %s ORDER BY id DESC LIMIT 100
+"""
+_REVOKE_GRANT_SQL = """
+    UPDATE manager_grants SET revoked_at = to_timestamp(%s)
+    WHERE id = %s AND token_id = %s AND revoked_at IS NULL
+"""
+_GRANT_FIELDS = ("id", "permission", "granted_by", "created_at", "expires_at", "revoked_at")
 _GET_API_TOKEN_SQL = """
     SELECT id, login, project_id, role, token_hash, token_enc,
            extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
-           extract(epoch from revoked_at)::float8
+           extract(epoch from revoked_at)::float8, kind
     FROM api_tokens WHERE token_hash = %s
 """
 _REVOKE_API_TOKEN_SQL = """
@@ -894,14 +943,14 @@ _REVOKE_API_TOKEN_SQL = """
 """
 _LIST_API_TOKENS_SQL = """
     SELECT id, role, extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
-           extract(epoch from revoked_at)::float8
+           extract(epoch from revoked_at)::float8, kind
     FROM api_tokens WHERE login = %s AND project_id = %s ORDER BY id DESC LIMIT 100
 """
 # What a person may see of their own tokens: never the hash or the encrypted GitHub token.
-_API_TOKEN_PUBLIC = ("id", "role", "created_at", "expires_at", "revoked_at")
+_API_TOKEN_PUBLIC = ("id", "role", "created_at", "expires_at", "revoked_at", "kind")
 _API_TOKEN_FIELDS = (
     "id", "login", "project_id", "role", "token_hash", "token_enc",
-    "created_at", "expires_at", "revoked_at",
+    "created_at", "expires_at", "revoked_at", "kind",
 )
 _SESSION_FIELDS = (
     "id", "user_id", "login", "avatar_url", "token_enc",
@@ -1323,7 +1372,8 @@ class PgStore:
                 row = conn.execute(
                     _CREATE_API_TOKEN_SQL,
                     (rec["login"], rec["project_id"], rec["role"], rec["token_hash"],
-                     rec["token_enc"], rec["created_at"], rec["expires_at"]),
+                     rec["token_enc"], rec["created_at"], rec["expires_at"],
+                     rec.get("kind", "agent")),
                 ).fetchone()
         return row[0]
 
@@ -1342,3 +1392,22 @@ class PgStore:
         with self._conn() as conn:
             rows = conn.execute(_LIST_API_TOKENS_SQL, (login, project_id)).fetchall()
         return [dict(zip(_API_TOKEN_PUBLIC, row)) for row in rows]
+
+    def create_grant(self, rec: dict[str, Any]) -> int:
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(_CREATE_GRANT_SQL, (
+                    rec["token_id"], rec["permission"], rec["granted_by"], rec["created_at"],
+                    rec["expires_at"])).fetchone()
+        return row[0]
+
+    def list_grants(self, token_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_GRANTS_SQL, (token_id,)).fetchall()
+        return [dict(zip(_GRANT_FIELDS, row)) for row in rows]
+
+    def revoke_grant(self, grant_id: int, token_id: int, now: float) -> bool:
+        with self._conn() as conn:
+            with conn.transaction():
+                cur = conn.execute(_REVOKE_GRANT_SQL, (now, grant_id, token_id))
+                return cur.rowcount == 1

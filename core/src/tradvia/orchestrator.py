@@ -132,6 +132,12 @@ class ToolContext:
     actor: str = ACTOR
     via: str | None = None
     key: str | None = None
+    # An AI manager below the owner (ADR 0014): its token kind and what the owner granted it now.
+    manager: bool = False
+    grants: frozenset[str] = frozenset()
+
+    def granted(self, permission: str) -> bool:
+        return self.via == AGENT_VIA and self.manager and permission in self.grants
 
     def add_ref(self, kind: str, number: int) -> None:
         ref = {"type": kind, "number": number}
@@ -571,6 +577,15 @@ def read_briefing(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 def reply_plan(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     """Answers a plan with an adjustment, and only that: approving stays with the human."""
     number = _number(args)
+    if args.get("decision") in ("approve", "reject") and ctx.granted("approve_plan"):
+        # An AI manager the owner let approve plans (ADR 0014): the same comment as the panel.
+        text = parse_reply(args["decision"], None)
+        _issue(ctx, number)
+        if not awaiting_plan(ctx.github.list_comments(ctx.token, ctx.repo, number), agent_login()):
+            raise ActionError("This card is not waiting for a reply to the plan.")
+        ctx.github.comment(ctx.token, ctx.repo, number, text)
+        ctx.add_ref("card", number)
+        return {"number": number, "decision": args["decision"], "posted": text}
     if args.get("decision") != "adjust":
         _queue_pending(ctx, "approve_plan", number)
         raise Refused("Only 'adjust' is allowed. Approving or rejecting a plan is for the human "
@@ -731,24 +746,52 @@ AGENT_TOOLS = ("read_briefing", "read_backlog", "read_cards", "read_card", "read
 AGENT_ONLY = ("claim_card", "release_card")
 
 
-def agent_catalog() -> list[dict[str, Any]]:
+# An AI manager (ADR 0014) gets these on top of AGENT_TOOLS only while the owner's grant lasts.
+GRANT_TOOLS = {"reorder_backlog": ("reorder_backlog",)}
+MANAGER_NOTE = ("You are an AI manager below the project's owner (ADR 0014): you follow and "
+                "organize people and agents. Approving plans and reordering the backlog need a "
+                "grant from the owner; merge, deploy, budget, connections and roles are never yours.")
+
+
+def agent_tools(manager: bool = False, grants: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    extra = [t for p, ts in GRANT_TOOLS.items() if manager and p in grants for t in ts]
+    return AGENT_TOOLS + tuple(extra)
+
+
+def agent_catalog(manager: bool = False, grants: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The tools an agent may call, with their arguments and what each one does."""
-    return [{"name": n, "args": list(TOOLS[n].args), "description": TOOLS[n].doc}
-            for n in AGENT_TOOLS]
+    out = [{"name": n, "args": list(TOOLS[n].args), "description": TOOLS[n].doc}
+           for n in agent_tools(manager, grants)]
+    if manager:
+        for t in out:
+            if t["name"] == "reply_plan" and "approve_plan" in grants:
+                t["description"] = ("Answer a plan: 'approve', 'reject' (granted by the owner "
+                                    "until the grant ends) or 'adjust' with a text.")
+            if t["name"] == "read_briefing":
+                t["description"] += " " + MANAGER_NOTE
+    return out
 
 
 def call_tool(ctx: ToolContext, name: Any, args: Any) -> dict[str, Any]:
     """Run one tool. Never raises: whatever goes wrong is audited and returned to the model."""
     name = name if isinstance(name, str) else ""
     args = args if isinstance(args, dict) else {}
+    if name in ("approve_plan", "reject_plan") and ctx.granted("approve_plan"):
+        # The owner let this AI manager decide plans: the same as reply_plan with that decision.
+        name, args = "reply_plan", {"number": args.get("number"),
+                                    "decision": "approve" if name == "approve_plan" else "reject"}
     if name in HUMAN_ONLY:
         return hand_to_human(ctx, name, args)
     if ctx.via != AGENT_VIA and name in AGENT_ONLY:
         audit(ctx, name, args, "denied", "only a collaborator's own agent takes a card (ADR 0012)")
         return {"error": f"'{name}' is for a collaborator's own agent, not the chat"}
-    if ctx.via == AGENT_VIA and name not in AGENT_TOOLS:
-        audit(ctx, name[:40] or "?", args, "denied", "not available to agents (ADR 0012)")
-        return {"error": f"'{name}' is not available to agents; use one of: {', '.join(AGENT_TOOLS)}"}
+    allowed = agent_tools(ctx.manager, ctx.grants)
+    if ctx.via == AGENT_VIA and name not in allowed:
+        why = ("needs a grant from the owner (ADR 0014)" if name in TOOLS and any(
+            name in ts for ts in GRANT_TOOLS.values()) else "not available to agents (ADR 0012)")
+        audit(ctx, name[:40] or "?", args, "denied", why)
+        return {"error": f"'{name}' is not available to this token ({why}); "
+                         f"use one of: {', '.join(allowed)}"}
     tool = TOOLS.get(name)
     if tool is None:
         audit(ctx, name[:40] or "?", {}, "denied", "unknown tool")
