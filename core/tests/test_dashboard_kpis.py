@@ -166,18 +166,24 @@ def test_the_card_filter_narrows_the_board_to_that_card():
     assert got == [3]
 
 
-def test_the_board_also_shows_an_open_card_whose_agent_pr_is_open():
-    labeled = [issue(1, "2026-03-29T10:00:00Z")]
+def test_the_board_shows_every_open_issue_and_the_started_closed_ones():
+    closed = issue(2, "2026-03-28T10:00:00Z")
+    closed["state"] = "closed"
+    labeled = [issue(1, "2026-03-29T10:00:00Z"), closed]
     open_issues = [issue(1, "2026-03-29T10:00:00Z"), issue(7, "2026-03-20T10:00:00Z"),
-                   issue(8, "2026-03-21T10:00:00Z"), issue(9, "2026-03-22T10:00:00Z")]
-    prs = [pr(70, "2026-03-22T10:00:00Z", "tradvia/issue-7", state="open"),
-           pr(71, "2026-03-22T10:00:00Z", "docs/readme", state="open"),
-           pr(72, "2026-03-22T10:00:00Z", "tradvia/issue-8", state="closed"),
-           pr(73, "2026-03-22T10:00:00Z", "claude/issue-9-fix", state="open")]
-    got = js("boardCards(labeled, openIssues, prs).map(i => i.number).sort((a, b) => a - b)",
-             labeled=labeled, openIssues=open_issues, prs=prs)
-    # 1 has the label; 7 and 9 have an open agent PR; 8 only a closed one; 'docs/readme' is no agent PR.
-    assert got == [1, 7, 9]
+                   issue(8, "2026-03-21T10:00:00Z"), {**issue(10, "2026-03-22T10:00:00Z"), "pull_request": {}}]
+    got = js("boardCards(labeled, openIssues, []).map(i => i.number).sort((a, b) => a - b)",
+             labeled=labeled, openIssues=open_issues)
+    # Every open issue (never started ones too: the real backlog), the started closed card 2,
+    # and no pull request (10).
+    assert got == [1, 2, 7, 8]
+
+
+def test_done_keeps_the_most_recently_closed_and_queued_cards_are_marked():
+    cards = [{"number": n, "closed_at": f"2026-03-{d:02d}T10:00:00Z"} for n, d in ((1, 5), (2, 20), (3, 12))]
+    assert js("recentDone(cards, 2).map(i => i.number)", cards=cards) == [2, 3]
+    assert js("isQueued(i)", i={"labels": [{"name": "agent:ready"}]}) is True
+    assert js("isQueued(i)", i={"labels": [{"name": "bug"}]}) is False
 
 
 def test_merged_pulls_keep_one_copy_of_each_number():

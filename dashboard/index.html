@@ -79,6 +79,9 @@
   .budget-form { display: grid; gap: 8px; max-width: 460px; }
   .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
   .budget-row input { width: 9em; }
+  .budget-row select { min-width: 12em; }
+  .budget-row select.changed { border-color: var(--brand); }
+  .budget-form h4 { margin: 10px 0 0; font-size: 0.95em; }
   .settings-section h3, .help-section h3 { margin: 0 0 var(--s2); font-size: var(--fs-md); }
   .settings-section p { margin: var(--s1) 0; }
   .settings-section label { display: flex; gap: var(--s3); align-items: center; margin: var(--s2) 0; }
@@ -459,18 +462,30 @@ function mergePulls(...lists) {
   return [...byNumber.values()];
 }
 
-// The cards the board shows: the ones started with agent:ready, plus any other open card whose
-// agent PR is still open. The bell counts those too (pending.py, PR_OPENED), so the board must
-// show them as well. Closed cards without the label are left out.
+// The cards the board shows: every open issue of the repository (the real backlog, whether or
+// not it was ever started), plus the closed ones that were started with agent:ready. Closed
+// cards without the label are left out. `prs` is kept for callers; open cards with an agent PR
+// are open issues, so they are in.
 function boardCards(labeled, openIssues, prs) {
   const byNumber = new Map();
   for (const issue of labeled) if (!issue.pull_request) byNumber.set(issue.number, issue);
   for (const issue of openIssues) {
     if (issue.pull_request || issue.state !== "open" || byNumber.has(issue.number)) continue;
-    const agentPr = prs.some((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, issue.number));
-    if (agentPr) byNumber.set(issue.number, issue);
+    byNumber.set(issue.number, issue);
   }
   return [...byNumber.values()];
+}
+
+// The Done column shows the most recently closed cards only; the rest stay one click away.
+const DONE_SHOWN = 15;
+
+function recentDone(issues, n) {
+  return issues.slice().sort((a, b) => Date.parse(b.closed_at || 0) - Date.parse(a.closed_at || 0)).slice(0, n);
+}
+
+// True when a backlog card already asked for the agent (agent:ready) and no run started yet.
+function isQueued(issue) {
+  return (issue.labels || []).some((l) => (l && l.name ? l.name : l) === "agent:ready");
 }
 
 // True when the card filter names a card the board does not hold: applied, it would empty the board.
@@ -1906,6 +1921,7 @@ const I18N = {
     backlog: "Backlog do projeto", position: "Posição", dependsOn: "Depende de",
     st_pronto: "pronto", st_bloqueado: "bloqueado", st_andamento: "em andamento", st_concluido: "concluído",
     newCard: "Novo card", cardTitle: "Título", cardDescription: "Descrição", create: "Criar", cancel: "Cancelar",
+    queued: "na fila do agente", doneMore: "+{n} concluídos no GitHub",
     startCard: "Iniciar", moveUp: "Subir", moveDown: "Descer", approve: "Aprovar", reject: "Rejeitar",
     adjustBtn: "Ajustar", adjustHint: "Descreva o ajuste pedido ao plano", actionFailed: "Não foi possível concluir a ação.",
     auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
@@ -1960,12 +1976,23 @@ const I18N = {
     "budget.readOnly": "Só quem tem o papel exigido neste projeto (admin, por padrão) altera o orçamento.",
     "budget.updated": "Última alteração por",
     "budget.fileIgnored": "O .tradvia.yml deste repositório ainda tem uma seção budget: ela é ignorada. O orçamento vale só como definido aqui.",
+    "pol.title": "Papéis e risco do projeto", "pol.intro": "Vale só para este projeto (repositório):",
+    "pol.interactions": "Papel mínimo por ação", "pol.risk": "Aprovação por nível de risco das ações do agente",
+    "pol.start_card": "Iniciar card", "pol.approve_plan": "Aprovar plano", "pol.mention_assistant": "Chamar o assistente",
+    "pol.live_takeover": "Assumir a sessão ao vivo", "pol.budget_control": "Alterar orçamento", "pol.merge_pr": "Fazer merge do PR",
+    "pol.update_branch": "Atualizar o branch do PR", "pol.approve_deploy": "Aprovar deploy", "pol.manage_connections": "Gerenciar conexões",
+    "pol.read": "Leitura", "pol.reversible_write": "Escrita reversível", "pol.destructive_external": "Ação destrutiva ou externa",
+    "pol.free": "livre (sem aprovação)", "pol.locked": "fixo: tem segredo por trás",
+    "pol.save": "Salvar papéis e risco", "pol.saved": "Papéis e risco salvos.", "pol.reset": "Voltar ao padrão",
+    "pol.note": "Vale na hora para pessoas, agentes e tokens deste projeto. Só admin altera esta seção.",
+    "pol.readOnly": "Só admin deste projeto altera papéis e risco.",
+    "pol.fileIgnored": "O .tradvia.yml deste repositório ainda tem seções que agora ficam aqui e são ignoradas:",
     "settings.title": "Configurações", "settings.project": "Projeto",
     "settings.roles": "Papéis e permissões", "settings.yourRole": "Seu papel neste projeto",
     "settings.canStart": "Pode iniciar cards", "settings.canApprove": "Pode aprovar planos",
     "settings.yes": "sim", "settings.no": "não",
     "settings.signInHint": "Entre com o GitHub para ver seu papel. Sem sessão, só idioma e tema ficam disponíveis.",
-    "settings.rolesNote": "Somente leitura: papéis e permissões continuam sendo editados no .tradvia.yml do repositório.",
+    "settings.rolesNote": "Os papéis por ação e a política de risco deste projeto são editados abaixo, em Papéis e risco do projeto (só admin).",
     "settings.example": "Exemplo de .tradvia.yml", "settings.projectsDoc": "Documentação de projetos",
     "settings.notifications": "Notificações", "settings.notificationsNote": "Avisos de aprovações pendentes e falhas (#47).",
     "settings.prefs": "Preferências", "settings.language": "Idioma", "settings.theme": "Tema",
@@ -2044,6 +2071,7 @@ const I18N = {
     backlog: "Project backlog", position: "Position", dependsOn: "Depends on",
     st_pronto: "ready", st_bloqueado: "blocked", st_andamento: "in progress", st_concluido: "done",
     newCard: "New card", cardTitle: "Title", cardDescription: "Description", create: "Create", cancel: "Cancel",
+    queued: "queued for the agent", doneMore: "+{n} more done on GitHub",
     startCard: "Start", moveUp: "Move up", moveDown: "Move down", approve: "Approve", reject: "Reject",
     adjustBtn: "Adjust", adjustHint: "Describe the adjustment to the plan", actionFailed: "The action could not be completed.",
     auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
@@ -2098,12 +2126,23 @@ const I18N = {
     "budget.readOnly": "Only someone with the required role in this project (admin by default) changes the budget.",
     "budget.updated": "Last changed by",
     "budget.fileIgnored": "This repository's .tradvia.yml still has a budget section: it is ignored. The budget is only what is set here.",
+    "pol.title": "Project roles and risk", "pol.intro": "Applies to this project (repository) only:",
+    "pol.interactions": "Minimum role per action", "pol.risk": "Approval per risk level of the agent's actions",
+    "pol.start_card": "Start a card", "pol.approve_plan": "Approve a plan", "pol.mention_assistant": "Mention the assistant",
+    "pol.live_takeover": "Take over the live session", "pol.budget_control": "Change the budget", "pol.merge_pr": "Merge the PR",
+    "pol.update_branch": "Update the PR branch", "pol.approve_deploy": "Approve a deploy", "pol.manage_connections": "Manage connections",
+    "pol.read": "Read", "pol.reversible_write": "Reversible write", "pol.destructive_external": "Destructive or external action",
+    "pol.free": "free (no approval)", "pol.locked": "fixed: a secret is behind it",
+    "pol.save": "Save roles and risk", "pol.saved": "Roles and risk saved.", "pol.reset": "Back to defaults",
+    "pol.note": "Takes effect at once for people, agents and tokens of this project. Only an admin changes this section.",
+    "pol.readOnly": "Only an admin of this project changes roles and risk.",
+    "pol.fileIgnored": "This repository's .tradvia.yml still has sections that now live here and are ignored:",
     "settings.title": "Settings", "settings.project": "Project",
     "settings.roles": "Roles and permissions", "settings.yourRole": "Your role in this project",
     "settings.canStart": "Can start cards", "settings.canApprove": "Can approve plans",
     "settings.yes": "yes", "settings.no": "no",
     "settings.signInHint": "Sign in with GitHub to see your role. Without a session only language and theme are available.",
-    "settings.rolesNote": "Read-only: roles and permissions are still edited in the repository's .tradvia.yml.",
+    "settings.rolesNote": "This project's roles per action and risk policy are edited below, in Project roles and risk (admin only).",
     "settings.example": "Example .tradvia.yml", "settings.projectsDoc": "Projects documentation",
     "settings.notifications": "Notifications", "settings.notificationsNote": "Alerts for pending approvals and failures (#47).",
     "settings.prefs": "Preferences", "settings.language": "Language", "settings.theme": "Theme",
@@ -2618,9 +2657,18 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     root.append(c);
   }
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
+  // The ordered backlog column (store mode) already holds its cards: not twice on the board.
+  const ordered = new Set((backlog || []).map((b) => b.issue_number));
+  const me = myRights();
+  const canStart = !!(me && me.can_start);
+  const states = new Map(issues.map((i) => [i.number, deriveCardState(i, prs, agentRuns)]));
+  const done = issues.filter((i) => states.get(i.number) === "DONE");
+  const shownDone = new Set(recentDone(done, DONE_SHOWN).map((i) => i.number));
   for (const issue of issues) {
-    const s = deriveCardState(issue, prs, agentRuns);
+    const s = states.get(issue.number);
+    if (s === "BACKLOG" && ordered.has(issue.number)) continue;
     counts[s]++;
+    if (s === "DONE" && !shownDone.has(issue.number)) continue;
     const card = el("div", null, "card");
     card.id = "card-" + issue.number;
     card.tabIndex = 0;
@@ -2648,6 +2696,14 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     // The card shows only which agent types worked on it; the details open in the card dialog.
     const agents = cardAgents(issue, prs, runs);
     if (agents.length) card.append(agentChips(agents));
+    if (s === "BACKLOG" && !isClaimed(issue)) {
+      if (isQueued(issue)) card.append(el("div", t("queued"), "sub"));
+      else if (canStart) {
+        const acts = el("div", null, "acts");
+        acts.append(actionButton(card, t("startCard"), "/cards/" + issue.number + "/start", {}));
+        card.append(acts);
+      }
+    }
     card.addEventListener("click", () => openCardDialog(issue.number));
     card.addEventListener("keydown", (e) => {
       if (e.target === card && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCardDialog(issue.number); }
@@ -2659,6 +2715,14 @@ function renderBoard(issues, prs, agentRuns, backlog, runs) {
     h.append(el("span", t("COL_" + s)), el("span", String(counts[s])));
     if (!counts[s]) cols[s].append(el("div", t("emptyCards"), "sub"));
   });
+  if (counts.DONE > shownDone.size) {
+    const more = el("a", t("doneMore").replace("{n}", String(counts.DONE - shownDone.size)));
+    more.href = "https://github.com/" + getRepo() + "/issues?q=is%3Aissue+is%3Aclosed";
+    more.target = "_blank"; more.rel = "noopener";
+    const line = el("div", null, "sub done-more");
+    line.append(more);
+    cols.DONE.append(line);
+  }
 }
 
 /* ---------- Card agents and card dialog ---------- */
@@ -3307,6 +3371,13 @@ function renderSettings() {
     budget.append(el("h3", t("budget.title")), el("p", t("loading"), "sub"));
     root.append(budget);
     loadBudgetSettings(budget);
+
+    // Roles per action and the risk policy (ADR 0018): per project, admin only, never in a file.
+    const pol = el("div", null, "settings-section");
+    pol.id = "settings-policy";
+    pol.append(el("h3", t("pol.title")), el("p", t("loading"), "sub"));
+    root.append(pol);
+    loadPolicySettings(pol);
   }
 
   if (navRights()) {
@@ -3387,6 +3458,81 @@ function drawBudgetSettings(box, b) {
   if (b.updated_by) {
     box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
       new Date(b.updated_at * 1000).toLocaleString(), "sub"));
+  }
+}
+
+async function loadPolicySettings(box) {
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/settings/policy");
+  if (repo !== getRepo() || !box.isConnected) return;
+  box.replaceChildren(el("h3", t("pol.title")));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  drawPolicySettings(box, res.data);
+}
+
+function drawPolicySettings(box, p) {
+  box.append(el("p", t("pol.intro") + " " + p.project, "sub"));
+  if (p.file_ignored && p.file_ignored.length)
+    box.append(el("p", t("pol.fileIgnored") + " " + p.file_ignored.join(", ") + ".", "msg"));
+  const form = el("form", null, "budget-form");
+  const selects = { interactions: {}, risk: {} };
+  const locked = p.locked || {};
+  const draw = (section, options, current) => {
+    for (const key of Object.keys(current)) {
+      const row = el("label", null, "budget-row");
+      const sel = el("select");
+      for (const [v, label] of options) {
+        const o = el("option", label); o.value = v; sel.append(o);
+      }
+      sel.value = locked[key] || current[key];
+      sel.disabled = !p.can_edit || !!locked[key];
+      if (current[key] !== p.defaults[section][key]) sel.classList.add("changed");
+      selects[section][key] = sel;
+      const name = el("span", t("pol." + key));
+      if (locked[key]) name.title = t("pol.locked");
+      row.append(name, sel);
+      form.append(row);
+    }
+  };
+  const roles = p.roles.map((r) => [r, r]);
+  form.append(el("h4", t("pol.interactions")));
+  draw("interactions", roles, p.interactions);
+  form.append(el("h4", t("pol.risk")));
+  draw("risk", [["free", t("pol.free")], ...roles], p.risk);
+  const err = el("div", null, "msg error"); err.hidden = true;
+  if (p.can_edit) {
+    const save = el("button", t("pol.save"));
+    save.type = "submit";
+    const reset = el("button", t("pol.reset"), "secondary");
+    reset.type = "button";
+    reset.addEventListener("click", () => {
+      for (const section of ["interactions", "risk"])
+        for (const [key, sel] of Object.entries(selects[section])) sel.value = p.defaults[section][key];
+    });
+    form.append(save, reset);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      save.disabled = true; err.hidden = true;
+      const body = { interactions: {}, risk: {} };
+      for (const section of ["interactions", "risk"])
+        for (const [key, sel] of Object.entries(selects[section])) if (!locked[key]) body[section][key] = sel.value;
+      const res = await panelRequest("PUT", "/settings/policy", body);
+      save.disabled = false;
+      if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+      box.replaceChildren(el("h3", t("pol.title")));
+      drawPolicySettings(box, res.data);
+      box.append(el("p", t("pol.saved"), "sub"));
+      // The buttons this person sees follow the new roles: refresh the rights, quietly.
+      fetch("/api/auth/me", { headers: { Accept: "application/json" }, credentials: "same-origin" })
+        .then((r) => (r.status === 200 ? r.json() : null)).then((me) => { if (me) authState = me; })
+        .catch(() => {});
+    });
+  }
+  box.append(form, err);
+  box.append(el("p", p.can_edit ? t("pol.note") : t("pol.readOnly"), "note"));
+  if (p.updated_by) {
+    box.append(el("p", t("budget.updated") + " @" + p.updated_by + " · " +
+      new Date(p.updated_at * 1000).toLocaleString(), "sub"));
   }
 }
 

@@ -21,7 +21,8 @@ from .budget import store_month_spend
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 from .llm import _offline_plan, architect_plan
-from .policy import Policy, PolicyError, load_policy, role_of, with_budget
+from .policy import POLICY_SETTING, Policy, PolicyError, load_policy, role_of, with_budget, \
+    with_policy_setting
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -84,6 +85,19 @@ def project_id_of(repo: str) -> int:
     from .store import PgStore
 
     return PgStore(url).ensure_project(repo)
+
+
+def project_setting(repo: str, key: str) -> object:
+    """One setting of the project (ADR 0018) from the store; None without a database (the
+    defaults). Raises if a database is configured but cannot be read."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    from .store import PgStore
+
+    store = PgStore(url)
+    row = store.get_setting(store.ensure_project(repo), key)
+    return row["value"] if row else None
 
 
 def project_budget_setting(repo: str) -> object:
@@ -152,8 +166,9 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
         return not_started
     try:
         policy = with_budget(policy, project_budget_setting(env("TRADVIA_REPO")))
+        policy = with_policy_setting(policy, project_setting(env("TRADVIA_REPO"), POLICY_SETTING))
     except Exception as e:  # never run without the project's own limits once a store exists
-        github.comment(issue, f"Could not read this project's budget from Tradvia "
+        github.comment(issue, f"Could not read this project's settings from Tradvia "
                               f"({type(e).__name__}). The card was not started; restart it once "
                               "the store is reachable.")
         return not_started

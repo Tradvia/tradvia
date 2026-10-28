@@ -38,8 +38,12 @@ files.
 - An admin changes a budget on the panel, with effect on the next card start, and the change is
   in the project's audit log.
 - Projects stay isolated: the setting is keyed by project like everything else.
-- Next, in a separate change: interactions (roles per action) and the risk policy follow the
-  same path. Until then they stay in `.tradvia.yml`.
+- Interactions (roles per action) and the risk policy followed the same path (#177): the setting
+  `policy` of the project, edited on Settings, Project roles and risk. Changing it needs `admin`,
+  fixed, because it decides who may do everything else; `manage_connections` stays locked to
+  `admin`. The `interactions` and `risk` sections of `.tradvia.yml` are ignored (even when
+  invalid) and the panel names them. A stored value that cannot be read keeps the ADR 0004
+  defaults; a store that cannot be reached fails closed, on the panel and in the agent.
 - Repository hosts: today a project is a GitHub repository. GitLab (#60) and Bitbucket will key
   their projects the same way, so settings stay bound to the repository whatever the host.
 
@@ -48,4 +52,4 @@ files.
 | Capability | Status |
 |---|---|
 | Budget setting per project, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |
-| Interactions and risk policy as project settings | Planned |
+| Interactions and risk policy as project settings, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |

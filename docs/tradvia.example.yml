@@ -4,25 +4,13 @@
 # Nothing can be configured below `read`.
 access:
   view: inherit            # inherit | read | triage | write | maintain | admin
-interactions:
-  start_card: triage       # enforced when TRADVIA_ACTOR is set
-  approve_plan: write      # enforced
-  mention_assistant: write # parsed, not yet enforced by core
-  live_takeover: maintain  # parsed, not yet enforced by core
-  budget_control: admin    # parsed, not yet enforced by core
-  merge_pr: maintain       # enforced: squash-merge a pull request from the panel
-  update_branch: maintain  # enforced: bring a pull request branch up to date with main
-  approve_deploy: maintain # enforced: approve/reject/cancel deploys, run the post-deploy operation
-  # manage_connections is fixed to admin (ADR 0009); lowering it makes the file invalid.
-
-risk:                      # enforced: risk-based permission gateway (ADR 0006)
-  read: free               # free | read | triage | write | maintain | admin
-  reversible_write: free   # create branch, commit, open PR, comment
-  destructive_external: maintain # merge, delete, publish, deploy, external messages; undeclared actions count as this
+# Roles per action (`interactions`) and the risk policy (`risk`) are NOT set here (ADR 0018).
+# They are a setting of the project, made on Tradvia: Settings, Project roles and risk (admin
+# only). Sections with those names in this file are ignored, and the panel says so.
 
 # Budgets are NOT set here (ADR 0018). The per-card limits (minutes, steps, US$) and the
 # optional monthly ceiling are a setting of the project, made on Tradvia: Settings, Project
-# budget (admin by default, the budget_control interaction above). A `budget` section in this
+# budget (admin by default, the budget_control interaction). A `budget` section in this
 # file is ignored, and the panel says so.
 
 # Default provider and model per role (ADR 0009). What an admin sets on the Connections

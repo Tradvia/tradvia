@@ -231,9 +231,15 @@ def test_admin_is_required(store, gh):
 
 
 def test_yml_cannot_lower_the_requirement(store, gh):
-    gh.policy = "interactions:\n  manage_connections: write\n"
-    client = make_client(store, gh)
-    assert client.get(url()).status_code == 403  # invalid policy: fail closed
+    gh.policy = "interactions:\n  manage_connections: write\n"  # ignored (ADR 0018)
+    store.set_setting(store.ensure_project(A), "policy",
+                      {"interactions": {"manage_connections": "write"}}, "ana", 0)  # invalid: ignored
+    from tradvia.policy import Policy, PolicyError, validate_policy_setting, with_policy_setting
+    with pytest.raises(PolicyError):
+        validate_policy_setting({"interactions": {"manage_connections": "write"}})
+    stored = store.get_setting(store.ensure_project(A), "policy")["value"]
+    assert with_policy_setting(Policy(), stored).interactions.manage_connections == "admin"
+    assert make_client(store, gh).get(url()).status_code == 200  # this user is admin
 
 
 def test_read_role_and_other_project(store, gh):
