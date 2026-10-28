@@ -214,7 +214,7 @@ def test_merge_without_any_role(store, gh, clock):
 
 
 def test_merge_role_can_be_changed_in_the_policy(store, gh, clock):
-    gh.policy = "interactions:\n  merge_pr: write\n"
+    store.set_setting(store.ensure_project(A), "policy", {"interactions": {"merge_pr": "write"}}, "ana", 0)
     c = as_role(store, gh, clock, "write")
     assert merge(c).status_code == 200
 

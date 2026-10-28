@@ -83,7 +83,8 @@ from .budget import SETTINGS_KEY, monthly_check, settings_budget, settings_view,
     validate_settings
 from .connections import BY_KEY, Connections, ConnectionInputError, redact, resolve as resolve_connections
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
-from .policy import Interactions, PolicyError, ROLES, role_rank
+from .policy import POLICY_SETTING, Interactions, Policy, PolicyError, ROLES, RISK_LEVELS, \
+    policy_setting_view, role_rank, validate_policy_setting
 from .store import PgStore, Store, StoreUnavailable, project_slug
 
 GITHUB_API = "https://api.github.com"
@@ -912,7 +913,7 @@ def create_app(
     def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
         """What the panel may show as buttons; the routes check again on every request."""
         rights = {"can_start": False, "can_approve": False, "can_manage_connections": False,
-                  "can_budget": False}
+                  "can_budget": False, "can_policy": False}
         if role is None:
             return rights
         try:
@@ -924,6 +925,7 @@ def create_app(
             "can_approve": policy.allows("approve_plan", role),
             "can_manage_connections": policy.allows("manage_connections", role),
             "can_budget": policy.allows("budget_control", role),
+            "can_policy": role == "admin",
         }
 
     def project_budget(repo: str) -> tuple[Any, dict[str, Any] | None]:
@@ -1508,6 +1510,68 @@ def create_app(
                 "default_days": API_TOKEN_DEFAULT_DAYS, "max_days": API_TOKEN_MAX_DAYS,
                 "mcp_http": f"/api/projects/{repo}/mcp", "tokens": tokens,
                 "can_make_manager": role == "admin", "grantable": list(GRANTABLE),
+            })
+
+        try:
+            out = await run_in_threadpool(work)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    # --- project settings (ADR 0018): roles per interaction and risk policy -----------------
+
+    async def policy_route(request: Request) -> Response:
+        """GET: the project's roles per interaction and risk policy, for anyone with a role in it.
+        PUT: replace them; admin only (it decides who may do everything else, so it is not
+        configurable), with a session and CSRF, audited. Stored per project, never in a file."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+        data: Any = None
+        if request.method == "PUT":
+            try:
+                data = await request.json()
+            except ValueError:
+                data = None
+
+        def work() -> Outcome:
+            pid = project_id_of(repo)
+            role = auth.role_of(session, repo)
+            if role is None:
+                return Outcome(403, {"error": f"You have no access to {repo}."})
+            try:
+                policy = auth.policy_for(session, repo, fresh=request.method == "PUT")
+            except Exception:
+                return Outcome(403, {"error": "The project's .tradvia.yml cannot be read or is invalid."})
+            allowed = role == "admin"
+            if request.method == "PUT":
+                if not allowed:
+                    record_audit(pid, session.login, "set_policy", None, "denied",
+                                 f"role {role} below admin", None)
+                    return Outcome(403, {"error": f"Your role in {repo} is '{role}'; changing roles "
+                                                  "and the risk policy needs 'admin'."})
+                try:
+                    value = validate_policy_setting(data)
+                except PolicyError as e:
+                    return Outcome(400, {"error": str(e)})
+                db.set_setting(pid, POLICY_SETTING, value, session.login, auth.now())
+                auth.forget_policies(repo)
+                record_audit(pid, session.login, "set_policy", None, "ok",
+                             " ".join(f"{k}={v}" for sec in value.values() for k, v in sec.items()),
+                             None)
+                policy = auth.policy_for(session, repo)
+            row = db.get_setting(pid, POLICY_SETTING)
+            return Outcome(200, {
+                "project": repo, **policy_setting_view(policy),
+                "defaults": policy_setting_view(Policy()),
+                "roles": list(ROLES), "risk_levels": list(RISK_LEVELS),
+                "locked": {"manage_connections": "admin"},
+                "updated_by": row["updated_by"] if row else None,
+                "updated_at": row["updated_at"] if row else None,
+                "can_edit": allowed, "file_ignored": list(policy.file_policy_ignored),
             })
 
         try:
@@ -2178,6 +2242,8 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/settings/budget", budget_route,
+                  methods=["GET", "PUT"]),
+            Route("/api/projects/{owner}/{repo}/settings/policy", policy_route,
                   methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),

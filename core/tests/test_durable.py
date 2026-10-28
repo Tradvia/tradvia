@@ -145,6 +145,7 @@ def patch_run(monkeypatch, gh, chat, saver, planner):
     monkeypatch.setattr(cli, "GitHubREST", lambda *a, **k: gh)
     monkeypatch.setattr(cli, "load_policy", lambda github: Policy())
     monkeypatch.setattr(cli, "project_budget_setting", lambda repo: None)
+    monkeypatch.setattr(cli, "project_setting", lambda repo, key: None)
     monkeypatch.setattr(cli, "make_month_spend", lambda repo: None)
     monkeypatch.setattr(cli, "project_id_of", lambda repo: 1)
     monkeypatch.setattr(cli, "make_chat", lambda kind, issue, policy: chat)

@@ -187,11 +187,11 @@ def test_full_flow(client, gh):
         {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "role_reason": None,
          "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
          "can_start": True, "can_approve": True, "can_manage_connections": True,
-         "can_budget": True},
+         "can_budget": True, "can_policy": True},
         {"slug": "acme-widgets", "external_id": B, "role": "read", "role_reason": None,
          "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
          "can_start": False, "can_approve": False, "can_manage_connections": False,
-         "can_budget": False},
+         "can_budget": False, "can_policy": False},
     ]
 
 
@@ -745,8 +745,8 @@ def test_non_collaborator_has_no_access(store, gh, clock):
     assert not gh.writes("add_label")
 
 
-def test_policy_file_can_raise_the_minimum_role(store, gh, clock):
-    gh.policy = "interactions:\n  start_card: admin\n"
+def test_project_setting_can_raise_the_minimum_role(store, gh, clock):
+    store.set_setting(store.ensure_project(A), "policy", {"interactions": {"start_card": "admin"}}, "ana", 0)
     write = as_role(store, gh, clock, "write")
     r = post(write, BASE + "/cards/7/start")
     assert r.status_code == 403 and "'admin'" in r.json()["error"]
@@ -766,8 +766,15 @@ def test_unreadable_policy_fails_closed_naming_the_permission(signed, gh, store)
     assert audit_rows(store, 8)[0]["result"] == "denied"
 
 
-def test_invalid_policy_fails_closed(signed, gh):
+def test_roles_in_the_file_no_longer_apply(store, gh, clock):
+    # ADR 0018: roles per interaction are the project's setting; the file's section is ignored,
+    # even when it is invalid.
     gh.policy = "interactions:\n  start_card: emperor\n"
+    assert post(as_role(store, gh, clock, "triage"), BASE + "/cards/7/start").status_code == 200
+
+
+def test_invalid_policy_fails_closed(signed, gh):
+    gh.policy = "access:\n  view: emperor\n"
     r = post(signed, BASE + "/cards/8/start")
     assert r.status_code == 403 and ".tradvia.yml" in r.json()["error"]
     assert not gh.writes("add_label")
