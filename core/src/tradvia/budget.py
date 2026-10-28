@@ -203,6 +203,47 @@ def check(usage: dict | None, budget: Budget) -> str:
     return "warn" if ratio >= WARN_AT else "ok"
 
 
+def remaining(usage: dict | None, budget: Budget) -> dict[str, float]:
+    """What is left of each limit of the card (steps, minutes, usd); never negative."""
+    u = usage or {}
+    return {"steps": max(budget.max_steps - (u.get("steps") or 0), 0),
+            "minutes": max(budget.max_minutes - (u.get("minutes") or 0), 0.0),
+            "usd": max(budget.max_usd - (u.get("usd") or 0), 0.0)}
+
+
+def run_limits(usage: dict | None, budget: Budget, default_turns: int,
+               default_timeout: int) -> tuple[int, int]:
+    """`(max_turns, timeout_s)` for one run so it cannot go past the card's remaining balance.
+
+    The graph counts 1 + tool_calls steps per run, hence one step stays for the run itself.
+    `max_turns` is 0 when the balance does not allow a single turn; the caller stops the card.
+    """
+    left = remaining(usage, budget)
+    turns = min(default_turns, int(left["steps"]) - 1)
+    timeout = min(default_timeout, max(math.ceil(left["minutes"] * 60), 1))
+    return max(turns, 0), timeout
+
+
+# --- estimated price for providers that only report tokens ------------------------------------
+
+# USD per million tokens: (input, output, cached input). An API-equivalent estimate, not a bill:
+# subscriptions and discounts are not modelled. Update it when the provider changes its prices.
+TOKEN_PRICES: dict[str, tuple[float, float, float]] = {
+    "gpt-5": (1.25, 10.0, 0.125),
+    "gpt-5-codex": (1.25, 10.0, 0.125),
+    "gpt-5-mini": (0.25, 2.0, 0.025),
+    "default": (1.25, 10.0, 0.125),
+}
+
+
+def estimate_usd(tokens_in: int | None, tokens_out: int | None, tokens_cache: int | None,
+                 model: str = "default") -> float:
+    """API-equivalent USD for the tokens of a run, from `TOKEN_PRICES` (fallback row if unknown)."""
+    price_in, price_out, price_cache = TOKEN_PRICES.get(model, TOKEN_PRICES["default"])
+    return ((tokens_in or 0) * price_in + (tokens_out or 0) * price_out
+            + (tokens_cache or 0) * price_cache) / 1_000_000
+
+
 def warning_notice(usage: dict | None, budget: Budget) -> str:
     return WARNING_NOTICE.format(pct=usage_ratio(usage, budget) * 100)
 

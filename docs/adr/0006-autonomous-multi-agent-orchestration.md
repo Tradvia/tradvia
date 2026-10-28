@@ -151,6 +151,21 @@ card-state.v1 has no `BACKLOG -> WAITING_HUMAN`), while a card already running f
 own per-card budget. An invalid value means no ceiling, never a hidden one; if the spend
 cannot be read while a ceiling is set, the card does not start.
 
+## Note: turns and time of each run come from the card's balance (#129)
+
+The per-card limit does not change. The 100% stop used to be checked only between graph
+steps, so a single run could cross it (card #59 closed at 47 of 40 steps). Now `open_pr`
+derives the limits of the run from what is left (`budget.run_limits`): `max_turns` is the
+remaining steps minus one (the graph counts `1 + tool_calls` per run), and the timeout is the
+remaining minutes, rounded up to the second. If not even one turn fits, the card stops as at
+100%. An executor that does not accept `max_turns`/`timeout` keeps the old behavior.
+
+Status: turns and time per run are Shipped for Claude Code, Gemini CLI and Codex CLI. Codex
+and Gemini report tokens but no price, so their US$ is an estimate from `budget.TOKEN_PRICES`
+(API-equivalent USD per million input, output and cached tokens, with a fallback row), marked
+as estimated and never as a real price (`usd_reported` stays false). Codex has no turn flag,
+so its turn and US$ limits reject the run only after it ends; the timeout is what bounds it.
+
 ## Note: waiting across jobs in CI
 
 The durable wait does not change this decision. With `DATABASE_URL` set, a CI job started with
