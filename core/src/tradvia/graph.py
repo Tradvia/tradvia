@@ -236,7 +236,7 @@ def build_graph(github: GitHub, chat: Chat,
                 sp.set(usd=c.get("usd"), tokens_in=c.get("tokens_in"),
                        tokens_out=c.get("tokens_out"), tool_calls=int(p.get("_tool_calls") or 0))
         except (RuntimeError, ValueError) as e:
-            why = str(e)[:300]
+            why = str(e)[:500]  # the reason plus the excerpt of the answer (PlanError)
             chat.post(f"🔴 **{card['id']}** — o planejamento falhou: {why}. Nenhum plano foi "
                       "publicado. Ajuste a descrição da issue (ou divida o card) e reinicie-o "
                       "removendo e adicionando o rótulo `agent:ready`.")
