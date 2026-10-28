@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_card_idx ON audit_log (project_id, issue_number, created_at);
 CREATE INDEX IF NOT EXISTS audit_log_key_idx ON audit_log (actor_login, idempotency_key, created_at);
+CREATE INDEX IF NOT EXISTS audit_log_project_time_idx ON audit_log (project_id, created_at);
 
 -- Orchestrator conversation (ADR 0007): one chat per project. `refs` points at cards, pull
 -- requests and deploys; `kind` is message, reply, pending (needs the human) or warning.
@@ -251,6 +252,17 @@ ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS via text;
 -- API tokens for the programmatic API (ADR 0009). Only the SHA-256 of the token is kept.
 -- `token_enc` is the owner's GitHub user token (Fernet), so the token acts with the owner's
 -- identity and never beyond `role` or the owner's current role.
+-- A project's settings made on Tradvia's Settings screen (ADR 0018), one row per key. Keyed by
+-- project (the repository), never shared between projects. Today: `budget`.
+CREATE TABLE IF NOT EXISTS project_settings (
+    project_id   bigint NOT NULL REFERENCES projects (id),
+    key          text NOT NULL,
+    value        jsonb NOT NULL,
+    updated_by   text NOT NULL,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS api_tokens (
     id           bigserial PRIMARY KEY,
     login        text NOT NULL,
@@ -262,3 +274,19 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     expires_at   timestamptz NOT NULL,
     revoked_at   timestamptz
 );
+-- ADR 0014: an AI manager is an API token of kind 'manager', made by an admin of the project.
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'agent';
+
+-- What the owner lets an AI manager do beyond its base (ADR 0014): one permission per row, each
+-- with its own expiry (at most 90 days) and revocable at once. Never merge, deploy, budget,
+-- connections or roles: those are not grantable at all.
+CREATE TABLE IF NOT EXISTS manager_grants (
+    id           bigserial PRIMARY KEY,
+    token_id     bigint NOT NULL REFERENCES api_tokens (id),
+    permission   text NOT NULL,
+    granted_by   text NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    expires_at   timestamptz NOT NULL,
+    revoked_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS manager_grants_token_idx ON manager_grants (token_id);

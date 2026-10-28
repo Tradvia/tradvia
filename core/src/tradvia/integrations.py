@@ -9,11 +9,13 @@ client in a later version without changing the graph.
 from __future__ import annotations
 
 import base64
+import sys
 import time
 from typing import Protocol
 
 import requests
 
+from .decisions import classify_reply
 from .policy import Policy, role_of
 
 TIMEOUT = 30
@@ -129,6 +131,7 @@ class GitHubIssueChat:
         })
         self._created_at: dict[str, str] = {}
         self._roles: dict[str, str | None] = {}
+        self._noticed: set[str] = set()
 
     def _url(self) -> str:
         return f"https://api.github.com/repos/{self.repo}/issues/{self.issue}/comments"
@@ -150,13 +153,39 @@ class GitHubIssueChat:
             r.raise_for_status()
             for c in sorted(r.json(), key=lambda c: c["id"]):
                 user = c.get("user") or {}
-                if (c["id"] > int(after_message_id) and user.get("type") != "Bot"
-                        and self.policy.allows("approve_plan",
-                                               role_of(self, user.get("login", "")))):
-                    return {"text": c.get("body") or "", "by": user["login"]}
+                if c["id"] <= int(after_message_id) or user.get("type") == "Bot":
+                    continue
+                login, body = user.get("login", ""), c.get("body") or ""
+                role = role_of(self, login)
+                decides = classify_reply(body) != "feedback"
+                if self.policy.allows("approve_plan", role):
+                    if decides:
+                        self._notice(str(c["id"]),
+                                     f"✅ Decisão de @{login} aceita (papel `{role}`).")
+                    return {"text": body, "by": login}
+                if decides:
+                    self._notice(str(c["id"]), self._refusal(login, role))
             if time.monotonic() >= deadline:
                 return None
             time.sleep(self.poll_s)
+
+    def _refusal(self, login: str, role: str | None) -> str:
+        minimum = self.policy.interactions.approve_plan
+        who = f"papel `{role}`" if role else "nenhum papel (não é colaborador)"
+        return (f"⚠️ Decisão de @{login} não foi aceita: aprovar ou rejeitar o plano exige "
+                f"papel `{minimum}` ou acima neste repositório, e a conta tem {who}. "
+                "O plano segue como estava.")
+
+    def _notice(self, comment_id: str, text: str) -> None:
+        """Posts one notice per reply, so the card shows every decision and refusal."""
+        if comment_id in self._noticed:
+            return
+        self._noticed.add(comment_id)
+        try:
+            self.post(text)
+        except requests.RequestException as e:
+            print(f"Tradvia: could not post the notice for reply {comment_id}: {e}", file=sys.stderr)
+
     def get_collaborator_role(self, login: str) -> str | None:
         """Cached role_name of `login`; None when not a collaborator."""
         if login not in self._roles:
@@ -186,7 +215,7 @@ class DiscordREST:
 
     def wait_for_reply(self, after_message_id: str, timeout_s: int) -> dict | None:
         deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+        while True:  # always checks once, so a timeout of 0 is a single look for a reply
             r = self.s.get(f"{self.API}/channels/{self.channel}/messages",
                            params={"after": after_message_id, "limit": 20}, timeout=TIMEOUT)
             r.raise_for_status()
@@ -194,5 +223,6 @@ class DiscordREST:
             if humans:
                 m = min(humans, key=lambda m: int(m["id"]))  # oldest reply first
                 return {"text": m.get("content", ""), "by": m["author"]["username"]}
+            if time.monotonic() >= deadline:
+                return None
             time.sleep(self.poll_s)
-        return None

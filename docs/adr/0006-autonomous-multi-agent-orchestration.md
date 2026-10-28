@@ -96,7 +96,7 @@ Tradvia supports several topologies and picks one per task type:
 
 | Capability | What Tradvia does | Status |
 |---|---|---|
-| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Shipped: per-card `budget` in `.tradvia.yml` (`max_minutes`, `max_steps`, `max_usd`; safe defaults 30 min, 40 steps, $5). At 80% of any limit the next prompt carries a system notice requiring a synthesis or a request for help; at 100% the agent is not called again, the issue gets a comment with the consumption and the card stays in `WAITING_HUMAN`. Usage lives on the card state and in the PR body, and is scoped by `project_id`: it never crosses projects. Invalid values fall back to the defaults (fail closed). |
+| Execution budgets | Each autonomous run gets a TTL, a maximum number of steps and a token/cost ceiling. At 80% without converging, Tradvia injects a system notice forcing a synthesis or a request for help. | Shipped: per-card budget (`max_minutes`, `max_steps`, `max_usd`; safe defaults 30 min, 40 steps, $5), set per project on Tradvia's Settings since ADR 0018 (it was in `.tradvia.yml` before). At 80% of any limit the next prompt carries a system notice requiring a synthesis or a request for help; at 100% the agent is not called again, the issue gets a comment with the consumption and the card stays in `WAITING_HUMAN`. Usage lives on the card state and in the PR body, and is scoped by `project_id`: it never crosses projects. Invalid values fall back to the defaults (fail closed). |
 | Stagnation detection | Tradvia watches tool calls and intermediate outputs; three identical or equivalent calls in a row (same tool and parameters after normalization) interrupt the run and inject a reflective error; if the agent repeats again, Tradvia stops and returns the card to `WAITING_HUMAN` with the reason on the issue. Routing to a reviewer agent is not part of this delivery. | Shipped |
 | Durable execution and checkpointing | Every state change is persisted (LangGraph checkpointer on Postgres). A failure at step 14 of 15 resumes at 14; a developer can fork the state at step 10 to try another skill. | Shipped ([durable execution](../durable-execution.md)) |
 | Risk-based permission gateways (HITL) | Skills are classified by risk. Reading and drafting run freely; reversible writes follow policy; destructive or external actions suspend the agent until a human, or a Critic/Policy agent, approves. Roles come from ADR 0004. | Shipped |
@@ -139,3 +139,35 @@ carries the project id.
   host larger than today's 1 GB machine.
 - More autonomy means more surface for mistakes: every capability ships with
   tests for its guardrail first, and the public site keeps stating real status.
+
+## Note: monthly project ceiling (#131)
+
+The monthly ceiling (`monthly_usd`, a setting of the project on Tradvia since ADR 0018; it was
+`budget.monthly_usd` in `.tradvia.yml` before) adds a ceiling per project and UTC month on top of the
+per-card budget, which is unchanged. The month's spend is the plan costs plus the executor
+cost of PRs (the PR "cost so far" is not added, it already includes the plans). At 80% a
+warning is posted once; at 100% no new card starts (it stays in `BACKLOG`, because
+card-state.v1 has no `BACKLOG -> WAITING_HUMAN`), while a card already running finishes its
+own per-card budget. An invalid value means no ceiling, never a hidden one; if the spend
+cannot be read while a ceiling is set, the card does not start.
+
+## Note: turns and time of each run come from the card's balance (#129)
+
+The per-card limit does not change. The 100% stop used to be checked only between graph
+steps, so a single run could cross it (card #59 closed at 47 of 40 steps). Now `open_pr`
+derives the limits of the run from what is left (`budget.run_limits`): `max_turns` is the
+remaining steps minus one (the graph counts `1 + tool_calls` per run), and the timeout is the
+remaining minutes, rounded up to the second. If not even one turn fits, the card stops as at
+100%. An executor that does not accept `max_turns`/`timeout` keeps the old behavior.
+
+Status: turns and time per run are Shipped for Claude Code, Gemini CLI and Codex CLI. Codex
+and Gemini report tokens but no price, so their US$ is an estimate from `budget.TOKEN_PRICES`
+(API-equivalent USD per million input, output and cached tokens, with a fallback row), marked
+as estimated and never as a real price (`usd_reported` stays false). Codex has no turn flag,
+so its turn and US$ limits reject the run only after it ends; the timeout is what bounds it.
+
+## Note: waiting across jobs in CI
+
+The durable wait does not change this decision. With `DATABASE_URL` set, a CI job started with
+`--wait 0` leaves the card in `WAITING_HUMAN` and a later job resumes it from the checkpoint
+(see `docs/durable-execution.md`).

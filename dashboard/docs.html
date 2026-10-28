@@ -57,6 +57,7 @@
   <nav>
     <a href="#capabilities" data-i18n="navCapabilities"></a>
     <a href="#guide" data-i18n="guideTitle"></a>
+    <a href="#troubleshooting" data-i18n="navTroubleshoot"></a>
     <a href="#technical" data-i18n="navTechnical"></a>
   </nav>
   <p class="sub"><span class="pt">Status reais, espelhando a ADR 0007 e o README. Só o que está Shipped está disponível; In progress, Partial e Planned não são descritos como disponíveis.</span><span class="en">Real status, mirroring ADR 0007 and the README. Only Shipped means available; In progress, Partial and Planned are never described as available.</span></p>
@@ -89,8 +90,8 @@
         <p><span class="pt">Taxa de sucesso, duração mediana, PRs mesclados e custo por card, lidos do store. Veja <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Custos são estimativas, não fatura.</span><span class="en">Success rate, median duration, merged PRs and cost per card, read from the store. See <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Costs are estimates, not an invoice.</span></p>
       </article>
       <article class="card" data-capability="connections" data-ref="58">
-        <h3><span class="pt">Conexões</span><span class="en">Connections</span> <span class="badge planned">Planned</span> <span class="sub">#58</span></h3>
-        <p><span class="pt">Conexões de projeto com provedores de IA e de repositório. Planejado: ainda não disponível.</span><span class="en">Project connections for AI and repository providers. Planned: not available yet.</span></p>
+        <h3><span class="pt">Conexões</span><span class="en">Connections</span> <span class="badge partial">Partial</span> <span class="sub">#58</span></h3>
+        <p><span class="pt">Tela "Conexões" (role admin): provedor e modelo por papel do fluxo (planner/executor/reviewer/orchestrator), e o segredo de cada provedor de IA (chave de API ou o token da assinatura do Claude Code). Hoje só o papel <code>orchestrator</code> (o chat) de fato usa a escolha; os outros papéis ainda leem só a configuração, sem aplicá-la. O chat só funciona com uma IA configurada por chave de API (Anthropic, OpenAI ou Gemini); sem ela, fica desligado e o painel diz o motivo. O token da assinatura do Claude Code serve só ao executor, nunca ao chat. Chave de API é o único método para Anthropic/Gemini/OpenAI — nenhum dos três oferece hoje um login via navegador equivalente ao da assinatura do Claude Code para apps de terceiros (ver <a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0009-project-connections.md">ADR 0009</a>).</span><span class="en">The "Connections" screen (admin role): provider and model per flow role (planner/executor/reviewer/orchestrator), and each AI provider's secret (an API key, or the Claude Code subscription token). Today only the <code>orchestrator</code> role (the chat) actually uses the choice; the other roles still only read the configuration, without applying it. The chat works only with an AI provider configured with an API key (Anthropic, OpenAI or Gemini); without one it is off and the panel says why. The Claude Code subscription token runs the executor only, never the chat. An API key is the only method for Anthropic/Gemini/OpenAI — none of the three currently offers a browser login for third-party apps the way the Claude Code subscription does (see <a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0009-project-connections.md">ADR 0009</a>).</span></p>
       </article>
       <article class="card" data-capability="signin" data-ref="45">
         <h3><span class="pt">Login</span><span class="en">Sign-in</span> <span class="badge shipped">Shipped</span> <span class="sub">#45</span></h3>
@@ -129,6 +130,34 @@
     </ol>
   </section>
 
+  <section id="troubleshooting">
+    <h2 data-i18n="troubleshootTitle"></h2>
+    <p><span class="pt">Se o painel aparecer vazio ou sem cards, confira nesta ordem:</span><span class="en">If the panel is empty or shows no cards, check these in order:</span></p>
+    <ol class="steps">
+      <li>
+        <strong><span class="pt">Confirme o endereço</span><span class="en">Check the address</span></strong>
+        <p><span class="pt">Use o painel publicado em app.tradvia.org. Em cópia local ou em outro endereço, o painel lê o GitHub sem login, e o GitHub libera só 60 requisições por hora para o seu IP. Se aparecer “GitHub API rate limit reached”, espere até uma hora ou abra app.tradvia.org.</span><span class="en">Use the panel published at app.tradvia.org. In a local copy or at another address, the panel reads GitHub without signing in, and GitHub allows only 60 requests per hour for your IP. If “GitHub API rate limit reached” appears, wait up to an hour or open app.tradvia.org.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Saia e entre de novo</span><span class="en">Sign out and back in</span></strong>
+        <p><span class="pt">Se você estiver conectado, clique em <code>Sair</code> no topo da página, entre de novo com o GitHub e recarregue. Uma sessão antiga pode deixar a tela sem dados.</span><span class="en">If you are signed in, click <code>Sign out</code> at the top of the page, sign in again with GitHub and reload. An old session can leave the screen without data.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Confira o endereço da página</span><span class="en">Check the page address</span></strong>
+        <p><span class="pt">Se o endereço terminar em <code>#settings</code> ou <code>#help</code>, essa tela aparece no lugar do painel. Os filtros na URL (<code>from</code>, <code>to</code>, <code>executor</code>, <code>fcard</code>, <code>status</code>) reduzem os cards: abra o endereço sem eles para ver tudo.</span><span class="en">If the address ends in <code>#settings</code> or <code>#help</code>, that screen shows instead of the panel. The filters in the URL (<code>from</code>, <code>to</code>, <code>executor</code>, <code>fcard</code>, <code>status</code>) narrow the cards: open the address without them to see everything.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Leia a mensagem de erro</span><span class="en">Read the error message</span></strong>
+        <p><span class="pt">Falhas aparecem na barra de status, acima do quadro. Sem mensagem, abra o console do navegador (F12, aba Console) e anote o primeiro erro em vermelho.</span><span class="en">Failures appear in the status bar, above the board. If there is no message, open the browser console (F12, Console tab) and note the first red error.</span></p>
+      </li>
+      <li>
+        <strong><span class="pt">Recarregue sem cache</span><span class="en">Reload without cache</span></strong>
+        <p><span class="pt">Use Ctrl+Shift+R (Cmd+Shift+R no Mac) para carregar a versão mais recente da página.</span><span class="en">Press Ctrl+Shift+R (Cmd+Shift+R on Mac) to load the latest version of the page.</span></p>
+      </li>
+    </ol>
+    <p class="sub"><span class="pt">Se uma função descrita nesta página não aparecer no painel, a versão publicada é anterior: o painel só é atualizado depois do merge em <code>main</code> e da aprovação do deploy em <code>production</code>.</span><span class="en">If a feature described on this page is missing from the panel, the published version is older: the panel is updated only after the change is merged into <code>main</code> and the <code>production</code> deploy is approved.</span></p>
+  </section>
+
   <section id="technical">
     <h2 data-i18n="navTechnical"></h2>
     <p><span class="pt"><code>core/</code> (FSL-1.1-ALv2) nunca importa de <code>ee/</code> (licença comercial); <code>make boundary</code> verifica. A API fica em <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) e este painel estático em <code>/runs/</code>. O estado dos cards segue <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. As interações por projeto são configuradas em <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">exemplo</a>).</span><span class="en"><code>core/</code> (FSL-1.1-ALv2) never imports from <code>ee/</code> (commercial license); <code>make boundary</code> checks it. The API lives under <code>/api/*</code> (<code>core/src/tradvia/api.py</code>) and this static dashboard under <code>/runs/</code>. Card state follows <a href="https://github.com/Tradvia/tradvia/blob/main/core/contracts/card-state.v1.json">card-state.v1.json</a>. Per-project interactions are configured in <code>.tradvia.yml</code> (<a href="https://github.com/Tradvia/tradvia/blob/main/docs/tradvia.example.yml">example</a>).</span></p>
@@ -157,6 +186,9 @@
       <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0009-web-push-notifications.md">ADR 0009 · Web Push with VAPID and a minimal payload</a></li>
       <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0010-live-chat-with-executing-agents.md">ADR 0010 · Live chat with executing agents</a></li>
       <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0011-in-app-manual-and-scalable-i18n.md">ADR 0011 · In-app manual and scalable i18n</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0013-chat-needs-an-api-key.md">ADR 0013 · The chat runs only on an AI provider with an API key</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0014-ai-manager-below-the-owner.md">ADR 0014 · An AI manager below the project's owner</a></li>
+      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0018-project-settings-on-tradvia.md">ADR 0018 · Project settings live on Tradvia, per project (budget first)</a></li>
     </ul>
     <h3><span class="pt">Mais documentação</span><span class="en">More documentation</span></h3>
     <ul>
@@ -171,9 +203,11 @@
 <script>
 const I18N = {
   pt: { title: "Documentação", back: "← Voltar ao painel", navCapabilities: "Funcionalidades e status",
-    guideTitle: "Como executar uma tarefa no Tradvia", navTechnical: "Documentação técnica" },
+    guideTitle: "Como executar uma tarefa no Tradvia", navTroubleshoot: "Painel vazio",
+    troubleshootTitle: "Painel vazio ou sem cards", navTechnical: "Documentação técnica" },
   en: { title: "Documentation", back: "← Back to the dashboard", navCapabilities: "Capabilities and status",
-    guideTitle: "How to run a task in Tradvia", navTechnical: "Technical docs" },
+    guideTitle: "How to run a task in Tradvia", navTroubleshoot: "Empty panel",
+    troubleshootTitle: "Empty panel or no cards", navTechnical: "Technical docs" },
 };
 let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
 try { const saved = localStorage.getItem("tradvia.lang"); if (saved === "pt" || saved === "en") lang = saved; } catch (err) { /* ignore */ }

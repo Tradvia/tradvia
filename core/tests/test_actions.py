@@ -8,6 +8,7 @@ from tradvia.actions import (
     apply_order,
     awaiting_plan,
     backlog_string,
+    check_state,
     merge_block,
     merge_title,
     new_backlog,
@@ -18,6 +19,8 @@ from tradvia.actions import (
     parse_reply,
     plan_comment,
     reorder,
+    required_checks,
+    runs_awaiting_approval,
 )
 
 BOT = "github-actions[bot]"
@@ -136,6 +139,34 @@ def test_merge_block_and_ignorable_cla():
     # missing or pending checks are left to GitHub's own branch rules
     assert merge_block([]) is None
     assert merge_block([{"name": "core-tests", "status": "in_progress", "conclusion": None}]) is None
+
+
+def test_a_run_held_for_approval_is_awaiting_not_failed():
+    held = [_run("core-tests", "action_required"), _run("license-boundary"), _run("cla")]
+    assert check_state(held, "core-tests") == "awaiting"
+    assert required_checks(held)[0] == {"name": "core-tests", "state": "awaiting"}
+    # a real failure of the same check wins over the wait
+    both = [_run("core-tests", "action_required"), _run("core-tests", "failure")]
+    assert check_state(both, "core-tests") == "failed"
+
+
+def test_merge_waits_for_the_approval_and_only_cla_can_be_ignored_meanwhile():
+    held = [_run("core-tests", "action_required"), _run("license-boundary"), _run("cla")]
+    reason = merge_block(held)
+    assert "core-tests" in reason and "approved" in reason and "failed" not in reason
+    cla_held = [_run("core-tests"), _run("license-boundary"), _run("cla", "action_required")]
+    assert "cla" in merge_block(cla_held)
+    assert merge_block(cla_held, ignore_cla=True) is None
+
+
+def test_runs_awaiting_approval_are_the_held_runs_of_one_commit():
+    runs = [
+        {"id": 1, "head_sha": "abc", "conclusion": "action_required"},
+        {"id": 2, "head_sha": "abc", "conclusion": "success"},
+        {"id": 3, "head_sha": "def", "conclusion": "action_required"},
+    ]
+    assert runs_awaiting_approval(runs, "abc") == [1]
+    assert runs_awaiting_approval(runs, "zzz") == []
 
 
 def test_merge_title_needs_a_conventional_commit():
