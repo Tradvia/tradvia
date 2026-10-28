@@ -6,8 +6,10 @@ Run with: uvicorn tradvia.api:app
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
@@ -71,7 +74,7 @@ from . import pending, push
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
 from .budget import monthly_check, store_month_spend
-from .connections import Connections, ConnectionInputError
+from .connections import Connections, ConnectionInputError, redact
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
 from .store import PgStore, Store, StoreUnavailable, project_slug
@@ -212,6 +215,32 @@ def _not_found() -> JSONResponse:
 
 def _store_unavailable() -> JSONResponse:
     return JSONResponse({"error": "storage unavailable"}, status_code=503)
+
+
+AUDIT_COLUMNS = ("created_at", "actor_login", "action", "issue_number", "result", "detail", "via")
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def audit_csv(rows: list[dict[str, Any]]) -> str:
+    """CSV of audit rows; a cell a spreadsheet would run as a formula gets a leading quote."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(AUDIT_COLUMNS)
+    for row in rows:
+        cells = ["" if row[c] is None else str(row[c]) for c in AUDIT_COLUMNS]
+        writer.writerow(["'" + c if c.startswith(_FORMULA_START) else c for c in cells])
+    return out.getvalue()
+
+
+def audit_jsonl(rows: list[dict[str, Any]]) -> str:
+    return "".join(json.dumps({c: row[c] for c in AUDIT_COLUMNS}) + "\n" for row in rows)
+
+
+# file formats besides json: format -> (media type, file extension, renderer)
+AUDIT_FORMATS: dict[str, tuple[str, str, Callable[[list[dict[str, Any]]], str]]] = {
+    "csv": ("text/csv", "csv", audit_csv),
+    "jsonl": ("application/x-ndjson", "jsonl", audit_jsonl),
+}
 
 
 def per_page(value: str | None) -> int:
@@ -1505,6 +1534,79 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    def audit_time(params: Any, name: str) -> float | None:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            raise ValueError(f"'{name}' must be an ISO 8601 date or date and time.") from None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp()
+
+    def audit_int(params: Any, name: str, default: int, low: int, high: int | None) -> int:
+        raw = params.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            value = low - 1
+        if value < low or (high is not None and value > high):
+            span = f"between {low} and {high}" if high is not None else f"at least {low}"
+            raise ValueError(f"'{name}' must be a whole number {span}.")
+        return value
+
+    def read_project_audit(session: Any, repo: str, params: Any) -> Outcome:
+        """The project's audit log by period and page; same role rule as the card audit."""
+        assert auth is not None and db is not None
+        role, reason = auth.role_status(session, repo)
+        if role is None:
+            return read_refused(repo, reason)
+        fmt = params.get("format") or "json"
+        try:
+            if fmt != "json" and fmt not in AUDIT_FORMATS:
+                raise ValueError("'format' must be json, csv or jsonl.")
+            since, until = audit_time(params, "from"), audit_time(params, "to")
+            limit = audit_int(params, "limit", 100, 1, 1000)
+            offset = audit_int(params, "offset", 0, 0, None)
+        except ValueError as e:
+            return Outcome(400, {"error": str(e)})
+        rows = db.query_audit(project_id_of(repo), since, until, limit, offset)
+        has_more = len(rows) > limit
+        # known secret values are not kept by the panel (they live on GitHub): the shapes of
+        # provider keys and tokens are what can be recognised here
+        clean = [
+            {k: redact(v) if isinstance(v, str) else v for k, v in row.items()}
+            for row in rows[:limit]
+        ]
+        return Outcome(200, {"audit": clean, "limit": limit, "offset": offset,
+                             "has_more": has_more, "format": fmt})
+
+    async def project_audit(request: Request) -> Response:
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repo = f"{owner}/{name}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, True)
+        if session is None:
+            return failure
+        try:
+            out = await run_in_threadpool(read_project_audit, session, repo, request.query_params)
+        except Exception:
+            return private(_store_unavailable())
+        if out.status != 200:
+            return private(JSONResponse(out.body, status_code=out.status))
+        fmt = out.body.pop("format")
+        if fmt == "json":
+            return private(JSONResponse(out.body))
+        media, ext, render = AUDIT_FORMATS[fmt]
+        response = Response(render(out.body["audit"]), media_type=media)
+        response.headers["Content-Disposition"] = f'attachment; filename="audit-{owner}-{name}.{ext}"'
+        return private(response)
+
     # --- reading pull requests and deploys with the user's token (ADR 0007) -------------------
 
     def rights(session: Any, repo: str, *interactions: str) -> dict[str, bool]:
@@ -1649,6 +1751,7 @@ def create_app(
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/audit", card_audit, methods=["GET"]),
+            Route("/api/projects/{owner}/{repo}/audit", project_audit, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_history, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/chat", chat_post, methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/pulls/{n:int}", read_route("pull"), methods=["GET"]),

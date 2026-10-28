@@ -74,6 +74,7 @@ class Card(TypedDict, total=False):
     plan_error: str | None
     pending_action: str  # action about to run; the risk gate classifies it
     risk: dict  # risk gate state: project_id, action, level, required_role, state
+    guardrail: dict  # guardrail review: phase, state (ok/blocked), findings, suppressed
     approvals: Annotated[list[dict], operator.add]
     cost: Annotated[dict, add_cost]
     usage: Annotated[dict, add_usage]  # budget consumption: steps, minutes, usd

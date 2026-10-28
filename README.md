@@ -56,6 +56,12 @@ those become pending items with a button for the human. Per-message budget,
 cost record and an audit entry per tool. Status: 🟦 Partial, tested offline
 with a scripted model; see [docs/orchestrator.md](docs/orchestrator.md).
 
+**Audit query and export** (ADR 0008): `GET /api/projects/{owner}/{repo}/audit`
+lists a project's audit log by period with paging and exports it as CSV or JSON
+Lines (`format=csv|jsonl`), with the same role rules as the per-card audit and
+secrets redacted. Status: 🟦 Partial, tested offline with the in-memory store; the
+Postgres query is not yet exercised by the offline tests.
+
 **Documentation in the dashboard:** capability status, a step-by-step guide and
 technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the
 "Help" link in the header. Status: ✅ Shipped.
@@ -160,6 +166,8 @@ it in the thread, and the agent opens the pull request. See
 - [x] **Phase 0 — Foundation:** open-core monorepo, CLA, CI, card contract
 - [ ] **Phase 1 — Engine v0.1:** orchestrator, LiteLLM API runtime, GitHub,
       approval gates in chat *(in progress)*
+      Robustness stage *(in progress)*: command, credential and personal-data
+      guardrails on cards and pull requests, regex only, Partial (ADR 0015)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose
