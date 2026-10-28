@@ -19,7 +19,12 @@ AGENT_QUESTION = "agent_question"
 PR_OPENED = "pr_opened"
 BUDGET_LIMIT = "budget_limit"
 ADJUST_LIMIT = "adjust_limit"
-KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT)
+# Proactive alerts (alerts.py): sent by Web Push like the kinds above, but never in the inbox.
+DEPLOY_STUCK = "deploy_stuck"
+COST_OUTLIER = "cost_outlier"
+RUN_DEAD = "run_dead"
+ALERT_KINDS = (DEPLOY_STUCK, COST_OUTLIER, RUN_DEAD)
+KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT) + ALERT_KINDS
 
 # The policy interaction that answers each kind (docs/projects.md).
 ROLE_FOR_KIND = {
@@ -28,6 +33,9 @@ ROLE_FOR_KIND = {
     ADJUST_LIMIT: "approve_plan",
     PR_OPENED: "merge_pr",
     BUDGET_LIMIT: "budget_control",
+    DEPLOY_STUCK: "approve_deploy",
+    COST_OUTLIER: "budget_control",
+    RUN_DEAD: "approve_plan",
 }
 
 # graph.py posts "Limite de N ajustes atingido"; the budget stop uses the same style.

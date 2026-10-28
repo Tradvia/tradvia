@@ -99,6 +99,13 @@ class Store(Protocol):
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
         """Entries of one card, oldest first, `created_at` as an ISO string."""
 
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """Entries of the whole project with `since <= created_at < until` (epoch, either may be
+        None), oldest first, same rows as `list_audit` (`issue_number` may be None). Returns up
+        to `limit + 1` rows: the extra one tells the caller there is another page."""
+
     def recent_audit_key(
         self, project_id: int, actor_login: str, idempotency_key: str, since: float
     ) -> dict[str, Any] | None:
@@ -383,6 +390,15 @@ class MemoryStore:
         with self._lock:
             self.audit.append({**copy.deepcopy(rec), "project_id": project_id})
 
+    @staticmethod
+    def _audit_row(r: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "actor_login": r["actor_login"], "action": r["action"],
+            "issue_number": r["issue_number"], "result": r["result"],
+            "detail": r["detail"], "via": r.get("via"),
+            "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
+        }
+
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = [
@@ -390,15 +406,20 @@ class MemoryStore:
                 if r["project_id"] == project_id and r["issue_number"] == issue_number
             ]
         rows.sort(key=lambda r: r["created_at"])
-        return [
-            {
-                "actor_login": r["actor_login"], "action": r["action"],
-                "issue_number": r["issue_number"], "result": r["result"],
-                "detail": r["detail"], "via": r.get("via"),
-                "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
-            }
-            for r in rows
-        ]
+        return [self._audit_row(r) for r in rows]
+
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [
+                r for r in self.audit
+                if r["project_id"] == project_id
+                and (since is None or r["created_at"] >= since)
+                and (until is None or r["created_at"] < until)
+            ]
+        rows.sort(key=lambda r: r["created_at"])  # stable: insertion order breaks ties
+        return [self._audit_row(r) for r in rows[offset:offset + limit + 1]]
 
     def recent_audit_key(
         self, project_id: int, actor_login: str, idempotency_key: str, since: float
@@ -746,6 +767,14 @@ _LIST_AUDIT_SQL = """
     SELECT actor_login, action, issue_number, result, detail, created_at, via
     FROM audit_log WHERE project_id = %s AND issue_number = %s
     ORDER BY created_at, id
+"""
+_QUERY_AUDIT_SQL = """
+    SELECT actor_login, action, issue_number, result, detail, created_at, via
+    FROM audit_log
+    WHERE project_id = %s
+          AND (%s::double precision IS NULL OR created_at >= to_timestamp(%s))
+          AND (%s::double precision IS NULL OR created_at < to_timestamp(%s))
+    ORDER BY created_at, id LIMIT %s OFFSET %s
 """
 _RECENT_AUDIT_KEY_SQL = """
     SELECT actor_login, action, issue_number, result, detail
@@ -1108,6 +1137,20 @@ class PgStore:
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(_LIST_AUDIT_SQL, (project_id, issue_number)).fetchall()
+        return [
+            {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
+             "detail": r[4], "via": r[6], "created_at": _iso(r[5])}
+            for r in rows
+        ]
+
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                _QUERY_AUDIT_SQL,
+                (project_id, since, since, until, until, limit + 1, offset),
+            ).fetchall()
         return [
             {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
              "detail": r[4], "via": r[6], "created_at": _iso(r[5])}
