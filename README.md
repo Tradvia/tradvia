@@ -100,6 +100,7 @@ shows the origin of each value. Status: 🟦 Partial, tested offline. Per provid
 | Google Gemini | 🔨 In progress (secret and model stored and delivered; no executor uses them yet) |
 | OpenAI | 🔨 In progress (same as Gemini) |
 | GitLab | 🗓️ Planned ([#60](https://github.com/tradvia/tradvia/issues/60)) |
+| Bitbucket | 🗓️ Planned, backlog; not started until the owner decides ([#173](https://github.com/tradvia/tradvia/issues/173)) |
 
 ## Architecture
 
