@@ -18,8 +18,9 @@ Read them before you change code. The most important ones:
 
 1. Accept the GitHub invitation to `Tradvia/tradvia` (role *write*), and sign the CLA on your
    first pull request: comment `I have read the CLA Document and I hereby sign the CLA`.
-2. Get a Tradvia token for this project and connect your agent to the Tradvia MCP server:
-   [docs/mcp.md](docs/mcp.md). Keep the token out of git.
+2. In the Tradvia panel, open **Connect my AI** ("Conectar minha IA"), create a token for this
+   project and paste the MCP setup it shows into your client ([docs/mcp.md](docs/mcp.md)).
+   Keep the token out of git.
 
 ## The loop (the agent, every card)
 

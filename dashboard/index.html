@@ -208,6 +208,17 @@
   .conn .prov { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: grid; gap: 4px; font-size: 12px; }
   .conn .prov h4 { margin: 0; font-size: 13px; }
   .conn .prov .row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .agentc { display: grid; gap: 10px; font-size: 13px; }
+  .agentc .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .agentc pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+                overflow-x: auto; white-space: pre; font-size: 12px; margin: 0; max-width: 100%; }
+  .agentc .secret { background: var(--panel); border: 1px dashed var(--line); border-radius: 8px; padding: 8px;
+                    display: grid; gap: 6px; }
+  .agentc, .agentc > * { min-width: 0; }
+  .agentc code.tok { overflow-wrap: anywhere; word-break: break-all; font-size: 12px; flex: 1 1 200px; min-width: 0; }
+  .agentc .tablewrap { overflow-x: auto; max-width: 100%; }
+  .agentc table { border-collapse: collapse; font-size: 12px; }
+  .agentc td, .agentc th { padding: 3px 8px; border-bottom: 1px solid var(--line); text-align: left; }
   .conn .roles { display: grid; gap: 6px; }
   .conn .role { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
   .conn .role b { min-width: 110px; }
@@ -286,6 +297,10 @@
     <div id="connections-section" hidden>
       <h2 data-i18n="connections"></h2>
       <div class="conn" id="connections"></div>
+    </div>
+    <div id="agent-section" hidden>
+      <h2 data-i18n="agentTitle"></h2>
+      <div class="agentc" id="agent-connect"></div>
     </div>
   </div>
   </section>
@@ -1842,6 +1857,15 @@ const I18N = {
     "help.title": "Ajuda e documentação", "help.readme": "README", "help.kpis": "Indicadores do painel",
     "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
+    agentTitle: "Conectar minha IA",
+    agentIntro: "Use a IA do seu fornecedor (Claude Code, Kiro, Gemini CLI, Codex, Manus…) neste projeto, junto com as outras pessoas e agentes. Gere um token, configure o MCP do Tradvia no seu cliente e siga o AGENTS.md do repositório: a IA lê o briefing, pega um card livre dizendo quem é e no que é boa, trabalha no branch tradvia/issue-N e abre um PR com Closes #N. Aprovar plano, merge e deploy continuam com uma pessoa.",
+    agentRole: "Papel do token", agentDays: "Validade (dias)", agentCreate: "Gerar token",
+    agentOnce: "Copie agora: este token não aparece de novo. Guarde fora do git (variável TRADVIA_TOKEN ou o cofre do seu cliente).",
+    agentCopy: "Copiar", agentCopied: "Copiado", agentStdio: "MCP local (Claude Code, Kiro, Gemini CLI) — .mcp.json, .kiro/settings/mcp.json ou .gemini/settings.json",
+    agentInstall: "Instale o comando tradvia a partir de um checkout do repositório: pip install ./core",
+    agentHttp: "MCP por HTTP (agentes na nuvem, como Manus)", agentMine: "Meus tokens neste projeto",
+    agentNone: "Nenhum token ainda.", agentRevoke: "Revogar", agentActive: "ativo", agentInactive: "expirado ou revogado",
+    agentExpires: "expira", agentRoleHelp: "triage lê, pega e comenta cards; write também ajusta planos. Nunca passa do seu papel.",
     connections: "Conexões", connRoles: "Provedor e modelo por papel", connProviders: "Provedores e segredos",
     role_planner: "Planejador", role_executor: "Executor", role_reviewer: "Revisor", role_orchestrator: "Orquestrador",
     srcYml: "padrão .tradvia.yml", srcTradvia: "Tradvia", srcUnset: "não definido",
@@ -1963,6 +1987,15 @@ const I18N = {
     "help.title": "Help and documentation", "help.readme": "README", "help.kpis": "Dashboard KPIs",
     "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
+    agentTitle: "Connect my AI",
+    agentIntro: "Use your own provider's AI (Claude Code, Kiro, Gemini CLI, Codex, Manus…) on this project, together with the other people and agents. Create a token, set up the Tradvia MCP server in your client and follow the repository's AGENTS.md: the AI reads the briefing, takes a free card saying who it is and what it is good at, works on branch tradvia/issue-N and opens a PR with Closes #N. Approving plans, merging and deploying stay with a person.",
+    agentRole: "Token role", agentDays: "Valid for (days)", agentCreate: "Create token",
+    agentOnce: "Copy it now: this token is not shown again. Keep it out of git (the TRADVIA_TOKEN variable or your client's secret store).",
+    agentCopy: "Copy", agentCopied: "Copied", agentStdio: "Local MCP (Claude Code, Kiro, Gemini CLI) — .mcp.json, .kiro/settings/mcp.json or .gemini/settings.json",
+    agentInstall: "Install the tradvia command from a checkout of the repository: pip install ./core",
+    agentHttp: "MCP over HTTP (cloud agents such as Manus)", agentMine: "My tokens in this project",
+    agentNone: "No token yet.", agentRevoke: "Revoke", agentActive: "active", agentInactive: "expired or revoked",
+    agentExpires: "expires", agentRoleHelp: "triage reads, takes and comments on cards; write also adjusts plans. Never above your own role.",
     connections: "Connections", connRoles: "Provider and model per role", connProviders: "Providers and secrets",
     role_planner: "Planner", role_executor: "Executor", role_reviewer: "Reviewer", role_orchestrator: "Orchestrator",
     srcYml: ".tradvia.yml default", srcTradvia: "Tradvia", srcUnset: "not set",
@@ -2850,6 +2883,118 @@ async function renderConnections() {
   drawConnections(root);
 }
 
+// "Connect my AI" (ADR 0012): a collaborator creates their own token and gets the MCP setup.
+// The token value exists only in agentFresh, right after creation; the server never returns it again.
+let agentState = null, agentRepo = null, agentFresh = null;
+
+function copyButton(text) {
+  const b = el("button", t("agentCopy"));
+  b.type = "button";
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); b.textContent = t("agentCopied"); } catch (e) { /* no clipboard */ }
+  });
+  return b;
+}
+
+function agentSnippets(repo) {
+  const url = location.origin;
+  const stdio = JSON.stringify({ mcpServers: { tradvia: { command: "tradvia", args: ["mcp"], env: {
+    TRADVIA_URL: url, TRADVIA_PROJECT: repo, TRADVIA_TOKEN: "${TRADVIA_TOKEN}" } } } }, null, 2);
+  const http = url + "/api/projects/" + repo + "/mcp\nAuthorization: Bearer $TRADVIA_TOKEN";
+  return { stdio, http };
+}
+
+function drawAgentConnect(root) {
+  const st = agentState;
+  const repo = st.project;
+  root.replaceChildren(el("div", t("agentIntro"), "note"));
+  const form = el("form", null, "row");
+  const role = el("select");
+  role.setAttribute("aria-label", t("agentRole"));
+  st.roles.filter((r) => r !== "read").forEach((r) => {
+    const o = el("option", r); o.value = r; if (r === "triage") o.selected = true; role.append(o);
+  });
+  const days = el("input");
+  Object.assign(days, { type: "number", min: 1, max: st.max_days, value: st.default_days });
+  days.setAttribute("aria-label", t("agentDays"));
+  const go = el("button", t("agentCreate"));
+  go.type = "submit";
+  form.append(el("span", t("agentRole"), "sub"), role, el("span", t("agentDays"), "sub"), days, go);
+  const err = el("div", null, "msg error action-error"); err.hidden = true;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    go.disabled = true; err.hidden = true;
+    const res = await panelRequest("POST", "/tokens", { role: role.value, expires_in_days: Number(days.value) });
+    go.disabled = false;
+    if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+    agentFresh = res.data.token;
+    agentState = null;
+    renderAgentConnect();
+  });
+  root.append(form, el("div", t("agentRoleHelp"), "sub"), err);
+  if (agentFresh) {
+    const box = el("div", null, "secret");
+    box.append(el("div", t("agentOnce"), "msg"));
+    const row = el("div", null, "row");
+    row.append(el("code", agentFresh, "tok"), copyButton(agentFresh));
+    box.append(row);
+    root.append(box);
+  }
+  const sn = agentSnippets(repo);
+  root.append(el("div", t("agentStdio"), "sub"), el("div", t("agentInstall"), "sub"));
+  const copyRow = el("div", null, "row");
+  copyRow.append(copyButton(sn.stdio));
+  root.append(el("pre", sn.stdio), copyRow);
+  root.append(el("div", t("agentHttp"), "sub"));
+  root.append(el("pre", sn.http));
+  root.append(el("h3", t("agentMine")));
+  if (!st.tokens.length) { root.append(el("div", t("agentNone"), "sub")); return; }
+  const table = el("table");
+  st.tokens.forEach((tk) => {
+    const tr = el("tr");
+    const when = new Date(tk.expires_at * 1000).toLocaleDateString();
+    tr.append(el("td", "#" + tk.id), el("td", tk.role), el("td", t("agentExpires") + " " + when),
+              el("td", tk.active ? t("agentActive") : t("agentInactive")));
+    const td = el("td");
+    if (tk.active) {
+      const b = el("button", t("agentRevoke"));
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        const res = await panelRequest("DELETE", "/tokens/" + tk.id);
+        if (!res.ok) { b.disabled = false; err.textContent = res.error; err.hidden = false; return; }
+        agentState = null;
+        renderAgentConnect();
+      });
+      td.append(b);
+    }
+    tr.append(td);
+    table.append(tr);
+  });
+  const wrap = el("div", null, "tablewrap");
+  wrap.append(table);
+  root.append(wrap);
+}
+
+async function renderAgentConnect() {
+  const section = document.getElementById("agent-section");
+  const me = myRights();
+  section.hidden = !(me && me.role && me.role !== "read");
+  if (section.hidden) { agentState = null; agentFresh = null; return; }
+  const root = document.getElementById("agent-connect");
+  if (root.contains(document.activeElement) && agentState && agentRepo === getRepo()) return;
+  if (!agentState || agentRepo !== getRepo()) {
+    const repo = getRepo();
+    if (agentRepo !== repo) agentFresh = null;
+    const res = await panelRequest("GET", "/tokens");
+    if (!res.ok) { root.replaceChildren(el("div", res.error, "msg error")); return; }
+    if (repo !== getRepo()) return;
+    agentState = res.data;
+    agentRepo = repo;
+  }
+  drawAgentConnect(root);
+}
+
 function currentView() {
   return parseView(location.hash);
 }
@@ -3094,6 +3239,7 @@ function render() {
     renderRuns(visibleRuns(view.runs, showSkipped));
     openRequestedCard();
     renderConnections();
+    renderAgentConnect();
   }
 }
 

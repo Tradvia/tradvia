@@ -210,6 +210,10 @@ class Store(Protocol):
     def revoke_api_token(self, token_id: int, login: str, project_id: int, now: float) -> bool:
         """Revoke a token of this login and project. False if there is none (or already revoked)."""
 
+    def list_api_tokens(self, login: str, project_id: int) -> list[dict[str, Any]]:
+        """This login's tokens in one project, newest first: id, role, created_at, expires_at,
+        revoked_at. Never the hash or the encrypted GitHub token."""
+
 
 def project_slug(external_id: str) -> str:
     return external_id.replace("/", "-").lower()
@@ -641,6 +645,12 @@ class MemoryStore:
             rec["revoked_at"] = now
             return True
 
+    def list_api_tokens(self, login: str, project_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [{k: rec[k] for k in _API_TOKEN_PUBLIC} for rec in self.api_tokens.values()
+                    if rec["login"] == login and rec["project_id"] == project_id]
+        return sorted(rows, key=lambda r: r["id"], reverse=True)
+
 
 _INSERT_DELIVERY = (
     "INSERT INTO deliveries (project_id, id, event) VALUES (%s, %s, %s) "
@@ -940,6 +950,13 @@ _REVOKE_API_TOKEN_SQL = """
     UPDATE api_tokens SET revoked_at = to_timestamp(%s)
     WHERE id = %s AND login = %s AND project_id = %s AND revoked_at IS NULL
 """
+_LIST_API_TOKENS_SQL = """
+    SELECT id, role, extract(epoch from created_at)::float8, extract(epoch from expires_at)::float8,
+           extract(epoch from revoked_at)::float8
+    FROM api_tokens WHERE login = %s AND project_id = %s ORDER BY id DESC LIMIT 100
+"""
+# What a person may see of their own tokens: never the hash or the encrypted GitHub token.
+_API_TOKEN_PUBLIC = ("id", "role", "created_at", "expires_at", "revoked_at")
 _API_TOKEN_FIELDS = (
     "id", "login", "project_id", "role", "token_hash", "token_enc",
     "created_at", "expires_at", "revoked_at",
@@ -1407,3 +1424,8 @@ class PgStore:
             with conn.transaction():
                 cur = conn.execute(_REVOKE_API_TOKEN_SQL, (now, token_id, login, project_id))
                 return cur.rowcount == 1
+
+    def list_api_tokens(self, login: str, project_id: int) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_LIST_API_TOKENS_SQL, (login, project_id)).fetchall()
+        return [dict(zip(_API_TOKEN_PUBLIC, row)) for row in rows]
