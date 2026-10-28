@@ -150,3 +150,9 @@ warning is posted once; at 100% no new card starts (it stays in `BACKLOG`, becau
 card-state.v1 has no `BACKLOG -> WAITING_HUMAN`), while a card already running finishes its
 own per-card budget. An invalid value means no ceiling, never a hidden one; if the spend
 cannot be read while a ceiling is set, the card does not start.
+
+## Note: waiting across jobs in CI
+
+The durable wait does not change this decision. With `DATABASE_URL` set, a CI job started with
+`--wait 0` leaves the card in `WAITING_HUMAN` and a later job resumes it from the checkpoint
+(see `docs/durable-execution.md`).
