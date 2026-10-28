@@ -6,6 +6,7 @@ Run with: uvicorn tradvia.api:app
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import hmac
@@ -18,7 +19,7 @@ import threading
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Any, Callable, NamedTuple
+from typing import Any, AsyncIterator, Callable, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -70,7 +71,8 @@ from .auth import (
     load_config,
     role_refusal,
 )
-from . import pending, push
+from . import alerts, pending, push
+from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
 from .budget import monthly_check, store_month_spend
@@ -174,6 +176,12 @@ def default_fetch(url: str, headers: dict[str, str]) -> Upstream:
         r.headers.get("Content-Type", "application/json"),
         r.content,
     )
+
+
+def _alert_discord() -> Chat | None:
+    """The Discord channel for alerts when `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set."""
+    bot, channel = os.environ.get("DISCORD_BOT_TOKEN", ""), os.environ.get("DISCORD_CHANNEL_ID", "")
+    return DiscordREST(bot, channel) if bot and channel else None
 
 
 def registered_projects() -> list[str]:
@@ -340,6 +348,7 @@ def create_app(
     chat_runner: Callable[..., Any] | None = None,
     spawn: Callable[[Callable[[], None]], None] | None = None,
     push_sender: push.Sender | None = None,
+    alert_discord: Chat | None = None,
 ) -> Starlette:
     """`chat_model`, `chat_runner` and `spawn` replace Claude Code, `make check` and the
     background thread of the orchestrator conversation (tests inject fakes)."""
@@ -1721,7 +1730,73 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
-    return Starlette(
+    # --- proactive alerts (alerts.py): checks every TRADVIA_ALERT_INTERVAL_S -----------------
+    discord = alert_discord or _alert_discord()
+    ledger = alerts.AlertLedger()
+    cost_alert_factor = alerts.cost_factor(os.environ.get("TRADVIA_COST_ALERT_FACTOR"))
+    run_stale = alerts.run_stale_minutes(os.environ.get("TRADVIA_RUN_STALE_MINUTES"))
+
+    def waiting_deploys(repo: str) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        assert auth is not None
+        runs = auth.github.list_runs(token, repo, "waiting")[:MAX_DEPLOY_RUNS]
+        return runs, {r["id"]: auth.github.list_pending_deployments(token, repo, r["id"]) for r in runs}
+
+    def tick(at: float | None = None) -> None:
+        """One round of checks over every registered project. A failing check is skipped and
+        its remembered alerts kept, so a GitHub outage does not repeat them afterwards."""
+        assert db is not None
+        now_s = clock() if at is None else at
+        for repo in repos:
+            try:
+                pid = project_id_of(repo)
+            except Exception:
+                continue
+            slug = project_slug(repo)
+            found: list[alerts.Alert] = []
+
+            def check(kind: str, produce: Callable[[], list[alerts.Alert]]) -> None:
+                try:
+                    active = produce()
+                except Exception:
+                    return
+                found.extend(ledger.fresh(active, slug, (kind,)))
+
+            if auth is not None and token:
+                def deploys() -> list[alerts.Alert]:
+                    runs, pend = waiting_deploys(repo)
+                    return alerts.stuck_deploys(runs, pend, now_s, repo, slug, deploy_wait_alert)
+                check(pending.DEPLOY_STUCK, deploys)
+            check(pending.COST_OUTLIER, lambda: alerts.cost_outliers(
+                db.list_plan_costs(pid), repo, slug, cost_alert_factor))
+            check(pending.RUN_DEAD, lambda: alerts.dead_runs(
+                [r for wf in ("agent.yml", "claude.yml") for r in db.list_runs(pid, wf, 200) or []],
+                now_s, repo, slug, run_stale))
+            if found:
+                alerts.deliver(found, sender, discord, db, pid, slug, subscriber_can(repo))
+
+    def alert_loop() -> None:
+        interval = alerts.alert_interval(os.environ.get("TRADVIA_ALERT_INTERVAL_S"))
+        while True:
+            time.sleep(interval)
+            try:
+                tick()
+            except Exception:
+                pass
+
+    def start_alerts() -> None:
+        threading.Thread(target=alert_loop, name="alerts", daemon=True).start()
+
+    # Off unless a channel exists: Discord configured, or Web Push on. Tests call `tick` directly.
+    alerts_on = db is not None and (discord is not None or sender is not None)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        if alerts_on:
+            start_alerts()
+        yield
+
+    app = Starlette(
+        lifespan=lifespan,
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=csrf_guard)],
         routes=[
             Route("/api/auth/login", auth_login, methods=["GET"]),
@@ -1785,6 +1860,8 @@ def create_app(
             Route("/api/github/{path:path}", github, methods=["GET"]),
         ]
     )
+    app.state.alert_tick = tick
+    return app
 
 
 app = create_app()
