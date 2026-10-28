@@ -270,10 +270,14 @@ def github_issue(
     # "tradvia_last_marker" is not a GitHub field either: the marker emoji (🛑🔴🟡🟠⛔🟢)
     # leading the agent's last comment, so the dashboard can tell a card the agent gave up
     # on (🔴, BLOCKED) from one still waiting on a human, however the CI run looks (#87).
+    # "tradvia_last_marker_at" is when that comment was posted: a run that started after it is
+    # a new attempt, which the board shows as AGENT_WORKING until the agent posts again (#152).
     if comments:
-        marker = pending.last_agent_marker({"state": r["state"], "comments": comments})
+        comment = pending.last_agent_marker_comment({"state": r["state"], "comments": comments})
+        marker = pending.marker_in(comment)
         if marker:
             extra["tradvia_last_marker"] = marker
+            extra["tradvia_last_marker_at"] = comment.get("created_at")
     return {
         **extra,
         "number": r["number"],

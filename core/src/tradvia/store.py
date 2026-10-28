@@ -170,7 +170,7 @@ class Store(Protocol):
 
     # Comments of open cards, for the pending inbox.
     def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
-        """`[{issue_number, author, body}]` of these cards, oldest first."""
+        """`[{issue_number, author, body, created_at}]` of these cards, oldest first."""
 
     # Web Push (push.py). A user keeps one subscription per project.
     def save_subscription(
@@ -554,7 +554,8 @@ class MemoryStore:
             ]
         rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]))
         return [
-            {"issue_number": r["issue_number"], "author": r.get("author"), "body": r.get("body") or ""}
+            {"issue_number": r["issue_number"], "author": r.get("author"),
+             "body": r.get("body") or "", "created_at": r.get("created_at")}
             for r in rows
         ]
 
@@ -870,7 +871,7 @@ _SESSION_FOR_LOGIN_SQL = """
     ORDER BY last_used_at DESC LIMIT 1
 """
 _LIST_COMMENTS_SQL = """
-    SELECT issue_number, author, body FROM comments
+    SELECT issue_number, author, body, created_at FROM comments
     WHERE project_id = %s AND issue_number = ANY(%s)
     ORDER BY created_at, id
 """
@@ -1305,7 +1306,10 @@ class PgStore:
     def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(_LIST_COMMENTS_SQL, (project_id, issue_numbers)).fetchall()
-        return [{"issue_number": r[0], "author": r[1], "body": r[2]} for r in rows]
+        return [
+            {"issue_number": r[0], "author": r[1], "body": r[2], "created_at": _iso(r[3])}
+            for r in rows
+        ]
 
     def save_subscription(
         self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
