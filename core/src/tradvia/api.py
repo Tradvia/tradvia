@@ -59,6 +59,7 @@ from .actions import (
 )
 from .auth import (
     API_TOKEN_DEFAULT_DAYS,
+    API_TOKEN_MAX_DAYS,
     CSRF_HEADER,
     SESSION_COOKIE,
     STATE_COOKIE,
