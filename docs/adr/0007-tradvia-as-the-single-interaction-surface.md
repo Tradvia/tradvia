@@ -45,14 +45,14 @@ project.
 
 | Order | Card | Capability | Status |
 |---|---|---|---|
-| 1 | #45 | Sign in with GitHub, sessions, per-project roles | Partial |
-| 2 | #46 | Create, start, order and answer cards in Tradvia | Partial |
+| 1 | #45 | Sign in with GitHub, sessions, per-project roles | Shipped |
+| 2 | #46 | Create, start, order and answer cards in Tradvia | Shipped |
 | 3 | #56 | Review and merge PRs, approve deploys in Tradvia | Partial |
 | 4 | #40 | Durable waiting and resume | Planned |
 | 5 | #47 | Inbox and web push notifications | Planned |
 | 6 | #57 | Orchestrator conversation inside Tradvia | Partial |
 | 7 | #58 | Project connections for AI and repository providers | Partial |
-| 8 | #59 | Coding agent adapters (Gemini CLI, Codex CLI) | Planned |
+| 8 | #59 | Coding agent adapters (Gemini CLI, Codex CLI) | In progress |
 | 9 | #60 | GitLab as a repository provider | Planned |
 
 Already shipped and reused: project scope (#44), backlog in Tradvia (#50),
