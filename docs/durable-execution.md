@@ -21,6 +21,25 @@ Without a database the project id is the fixed local id `0`.
 - a checkpoint with pending steps: continues from it;
 - no checkpoint (or a finished run): starts a new run.
 
+## Durable wait in CI
+
+With `--wait 0` the run makes one check for a reply and exits, leaving the card in
+`WAITING_HUMAN`. The checkpoint in Postgres keeps the plan, so a reply that arrives
+hours later resumes the card instead of replanning it:
+
+- the `agent:ready` label starts the run, which posts the plan and ends;
+- a comment from an OWNER / MEMBER / COLLABORATOR on the issue starts a new run that
+  finds the checkpoint, reads the reply and continues.
+
+`DATABASE_URL` must be passed to the job (as a repository secret) for this to work.
+Without it the checkpoint is in memory and would be lost between jobs, so the CLI
+prints a warning that durable waiting is disabled and falls back to waiting in the
+same job (`--wait 3600`).
+
+Status of the CI workflow side (`.github/workflows/agent.yml` passing `DATABASE_URL`
+and triggering on comments): **Partial**. The CLI side is shipped; the workflow change
+is still to be made by a maintainer.
+
 ## History and fork
 
 ```

@@ -182,14 +182,35 @@ def test_full_flow(client, gh):
     data = me(client)
     assert data["enabled"] and data["authenticated"] and data["login"] == "ana"
     assert data["avatar_url"].endswith("/u/7")
+    no_ceiling = {"cap_usd": None, "spent_usd": None, "level": "ok"}
     assert data["projects"] == [
         {"slug": "tradvia-tradvia", "external_id": A, "role": "admin", "role_reason": None,
-         "notice": None, "pending_count": 0,
-         "can_start": True, "can_approve": True, "can_manage_connections": True},
+         "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
+         "can_start": True, "can_approve": True, "can_manage_connections": True,
+         "can_budget": True},
         {"slug": "acme-widgets", "external_id": B, "role": "read", "role_reason": None,
-         "notice": None, "pending_count": 0,
-         "can_start": False, "can_approve": False, "can_manage_connections": False},
+         "notice": None, "pending_count": 0, "monthly_budget": no_ceiling,
+         "can_start": False, "can_approve": False, "can_manage_connections": False,
+         "can_budget": False},
     ]
+
+
+def test_me_reports_the_monthly_budget(store, gh, clock):
+    from datetime import datetime, timezone
+
+    pid = store.ensure_project(A)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-01T00:00:00Z")
+    store.upsert_comment(pid, {"id": 1, "issue_number": 1, "author": "bot", "body": "",
+                               "created_at": stamp, "updated_at": stamp, "cost_usd": 4.0})
+    store.upsert_pull_request(pid, {"id": 9, "number": 20, "title": "pr", "state": "open",
+                                    "branch": "tradvia/issue-1", "created_at": stamp,
+                                    "updated_at": stamp, "cost_usd": 4.5, "cost_so_far_usd": 8.5})
+    gh.policy = "budget:\n  monthly_usd: 99999\n"  # the file has no say (ADR 0018)
+    store.set_setting(pid, "budget", {"monthly_usd": 10}, "ana", 0)
+    client = make_client(store, gh, clock)
+    login(client)
+    projects = me(client)["projects"]
+    assert projects[0]["monthly_budget"] == {"cap_usd": 10.0, "spent_usd": 8.5, "level": "warn"}
 
     out = client.post("/api/auth/logout", headers=csrf_headers(client))
     assert out.status_code == 200

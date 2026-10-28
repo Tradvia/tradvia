@@ -20,13 +20,10 @@ risk:                      # enforced: risk-based permission gateway (ADR 0006)
   reversible_write: free   # create branch, commit, open PR, comment
   destructive_external: maintain # merge, delete, publish, deploy, external messages; undeclared actions count as this
 
-# Execution budget per card. Invalid values fall back to these defaults.
-# At 80% of any limit the agent gets a system notice; at 100% it stops and the card
-# waits for a human.
-budget:
-  max_minutes: 30          # minutes of agent work
-  max_steps: 40            # planner/executor iterations + reported tool calls
-  max_usd: 5.0             # estimated cost (API-equivalent)
+# Budgets are NOT set here (ADR 0018). The per-card limits (minutes, steps, US$) and the
+# optional monthly ceiling are a setting of the project, made on Tradvia: Settings, Project
+# budget (admin by default, the budget_control interaction above). A `budget` section in this
+# file is ignored, and the panel says so.
 
 # Default provider and model per role (ADR 0009). What an admin sets on the Connections
 # screen overrides these, per project. Roles: planner, executor, reviewer, orchestrator.

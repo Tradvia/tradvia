@@ -25,10 +25,10 @@ without losing context.
 | # | Pillar | What it means | Status |
 |---|---|---|---|
 | 1 | **Dual-runtime execution** | Stateless LLM APIs (OpenAI, Anthropic, Gemini, Ollama) side by side with stateful **session workers**: containers running authenticated CLI tools or browser sessions (Playwright/CDP), guarded by session mutex locks and persistent auth contexts. | 🟦 Partial — APIs via LiteLLM |
-| 2 | **Multi-account pool & Token FinOps** | Pool accounts across vendors, spread load **within each account's RPM/TPM quota**, fall back across vendors when one is saturated or down, and record exact cost per token or per compute second on the card, with budget circuit breakers. | 🟦 Partial — cost per card, per-card execution budgets |
+| 2 | **Multi-account pool & Token FinOps** | Pool accounts across vendors, spread load **within each account's RPM/TPM quota**, fall back across vendors when one is saturated or down, and record exact cost per token or per compute second on the card, with budget circuit breakers. | 🟦 Partial — cost per card, per-card execution budgets, monthly project ceiling (warning at 80%, no new card at 100%) |
 | 3 | **Executable hybrid Kanban & Live Session Takeover** | Every card is a durable state machine. On a blocker (2FA, CAPTCHA, complex UI, architecture decision) Tradvia freezes the session, alerts a human on Slack/WhatsApp and streams the terminal or browser (WebRTC/VNC) so they can resolve it and hand control back. | 🔨 In progress — state machine + approval in chat |
 | 4 | **Zero-trust sandbox** | Ephemeral Firecracker MicroVMs per execution and session, PostgreSQL Row-Level Security, encrypted credential and session vaults. | 🗓️ Planned |
-| 5 | **Native MCP & AST GraphRAG** | Plug-and-play MCP tools; AST-based code indexing with episodic knowledge distillation to cut token cost over time. | 🗓️ Planned |
+| 5 | **Native MCP & AST GraphRAG** | Plug-and-play MCP tools; AST-based code indexing with episodic knowledge distillation to cut token cost over time. | 🔨 In progress — MCP for agents (stdio and HTTP), tested offline; AST GraphRAG 🗓️ Planned ([docs/mcp.md](docs/mcp.md)) |
 | 6 | **Open-core monorepo** | Self-hosted `/core` via Docker Compose; `/ee` + Cloud with team session pools, RBAC and FinOps governance. | 🔨 In progress — monorepo, licenses, CI |
 
 **Ground rules.** The account pool respects each vendor's rate limits and
@@ -56,6 +56,12 @@ those become pending items with a button for the human. Per-message budget,
 cost record and an audit entry per tool. Status: 🟦 Partial, tested offline
 with a scripted model; see [docs/orchestrator.md](docs/orchestrator.md).
 
+**Audit query and export** (ADR 0008): `GET /api/projects/{owner}/{repo}/audit`
+lists a project's audit log by period with paging and exports it as CSV or JSON
+Lines (`format=csv|jsonl`), with the same role rules as the per-card audit and
+secrets redacted. Status: 🟦 Partial, tested offline with the in-memory store; the
+Postgres query is not yet exercised by the offline tests.
+
 **Documentation in the dashboard:** capability status, a step-by-step guide and
 technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the
 "Help" link in the header. Status: ✅ Shipped.
@@ -64,6 +70,13 @@ technical links at `/runs/docs.html` (`dashboard/docs.html`), reachable from the
 and executor of a card is an adapter (Claude Code ✅ Shipped; Gemini CLI and Codex CLI
 🟨 In progress, tested offline with fake runners). IDE tools without a headless CLI are
 ⏳ Planned.
+
+**Distributed tracing** (ADR 0017): one OpenTelemetry trace per card, with a span per graph
+node, model run and executor tool call. Optional: `pip install tradvia[otel]`, then set
+`TRADVIA_OTEL=1` and the standard `OTEL_EXPORTER_OTLP_*` variables (for example
+`OTEL_EXPORTER_OTLP_ENDPOINT`). Everything passes through `redact` before export; without
+the extra nothing changes. Status: 🟦 Partial, tested offline with an in-memory exporter;
+not yet verified against a real collector.
 
 **Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
 the panel lists, per project, the cards waiting for you by role (plan ready, agent
@@ -160,6 +173,11 @@ it in the thread, and the agent opens the pull request. See
 - [x] **Phase 0 — Foundation:** open-core monorepo, CLA, CI, card contract
 - [ ] **Phase 1 — Engine v0.1:** orchestrator, LiteLLM API runtime, GitHub,
       approval gates in chat *(in progress)*
+      Robustness stage *(in progress)*: command, credential and personal-data
+      guardrails on cards and pull requests, regex only, Partial (ADR 0015)
+  - Stage 3 (robustness) — evals harness with golden tasks and per-model/prompt
+    regression: **Partial** (offline with a scripted model via `make evals`;
+    real model is manual only, `TRADVIA_EVALS_LIVE=1`)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose

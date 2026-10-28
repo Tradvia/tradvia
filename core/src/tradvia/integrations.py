@@ -215,7 +215,7 @@ class DiscordREST:
 
     def wait_for_reply(self, after_message_id: str, timeout_s: int) -> dict | None:
         deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+        while True:  # always checks once, so a timeout of 0 is a single look for a reply
             r = self.s.get(f"{self.API}/channels/{self.channel}/messages",
                            params={"after": after_message_id, "limit": 20}, timeout=TIMEOUT)
             r.raise_for_status()
@@ -223,5 +223,6 @@ class DiscordREST:
             if humans:
                 m = min(humans, key=lambda m: int(m["id"]))  # oldest reply first
                 return {"text": m.get("content", ""), "by": m["author"]["username"]}
+            if time.monotonic() >= deadline:
+                return None
             time.sleep(self.poll_s)
-        return None

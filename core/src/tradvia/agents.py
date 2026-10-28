@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Protocol
 
-from .claude_code import (EXEC_PROMPT, PLAN_PROMPT, changed_files, exec_max_turns, parse_plan,
-                          plan_max_turns, untracked_files, _timeout)
+from .budget import estimate_usd
+from .claude_code import (EXEC_PROMPT, PLAN_PROMPT, add_costs, changed_files, exec_max_turns,
+                          plan_max_turns, plan_with_repair, untracked_files, _timeout)
 from .connections import redact
 
 NOT_REPORTED = "não informado"
@@ -31,20 +32,27 @@ class CodingAgent(Protocol):
     def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
         """Plan dict: summary, plan (list of steps), question, `_cost`, `_tool_calls`."""
 
-    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
+                max_turns: int | None = None, timeout: int | None = None) -> dict:
         """Edit the working tree; return changed_files, untracked_files, cost_usd, tokens_*,
-        duration_s, tool_calls and summary."""
+        duration_s, tool_calls and summary. `max_turns` and `timeout` (seconds) cap this run
+        below the agent's own limits (the graph derives them from the card's balance)."""
 
 
 @dataclass(frozen=True)
 class Cost:
-    """Cost of one run. `None` means the provider did not report it (shown as 'não informado')."""
+    """Cost of one run. `None` means the provider did not report it (shown as 'não informado').
+
+    `usd_estimated` marks a `usd` taken from the price table (budget.TOKEN_PRICES) because the
+    provider reports tokens only; the panel still tells it apart from a real price.
+    """
 
     usd: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
     tokens_cache: int | None = None
     duration_s: float = 0.0
+    usd_estimated: bool = False
 
     @property
     def tokens_reported(self) -> bool:
@@ -54,14 +62,23 @@ class Cost:
         """Numbers for the panel (0 when unreported) plus flags telling which are real."""
         return {"usd": self.usd or 0.0, "tokens_in": self.tokens_in or 0,
                 "tokens_out": self.tokens_out or 0, "tokens_cache": self.tokens_cache or 0,
-                "duration_s": round(self.duration_s, 3), "usd_reported": self.usd is not None,
+                "duration_s": round(self.duration_s, 3), "usd_reported": self.usd is not None and not self.usd_estimated,
                 "tokens_reported": self.tokens_reported}
 
     def label(self) -> str:
-        usd = f"US$ {self.usd:.4f}" if self.usd is not None else NOT_REPORTED
+        usd = (f"{'~' if self.usd_estimated else ''}US$ {self.usd:.4f}"
+               if self.usd is not None else NOT_REPORTED)
         tokens = (f"{self.tokens_in or 0} in / {self.tokens_out or 0} out"
                   if self.tokens_reported else NOT_REPORTED)
         return f"{usd} · {tokens}"
+
+
+def with_estimate(cost: Cost) -> Cost:
+    """A cost with tokens but no price gets the table estimate as `usd`, flagged as estimated."""
+    if cost.usd is not None or not cost.tokens_reported:
+        return cost
+    usd = estimate_usd(cost.tokens_in, cost.tokens_out, cost.tokens_cache)
+    return replace(cost, usd=usd, usd_estimated=True)
 
 
 def count(value: object) -> int | None:
@@ -98,8 +115,9 @@ class CliAgent:
     def parse(self, proc, max_turns: int, duration_s: float) -> Run:
         raise NotImplementedError
 
-    def run(self, prompt: str, cwd: str, execute: bool, max_turns: int) -> Run:
-        limit = self.timeout or _timeout()
+    def run(self, prompt: str, cwd: str, execute: bool, max_turns: int,
+            timeout: int | None = None) -> Run:
+        limit = timeout or self.timeout or _timeout()
         extra = {"env": self.env} if self.env is not None else {}
         started = time.monotonic()
         try:
@@ -119,21 +137,28 @@ class CliAgent:
 
     def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
         prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
-        result = self.run(prompt + (f"\n\n{notice}" if notice else ""), cwd, False,
-                          plan_max_turns())
-        plan = parse_plan(result.text, self.label)
-        plan["_cost"] = result.cost.as_dict()
-        plan["_tool_calls"] = result.tool_calls
+        prompt += f"\n\n{notice}" if notice else ""
+
+        def ask(text: str) -> Run:
+            return self.run(text, cwd, False, plan_max_turns())
+
+        plan, runs = plan_with_repair(ask, lambda result: result.text, prompt, self.label)
+        plan["_cost"] = add_costs([result.cost.as_dict() for result in runs])
+        plan["_tool_calls"] = sum(result.tool_calls for result in runs)
         return plan
 
-    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "") -> dict:
+    def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
+                max_turns: int | None = None, timeout: int | None = None) -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
         prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
         if budget_notice:
             prompt += f"\n\n{budget_notice}"
-        result = self.run(prompt, cwd, True, self.max_turns or exec_max_turns())
-        cost = result.cost.as_dict()
+        turns = self.max_turns or exec_max_turns()
+        if max_turns:
+            turns = min(turns, max_turns)
+        result = self.run(prompt, cwd, True, turns, timeout)
+        cost = with_estimate(result.cost).as_dict()
         return {"changed_files": changed_files(cwd, self.runner),
                 "untracked_files": untracked_files(cwd, self.runner), "cost_usd": cost["usd"],
                 "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
