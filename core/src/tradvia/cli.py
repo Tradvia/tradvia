@@ -21,7 +21,7 @@ from .budget import store_month_spend
 from .graph import build_graph
 from .integrations import DiscordREST, GitHubIssueChat, GitHubREST
 from .llm import _offline_plan, architect_plan
-from .policy import Policy, PolicyError, load_policy, role_of
+from .policy import Policy, PolicyError, load_policy, role_of, with_budget
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -86,6 +86,21 @@ def project_id_of(repo: str) -> int:
     return PgStore(url).ensure_project(repo)
 
 
+def project_budget_setting(repo: str) -> object:
+    """The project's budget setting (ADR 0018) from the store; None without a database, which
+    means the defaults: per-card limits of Budget() and no monthly ceiling. Raises if a database
+    is configured but cannot be read, so a card never runs past the project's own limits."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    from .budget import SETTINGS_KEY
+    from .store import PgStore
+
+    store = PgStore(url)
+    row = store.get_setting(store.ensure_project(repo), SETTINGS_KEY)
+    return row["value"] if row else None
+
+
 def make_month_spend(repo: str):
     """Callable with this month's spend of the project; None without a database (no history)."""
     url = os.getenv("DATABASE_URL")
@@ -134,6 +149,13 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     except PolicyError as e:
         github.comment(issue, f"Invalid .tradvia.yml on {github.base}: {e}. "
                               "The card was not started.")
+        return not_started
+    try:
+        policy = with_budget(policy, project_budget_setting(env("TRADVIA_REPO")))
+    except Exception as e:  # never run without the project's own limits once a store exists
+        github.comment(issue, f"Could not read this project's budget from Tradvia "
+                              f"({type(e).__name__}). The card was not started; restart it once "
+                              "the store is reachable.")
         return not_started
 
     actor = os.getenv("TRADVIA_ACTOR")

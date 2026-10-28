@@ -49,7 +49,7 @@ the PR `Tokens:` line is the executor alone.
 | Cost per merged PR | Mean card cost of the cards whose PR was merged in the period | Shipped |
 | Total tokens (in, out, cache) | Sum over the cards in view | Shipped |
 | Tokens per card | Median of in + out + cache per card | Shipped |
-| Monthly budget | Spend of the current UTC month (plans by comment time + executor by PR creation time; the PR "cost so far" is not added) against `budget.monthly_usd` of `.tradvia.yml`, with a bar: warning colour from 80%, stop colour from 100%. "—" with a tooltip when no ceiling is set. Needs sign-in (read from `/api/auth/me`) and the store. | Shipped |
+| Monthly budget | Spend of the current UTC month (plans by comment time + executor by PR creation time; the PR "cost so far" is not added) against the project's monthly ceiling (Settings, Project budget; ADR 0018), with a bar: warning colour from 80%, stop colour from 100%. "—" with a tooltip when no ceiling is set. Needs sign-in (read from `/api/auth/me`) and the store. | Shipped |
 | Cost and tokens per day (SVG bars) | Plans by comment time, executor by PR creation time (UTC) | Shipped |
 
 With no cost data in the period a cost or token indicator shows "—" with a tooltip

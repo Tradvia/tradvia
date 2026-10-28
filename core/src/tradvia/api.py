@@ -75,7 +75,8 @@ from . import alerts, pending, push
 from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
 from . import orchestrator
-from .budget import monthly_check, store_month_spend
+from .budget import SETTINGS_KEY, monthly_check, settings_budget, settings_view, store_month_spend, \
+    validate_settings
 from .connections import Connections, ConnectionInputError, redact
 from .events import HANDLED_EVENTS, PayloadError, issue_record, payload_ops
 from .policy import Interactions, PolicyError
@@ -780,7 +781,8 @@ def create_app(
         counts = await run_in_threadpool(
             lambda: [len(pending_items(session, r, x)) for r, x in zip(repos, roles)]
         )
-        budgets = await run_in_threadpool(lambda: [monthly_budget(session, r) for r in repos])
+        budgets = await run_in_threadpool(
+            lambda: [monthly_budget(session, r, x) for r, x in zip(repos, roles)])
         response = JSONResponse(
             {
                 "enabled": True,
@@ -894,7 +896,8 @@ def create_app(
 
     def panel_rights(session: Any, repo: str, role: str | None) -> dict[str, bool]:
         """What the panel may show as buttons; the routes check again on every request."""
-        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False}
+        rights = {"can_start": False, "can_approve": False, "can_manage_connections": False,
+                  "can_budget": False}
         if role is None:
             return rights
         try:
@@ -905,17 +908,26 @@ def create_app(
             "can_start": policy.allows("start_card", role),
             "can_approve": policy.allows("approve_plan", role),
             "can_manage_connections": policy.allows("manage_connections", role),
+            "can_budget": policy.allows("budget_control", role),
         }
 
-    def monthly_budget(session: Any, repo: str) -> dict[str, Any]:
+    def project_budget(repo: str) -> tuple[Any, dict[str, Any] | None]:
+        """(Budget, monthly cap) of this project and the stored row (ADR 0018). Per project only."""
+        row = db.get_setting(project_id_of(repo), SETTINGS_KEY) if db is not None else None
+        return settings_budget(row["value"] if row else None), row
+
+    def monthly_budget(session: Any, repo: str, role: str | None = None) -> dict[str, Any]:
         """Ceiling and spend of the UTC month for the panel; `cap_usd` is null without a ceiling.
 
         `level` is ok, warn or stop; "unknown" when the spend cannot be read.
         """
         out: dict[str, Any] = {"cap_usd": None, "spent_usd": None, "level": "ok"}
+        if role is None:  # no role in this project: nothing about its budget is shown
+            return out
         try:
-            cap = auth.policy_for(session, repo, fresh=False).monthly_usd
-        except Exception:  # unreadable or invalid policy: no ceiling to show
+            (_, cap), _ = project_budget(repo)
+        except Exception:
+            out["level"] = "unknown"
             return out
         if cap is None or db is None:
             return out
@@ -1387,6 +1399,63 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    # --- project settings (ADR 0018): the budget, per project, on Tradvia --------------------
+
+    async def budget_route(request: Request) -> Response:
+        """GET: the project's budget for anyone with a role in it. PUT: change it, with the
+        `budget_control` interaction (admin by default), a session and CSRF, audited."""
+        repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+        if auth is None or db is None or repo not in repos:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+        data: Any = None
+        if request.method == "PUT":
+            try:
+                data = await request.json()
+            except ValueError:
+                data = None
+
+        def work() -> Outcome:
+            pid = project_id_of(repo)
+            role = auth.role_of(session, repo)
+            if role is None:
+                return Outcome(403, {"error": f"You have no access to {repo}."})
+            try:
+                policy = auth.policy_for(session, repo, fresh=request.method == "PUT")
+            except Exception:
+                return Outcome(403, {"error": "The project's .tradvia.yml cannot be read or is invalid."})
+            allowed = policy.allows("budget_control", role)
+            if request.method == "PUT":
+                if not allowed:
+                    record_audit(pid, session.login, "set_budget", None, "denied",
+                                 f"role {role} below {policy.interactions.budget_control}", None)
+                    return Outcome(403, {"error": f"Your role in {repo} is '{role}'; changing the "
+                                                  f"budget needs at least "
+                                                  f"'{policy.interactions.budget_control}'."})
+                try:
+                    value = validate_settings(data)
+                except ValueError as e:
+                    return Outcome(400, {"error": str(e)})
+                db.set_setting(pid, SETTINGS_KEY, value, session.login, auth.now())
+                record_audit(pid, session.login, "set_budget", None, "ok",
+                             " ".join(f"{k}={v}" for k, v in value.items()), None)
+            row = db.get_setting(pid, SETTINGS_KEY)
+            return Outcome(200, {
+                "project": repo, **settings_view(row["value"] if row else None),
+                "updated_by": row["updated_by"] if row else None,
+                "updated_at": row["updated_at"] if row else None,
+                "can_edit": allowed, "file_budget_ignored": policy.file_budget_ignored,
+                "month": monthly_budget(session, repo, role),
+            })
+
+        try:
+            out = await run_in_threadpool(work)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
     def action_route(action: str, interaction: str) -> Callable[[Request], Any]:
         async def handler(request: Request) -> Response:
             repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
@@ -1822,6 +1891,8 @@ def create_app(
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/settings/budget", budget_route,
+                  methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}", token_route(True),
                   methods=["DELETE"]),

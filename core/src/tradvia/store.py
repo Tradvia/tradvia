@@ -192,6 +192,13 @@ class Store(Protocol):
         """The saved map of event kind to enabled, or None when the person never chose."""
 
     def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None: ...
+    # Project settings (ADR 0018), per project and key. Times are epoch seconds.
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        """`{"value", "updated_by", "updated_at"}` of one setting, or None if never set."""
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        """Insert or replace one setting of one project."""
+
     # API tokens (ADR 0009). Only the hash of the token is stored. Times are epoch seconds.
     def create_api_token(self, rec: dict[str, Any]) -> int:
         """`rec`: login, project_id, role, token_hash, token_enc, created_at, expires_at.
@@ -229,6 +236,7 @@ class MemoryStore:
         self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.api_tokens: dict[int, dict[str, Any]] = {}
+        self.settings: dict[tuple[int, str], dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self.subscriptions: dict[tuple[int, str], dict[str, Any]] = {}
         self.prefs: dict[tuple[int, str], dict[str, bool]] = {}
@@ -600,6 +608,16 @@ class MemoryStore:
     def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
         with self._lock:
             self.prefs[(project_id, login)] = dict(kinds)
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.settings.get((project_id, key))
+            return copy.deepcopy(row) if row else None
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        with self._lock:
+            self.settings[(project_id, key)] = {"value": copy.deepcopy(value),
+                                                "updated_by": login, "updated_at": now}
+
     def create_api_token(self, rec: dict[str, Any]) -> int:
         with self._lock:
             token_id = len(self.api_tokens) + 1
@@ -895,6 +913,16 @@ _GET_PREFS_SQL = "SELECT kinds FROM notify_prefs WHERE project_id = %s AND login
 _SET_PREFS_SQL = """
     INSERT INTO notify_prefs (login, project_id, kinds) VALUES (%s, %s, %s)
     ON CONFLICT (login, project_id) DO UPDATE SET kinds = excluded.kinds
+"""
+_GET_SETTING_SQL = """
+    SELECT value, updated_by, extract(epoch from updated_at)::float8
+    FROM project_settings WHERE project_id = %s AND key = %s
+"""
+_SET_SETTING_SQL = """
+    INSERT INTO project_settings (project_id, key, value, updated_by, updated_at)
+    VALUES (%s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, key) DO UPDATE
+    SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at
 """
 _CREATE_API_TOKEN_SQL = """
     INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at)
@@ -1343,6 +1371,18 @@ class PgStore:
         with self._conn() as conn:
             with conn.transaction():
                 conn.execute(_SET_PREFS_SQL, (login, project_id, Jsonb(kinds)))
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_SETTING_SQL, (project_id, key)).fetchone()
+        return {"value": row[0], "updated_by": row[1], "updated_at": row[2]} if row else None
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_SET_SETTING_SQL, (project_id, key, Jsonb(value), login, now))
+
     def create_api_token(self, rec: dict[str, Any]) -> int:
         with self._conn() as conn:
             with conn.transaction():
