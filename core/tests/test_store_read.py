@@ -135,7 +135,7 @@ def test_issues_carry_the_agent_last_marker(store):
         {
             "issue": gh_issue(3),
             "comment": {"id": 10, "user": {"login": "github-actions[bot]"},
-                        "body": "\U0001F534 planejamento falhou: limite semanal.",
+                        "body": "\U0001F534 planejamento falhou: limite semanal.", "created_at": "2026-01-06T00:00:00Z",
                         "updated_at": "2026-01-06T00:00:00Z"},
         },
     ):
@@ -143,6 +143,7 @@ def test_issues_carry_the_agent_last_marker(store):
     client = TestClient(create_app(store=store))
     body = {i["number"]: i for i in client.get(f"{BASE}/issues?state=all").json()}
     assert body[3]["tradvia_last_marker"] == "\U0001F534"
+    assert body[3]["tradvia_last_marker_at"] == "2026-01-06T00:00:00Z"
     assert "tradvia_last_marker" not in body[1]  # issue 1's only comment is not the agent's
 
 

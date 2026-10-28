@@ -85,6 +85,26 @@ def test_invalid_plan_raises_a_clear_error(tmp_path, provider, text):
         agent.plan("T", "B", 1, cwd=str(tmp_path))
 
 
+def answers(provider, texts):
+    """A fake CLI that answers `texts` one call at a time, in the output format of `provider`."""
+    calls, queue = [], list(texts)
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=output(provider, queue.pop(0), cmd), stderr="")
+
+    runner.calls = calls
+    return runner
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_unusable_plan_is_repaired_once_and_both_calls_are_counted(tmp_path, provider):
+    runner = answers(provider, ["not json", json.dumps(PLAN)])
+    p = agent_of(provider, runner).plan("T", "B", 1, cwd=str(tmp_path))
+    assert p["plan"] == ["a", "b"] and len(runner.calls) == 2
+    assert p["_tool_calls"] == 6 and p["_cost"]["tokens_in"] == 200
+
+
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_cli_failures_are_clear(tmp_path, provider):
     def missing(cmd, **kw):

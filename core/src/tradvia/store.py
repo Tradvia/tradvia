@@ -99,6 +99,13 @@ class Store(Protocol):
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
         """Entries of one card, oldest first, `created_at` as an ISO string."""
 
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """Entries of the whole project with `since <= created_at < until` (epoch, either may be
+        None), oldest first, same rows as `list_audit` (`issue_number` may be None). Returns up
+        to `limit + 1` rows: the extra one tells the caller there is another page."""
+
     def recent_audit_key(
         self, project_id: int, actor_login: str, idempotency_key: str, since: float
     ) -> dict[str, Any] | None:
@@ -163,7 +170,7 @@ class Store(Protocol):
 
     # Comments of open cards, for the pending inbox.
     def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
-        """`[{issue_number, author, body}]` of these cards, oldest first."""
+        """`[{issue_number, author, body, created_at}]` of these cards, oldest first."""
 
     # Web Push (push.py). A user keeps one subscription per project.
     def save_subscription(
@@ -185,6 +192,13 @@ class Store(Protocol):
         """The saved map of event kind to enabled, or None when the person never chose."""
 
     def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None: ...
+    # Project settings (ADR 0018), per project and key. Times are epoch seconds.
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        """`{"value", "updated_by", "updated_at"}` of one setting, or None if never set."""
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        """Insert or replace one setting of one project."""
+
     # API tokens (ADR 0009). Only the hash of the token is stored. Times are epoch seconds.
     def create_api_token(self, rec: dict[str, Any]) -> int:
         """`rec`: login, project_id, role, token_hash, token_enc, created_at, expires_at.
@@ -237,6 +251,7 @@ class MemoryStore:
         self.connection_secrets: dict[tuple[int, str], dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.api_tokens: dict[int, dict[str, Any]] = {}
+        self.settings: dict[tuple[int, str], dict[str, Any]] = {}
         self.grants: dict[int, dict[str, Any]] = {}
         self.login_states: dict[str, dict[str, Any]] = {}
         self.subscriptions: dict[tuple[int, str], dict[str, Any]] = {}
@@ -399,6 +414,15 @@ class MemoryStore:
         with self._lock:
             self.audit.append({**copy.deepcopy(rec), "project_id": project_id})
 
+    @staticmethod
+    def _audit_row(r: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "actor_login": r["actor_login"], "action": r["action"],
+            "issue_number": r["issue_number"], "result": r["result"],
+            "detail": r["detail"], "via": r.get("via"),
+            "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
+        }
+
     def list_audit(self, project_id: int, issue_number: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = [
@@ -406,15 +430,20 @@ class MemoryStore:
                 if r["project_id"] == project_id and r["issue_number"] == issue_number
             ]
         rows.sort(key=lambda r: r["created_at"])
-        return [
-            {
-                "actor_login": r["actor_login"], "action": r["action"],
-                "issue_number": r["issue_number"], "result": r["result"],
-                "detail": r["detail"], "via": r.get("via"),
-                "created_at": _iso(datetime.fromtimestamp(r["created_at"], timezone.utc)),
-            }
-            for r in rows
-        ]
+        return [self._audit_row(r) for r in rows]
+
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = [
+                r for r in self.audit
+                if r["project_id"] == project_id
+                and (since is None or r["created_at"] >= since)
+                and (until is None or r["created_at"] < until)
+            ]
+        rows.sort(key=lambda r: r["created_at"])  # stable: insertion order breaks ties
+        return [self._audit_row(r) for r in rows[offset:offset + limit + 1]]
 
     def recent_audit_key(
         self, project_id: int, actor_login: str, idempotency_key: str, since: float
@@ -549,7 +578,8 @@ class MemoryStore:
             ]
         rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]))
         return [
-            {"issue_number": r["issue_number"], "author": r.get("author"), "body": r.get("body") or ""}
+            {"issue_number": r["issue_number"], "author": r.get("author"),
+             "body": r.get("body") or "", "created_at": r.get("created_at")}
             for r in rows
         ]
 
@@ -595,6 +625,16 @@ class MemoryStore:
     def set_prefs(self, project_id: int, login: str, kinds: dict[str, bool]) -> None:
         with self._lock:
             self.prefs[(project_id, login)] = dict(kinds)
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.settings.get((project_id, key))
+            return copy.deepcopy(row) if row else None
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        with self._lock:
+            self.settings[(project_id, key)] = {"value": copy.deepcopy(value),
+                                                "updated_by": login, "updated_at": now}
+
     def create_api_token(self, rec: dict[str, Any]) -> int:
         with self._lock:
             token_id = len(self.api_tokens) + 1
@@ -789,6 +829,14 @@ _LIST_AUDIT_SQL = """
     FROM audit_log WHERE project_id = %s AND issue_number = %s
     ORDER BY created_at, id
 """
+_QUERY_AUDIT_SQL = """
+    SELECT actor_login, action, issue_number, result, detail, created_at, via
+    FROM audit_log
+    WHERE project_id = %s
+          AND (%s::double precision IS NULL OR created_at >= to_timestamp(%s))
+          AND (%s::double precision IS NULL OR created_at < to_timestamp(%s))
+    ORDER BY created_at, id LIMIT %s OFFSET %s
+"""
 _RECENT_AUDIT_KEY_SQL = """
     SELECT actor_login, action, issue_number, result, detail
     FROM audit_log
@@ -884,7 +932,7 @@ _SESSION_FOR_LOGIN_SQL = """
     ORDER BY last_used_at DESC LIMIT 1
 """
 _LIST_COMMENTS_SQL = """
-    SELECT issue_number, author, body FROM comments
+    SELECT issue_number, author, body, created_at FROM comments
     WHERE project_id = %s AND issue_number = ANY(%s)
     ORDER BY created_at, id
 """
@@ -909,6 +957,16 @@ _GET_PREFS_SQL = "SELECT kinds FROM notify_prefs WHERE project_id = %s AND login
 _SET_PREFS_SQL = """
     INSERT INTO notify_prefs (login, project_id, kinds) VALUES (%s, %s, %s)
     ON CONFLICT (login, project_id) DO UPDATE SET kinds = excluded.kinds
+"""
+_GET_SETTING_SQL = """
+    SELECT value, updated_by, extract(epoch from updated_at)::float8
+    FROM project_settings WHERE project_id = %s AND key = %s
+"""
+_SET_SETTING_SQL = """
+    INSERT INTO project_settings (project_id, key, value, updated_by, updated_at)
+    VALUES (%s, %s, %s, %s, to_timestamp(%s))
+    ON CONFLICT (project_id, key) DO UPDATE
+    SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at
 """
 _CREATE_API_TOKEN_SQL = """
     INSERT INTO api_tokens (login, project_id, role, token_hash, token_enc, created_at, expires_at,
@@ -1179,6 +1237,20 @@ class PgStore:
             for r in rows
         ]
 
+    def query_audit(
+        self, project_id: int, since: float | None, until: float | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                _QUERY_AUDIT_SQL,
+                (project_id, since, since, until, until, limit + 1, offset),
+            ).fetchall()
+        return [
+            {"actor_login": r[0], "action": r[1], "issue_number": r[2], "result": r[3],
+             "detail": r[4], "via": r[6], "created_at": _iso(r[5])}
+            for r in rows
+        ]
+
     def recent_audit_key(
         self, project_id: int, actor_login: str, idempotency_key: str, since: float
     ) -> dict[str, Any] | None:
@@ -1328,7 +1400,10 @@ class PgStore:
     def list_comments(self, project_id: int, issue_numbers: list[int]) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(_LIST_COMMENTS_SQL, (project_id, issue_numbers)).fetchall()
-        return [{"issue_number": r[0], "author": r[1], "body": r[2]} for r in rows]
+        return [
+            {"issue_number": r[0], "author": r[1], "body": r[2], "created_at": _iso(r[3])}
+            for r in rows
+        ]
 
     def save_subscription(
         self, project_id: int, login: str, endpoint: str, p256dh: str, auth: str
@@ -1366,6 +1441,18 @@ class PgStore:
         with self._conn() as conn:
             with conn.transaction():
                 conn.execute(_SET_PREFS_SQL, (login, project_id, Jsonb(kinds)))
+    def get_setting(self, project_id: int, key: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(_GET_SETTING_SQL, (project_id, key)).fetchone()
+        return {"value": row[0], "updated_by": row[1], "updated_at": row[2]} if row else None
+
+    def set_setting(self, project_id: int, key: str, value: Any, login: str, now: float) -> None:
+        from psycopg.types.json import Jsonb
+
+        with self._conn() as conn:
+            with conn.transaction():
+                conn.execute(_SET_SETTING_SQL, (project_id, key, Jsonb(value), login, now))
+
     def create_api_token(self, rec: dict[str, Any]) -> int:
         with self._conn() as conn:
             with conn.transaction():

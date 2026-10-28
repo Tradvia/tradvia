@@ -221,12 +221,24 @@ def test_risk_defaults_and_parsing():
         parse_policy("risk:\n  destructive_external: nobody\n")
 
 
-def test_budget_section_is_parsed_and_invalid_values_fall_back():
+def test_a_budget_section_in_the_file_is_ignored_and_flagged():
+    # Budgets are the project's setting on Tradvia (ADR 0018): the file has no say.
     from tradvia.budget import Budget
 
-    assert parse_policy("access: {}\n").budget == Budget()
-    policy = parse_policy("budget:\n  max_minutes: 10\n  max_steps: -3\n  max_usd: abc\n")
-    assert policy.budget == Budget(max_minutes=10.0)
-    assert parse_policy("budget: nope\n").budget == Budget()
+    plain = parse_policy("access: {}\n")
+    assert plain.budget == Budget() and plain.monthly_usd is None and not plain.file_budget_ignored
+    policy = parse_policy("budget:\n  max_minutes: 10\n  monthly_usd: 50\n")
+    assert policy.budget == Budget() and policy.monthly_usd is None and policy.file_budget_ignored
     with pytest.raises(PolicyError):
         parse_policy("budget: {}\nother: 1\n")
+
+
+def test_with_budget_applies_the_projects_setting_and_never_raises():
+    from tradvia.budget import Budget
+    from tradvia.policy import with_budget
+
+    p = with_budget(parse_policy(None), {"max_minutes": 10, "max_steps": 5, "max_usd": 2,
+                                         "monthly_usd": 100})
+    assert p.budget == Budget(max_minutes=10.0, max_steps=5, max_usd=2.0) and p.monthly_usd == 100
+    assert with_budget(parse_policy(None), None).monthly_usd is None
+    assert with_budget(parse_policy(None), "junk").budget == Budget()
