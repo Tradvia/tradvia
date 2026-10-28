@@ -394,7 +394,8 @@ class ClaudeCodeExecutor:
         self.repeat_limit, self.project_id = repeat_limit, project_id
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
-                on_tool: Callable[[str, str], None] | None = None) -> dict:
+                on_tool: Callable[[str, str], None] | None = None,
+                max_turns: int | None = None, timeout: int | None = None) -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
         prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
@@ -403,12 +404,15 @@ class ClaudeCodeExecutor:
         # One monitor per run: nothing is shared between cards or projects.
         monitor = StagnationMonitor(self.repeat_limit, card.get("project_id", self.project_id))
         turns = self.max_turns or exec_max_turns()
+        if max_turns:  # derived from the card's balance (budget.run_limits)
+            turns = min(turns, max_turns)
         data, signal, tool = run_claude_stream(prompt, cwd, EXEC_TOOLS, turns, monitor, self.runner,
-                                            on_tool=on_tool)
+                                            on_tool=on_tool, timeout=timeout)
         if data is None:  # first time at the limit: restart once with the reflective message
             note = reflective_message(tool, monitor.repeat_count)
             data, signal, tool = run_claude_stream(f"{prompt}\n\n{note}", cwd, EXEC_TOOLS, turns,
-                                                   monitor, self.runner, on_tool=on_tool)
+                                                   monitor, self.runner, on_tool=on_tool,
+                                                   timeout=timeout)
             if data is None:
                 raise StagnationError(tool, monitor.repeat_count)
         cost = _cost(data)
@@ -434,5 +438,6 @@ class ClaudeCodeAgent:
         return claude_code_plan(title, body, number, runner=self.runner, cwd=cwd, notice=notice)
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
-                on_tool: Callable[[str, str], None] | None = None) -> dict:
-        return self._executor.execute(card, cwd, budget_notice, on_tool)
+                on_tool: Callable[[str, str], None] | None = None,
+                max_turns: int | None = None, timeout: int | None = None) -> dict:
+        return self._executor.execute(card, cwd, budget_notice, on_tool, max_turns, timeout)
