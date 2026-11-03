@@ -7,7 +7,7 @@
 
 The orchestrator chat ([orchestrator.md](../orchestrator.md)) first ran only on Claude Code
 headless, on the subscription token (`CLAUDE_CODE_OAUTH_TOKEN`). #107 let a project choose
-its own `orchestrator` connection ([ADR 0009](0009-project-connections.md)) — Anthropic, OpenAI
+its own `orchestrator` connection ([ADR 0019](0019-project-connections.md)) — Anthropic, OpenAI
 or Gemini through LiteLLM — but kept Claude Code as the fallback whenever no provider and key
 were configured. #109 proposed keeping that subscription path as an owner-only mode.
 

@@ -866,7 +866,7 @@ def build_prompt(repo: str, messages: list[dict[str, Any]],
 
 
 def litellm_model(model_name: str, api_key: str) -> Model:
-    """One of ADR 0009's AI providers (anthropic, openai, gemini) called through LiteLLM.
+    """One of ADR 0019's AI providers (anthropic, openai, gemini) called through LiteLLM.
 
     `model_name` is a LiteLLM model string (`"<provider>/<model>"`, e.g.
     `"anthropic/claude-sonnet-5-5"`); `api_key` is the project's own decrypted connection
@@ -907,7 +907,7 @@ def litellm_model(model_name: str, api_key: str) -> Model:
 
 def model_for_connection(provider: str | None, model_name: str | None,
                          secret: str | None) -> Model | None:
-    """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0009).
+    """The orchestrator's model for one project, from its `orchestrator` connection (ADR 0019).
 
     Only an AI provider (`anthropic`, `openai`, `gemini`) with a model and a saved API key
     answers the chat, through LiteLLM. Anything else (unset, a coding-agent CLI, a provider

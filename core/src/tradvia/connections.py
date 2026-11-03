@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
-"""Project connections (ADR 0009): providers, models and secrets configured in Tradvia.
+"""Project connections (ADR 0019): providers, models and secrets configured in Tradvia.
 
 Each flow role (planner, executor, reviewer, orchestrator) uses a provider and a model.
 `.tradvia.yml` gives the default, the Tradvia screen overrides it per project, and every

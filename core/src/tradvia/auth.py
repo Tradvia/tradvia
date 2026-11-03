@@ -449,7 +449,7 @@ class HttpGitHub:
             json={"merge_method": "squash", "commit_title": title, "sha": sha},
         )
 
-    # Actions secrets of the repository (connections.py, ADR 0009).
+    # Actions secrets of the repository (connections.py, ADR 0019).
     def get_actions_public_key(self, token: str, repo: str) -> tuple[str, str]:
         data = self._call(token, "GET", f"/repos/{repo}/actions/secrets/public-key")
         return data["key_id"], data["key"]

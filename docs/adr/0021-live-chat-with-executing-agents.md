@@ -1,4 +1,4 @@
-# ADR 0010: Live chat with executing agents
+# ADR 0021: Live chat with executing agents
 
 - Status: Proposed
 - Date: 2026-10-24

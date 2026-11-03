@@ -63,7 +63,7 @@ it, and ADR 0006 makes the project the unit of scope. The panel at
 
 ## Consequences
 
-- Rotating `TRADVIA_SECRET_KEY` signs everyone out (and, per ADR 0009, makes the
+- Rotating `TRADVIA_SECRET_KEY` signs everyone out (and, per ADR 0019, makes the
   stored provider secrets unreadable).
 - Each `/api/auth/me` can cost one GitHub call per project every 5 minutes.
 - Status: Partial. Code and tests shipped; production needs the owner to register

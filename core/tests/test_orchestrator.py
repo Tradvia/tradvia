@@ -321,7 +321,7 @@ def test_the_chat_has_no_claude_code_or_subscription_path():
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in orchestrator.review_env({"CLAUDE_CODE_OAUTH_TOKEN": "x"})
 
 
-# --- multi-provider model selection (ADR 0009's `orchestrator` role) -------------------------
+# --- multi-provider model selection (ADR 0019's `orchestrator` role) -------------------------
 
 
 def fake_litellm(monkeypatch, content, usd=0.004, prompt_tokens=10, completion_tokens=2):
@@ -566,7 +566,7 @@ def test_production_chat_uses_the_projects_own_orchestrator_connection_not_only_
 ):
     """No `chat_model` is injected here (unlike `chat_client` above): this is the real
     production path (api.py's `chat_model_for`), proving the orchestrator is not tied to
-    one API/CLI when the project has configured a different provider (ADR 0009)."""
+    one API/CLI when the project has configured a different provider (ADR 0019)."""
     monkeypatch.delenv("TRADVIA_OFFLINE", raising=False)
     gh.perm[A] = ("admin", "admin")
     litellm = fake_litellm(monkeypatch, json.dumps({"reply": "via anthropic"}))

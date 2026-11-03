@@ -6,7 +6,7 @@
 ## Context
 
 The planner/executor of a card was Claude Code only. ADR 0007 makes the Connections
-screen the place to choose it, and ADR 0009 stores provider and secret per role.
+screen the place to choose it, and ADR 0019 stores provider and secret per role.
 
 ## Decision
 

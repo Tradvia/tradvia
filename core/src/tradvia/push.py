@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
-"""Web Push for the pending inbox (ADR 0009): VAPID, no paid service.
+"""Web Push for the pending inbox (ADR 0020): VAPID, no paid service.
 
 The notification carries only the project, the card number and the kind of event: never a title,
 a comment or any other text from GitHub. The VAPID private key is read from the environment,
