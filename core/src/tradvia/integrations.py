@@ -25,6 +25,7 @@ class GitHub(Protocol):
     def get_issue(self, number: int) -> dict: ...
     def create_branch(self, name: str) -> None: ...
     def put_file(self, branch: str, path: str, content: str, message: str) -> None: ...
+    def delete_file(self, branch: str, path: str, message: str) -> None: ...
     def open_pull_request(self, branch: str, title: str, body: str) -> str: ...
     def comment(self, number: int, body: str) -> None: ...
     def get_file(self, path: str, ref: str) -> str | None: ...
@@ -78,6 +79,16 @@ class GitHubREST:
         if r.status_code == 200:
             payload["sha"] = r.json()["sha"]
         self._req("PUT", f"/contents/{path}", json=payload)
+
+    def delete_file(self, branch: str, path: str, message: str) -> None:
+        """Remove `path` from `branch` (a no-op when it is already gone)."""
+        r = self.s.get(self._url(f"/contents/{path}"), params={"ref": branch}, timeout=TIMEOUT)
+        if r.status_code == 404:
+            return
+        if r.status_code >= 400:
+            raise RuntimeError(f"GitHub GET /contents/{path} -> {r.status_code}: {r.text[:300]}")
+        self._req("DELETE", f"/contents/{path}",
+                  json={"message": message, "branch": branch, "sha": r.json()["sha"]})
 
     def open_pull_request(self, branch: str, title: str, body: str) -> str:
         pr = self._req("POST", "/pulls", json={"title": title, "head": branch,

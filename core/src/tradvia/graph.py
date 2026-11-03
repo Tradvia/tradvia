@@ -398,6 +398,7 @@ def build_graph(github: GitHub, chat: Chat,
         number = card["source"]["issue_number"]
         branch = f"tradvia/issue-{number}"
         files = {card["file_path"]: card["file_content"]} if card.get("file_path") else {}
+        removed: list[str] = []
         extra, cost, used = "", {}, {}
         level = check(card.get("usage"), budget) if executor else "ok"
         if level == "stop":
@@ -463,6 +464,9 @@ def build_graph(github: GitHub, chat: Chat,
                 return {"cost": cost, "usage": used, **transition(card["status"], "WAITING_HUMAN",
                                                    "@Agent-Coder", f"Executor {why}")}
             files, skipped = {}, []
+            # A path git reports that is gone from the working tree was deleted, or is the old
+            # name of a rename (`git mv`): the pull request removes it (#185).
+            removed = [f for f in changed if not Path(cwd, f).exists()]
             for f in changed:
                 if not Path(cwd, f).is_file():
                     continue
@@ -470,8 +474,8 @@ def build_graph(github: GitHub, chat: Chat,
                     files[f] = Path(cwd, f).read_text(encoding="utf-8")
                 except UnicodeDecodeError:
                     skipped.append(f)
-            if not files:
-                why = "só alterou arquivos binários ou removidos, que não vão para o PR"
+            if not files and not removed:
+                why = "só alterou arquivos binários, que não vão para o PR"
                 chat.post(f"🟡 **{card['id']}** — o Claude Code {why}. Nenhum PR foi aberto.")
                 return {"cost": cost, "usage": used,
                         **transition(card["status"], "WAITING_HUMAN", "@Agent-Coder",
@@ -479,6 +483,9 @@ def build_graph(github: GitHub, chat: Chat,
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
                      f"{tokens_line(run)}")
+            if removed:
+                extra += ("\n\n### Removed files\n"
+                          + "\n".join(f"- `{r}`" for r in removed))
             if skipped:
                 extra += ("\n\nBinary files not included in this PR (add them manually): "
                           + ", ".join(f"`{b}`" for b in skipped))
@@ -501,6 +508,8 @@ def build_graph(github: GitHub, chat: Chat,
         github.create_branch(branch)
         for path, content in files.items():
             github.put_file(branch, path, content, f"{_conventional_title(card['title'])} (#{number})")
+        for path in removed:
+            github.delete_file(branch, path, f"{_conventional_title(card['title'])} (#{number})")
         url = github.open_pull_request(branch, _conventional_title(card["title"]), body)
         # With GitHubIssueChat on this very issue, chat.post already is the issue comment.
         if not _chat_is_issue_thread(chat, github, number):
