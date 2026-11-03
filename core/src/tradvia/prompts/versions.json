@@ -1,0 +1,17 @@
+{
+  "plan": {
+    "version": 1,
+    "sha256": "115ee6f27c08629a4d3a5d5fa9b9062dc06e6f67445cf61990b41f4f153e42f2",
+    "used_by": "Claude Code, Gemini CLI and Codex CLI planners (str.format: number, title, body)"
+  },
+  "exec": {
+    "version": 1,
+    "sha256": "2c68532098d169e70048d676726708dd198483a198713aa90b080d85375c4231",
+    "used_by": "Claude Code, Gemini CLI and Codex CLI executors (str.format: number, title, body, plan)"
+  },
+  "architect": {
+    "version": 1,
+    "sha256": "a2edc2fb65cd534a9e9e3a9aac591269f98459e12c20f82192be1c6458562fbf",
+    "used_by": "single-file LLM planner in llm.py (system prompt, no placeholders)"
+  }
+}

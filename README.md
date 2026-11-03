@@ -179,6 +179,9 @@ it in the thread, and the agent opens the pull request. See
   - Stage 3 (robustness) — evals harness with golden tasks and per-model/prompt
     regression: **Partial** (offline with a scripted model via `make evals`;
     real model is manual only, `TRADVIA_EVALS_LIVE=1`)
+  - Stage 3 (robustness) — versioned prompts: **Shipped** in code (`core/src/tradvia/prompts/`,
+    a test fails when a text changes without its version; plan comments, pull requests and
+    eval reports name the version, e.g. `Prompt: plan@1`)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose

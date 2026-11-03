@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Protocol
 
+from . import prompts
 from .budget import estimate_usd
 from .claude_code import (EXEC_PROMPT, PLAN_PROMPT, add_costs, changed_files, exec_max_turns,
                           plan_max_turns, plan_with_repair, untracked_files, _timeout)
@@ -145,6 +146,7 @@ class CliAgent:
         plan, runs = plan_with_repair(ask, lambda result: result.text, prompt, self.label)
         plan["_cost"] = add_costs([result.cost.as_dict() for result in runs])
         plan["_tool_calls"] = sum(result.tool_calls for result in runs)
+        plan["_prompt"] = prompts.ref("plan")
         return plan
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
@@ -164,7 +166,8 @@ class CliAgent:
                 "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
                 "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"],
                 "usd_reported": cost["usd_reported"], "tokens_reported": cost["tokens_reported"],
-                "tool_calls": result.tool_calls, "summary": result.text.strip()}
+                "tool_calls": result.tool_calls, "summary": result.text.strip(),
+                "prompt": prompts.ref("exec")}
 
 
 def make_agent(provider: str, **kwargs) -> CodingAgent:

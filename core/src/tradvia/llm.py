@@ -8,18 +8,12 @@ import json
 import os
 import re
 
+from . import prompts
 from .connections import redact
 
 EXCERPT_CHARS = 200
 
-ARCHITECT_PROMPT = """You are @Agent-Architect in a software team.
-Read the GitHub issue and propose the smallest change that solves it, as ONE new file.
-Answer ONLY with JSON, no markdown fences:
-{"summary": "<one sentence>",
- "plan": ["<step>", "..."],
- "file_path": "<path relative to repo root>",
- "file_content": "<full file content>",
- "question": "<one short question for the human to approve or adjust the plan>"}"""
+ARCHITECT_PROMPT = prompts.text("architect")  # versioned in prompts/ (#125)
 
 
 def _offline_plan(title: str, body: str, number: int) -> dict:
@@ -103,6 +97,7 @@ def architect_plan(title: str, body: str, number: int) -> dict:
         usd = float(litellm.completion_cost(completion_response=resp))
     except Exception:
         usd = 0.0
+    plan["_prompt"] = prompts.ref("architect")
     plan["_cost"] = {
         "usd": usd,
         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,

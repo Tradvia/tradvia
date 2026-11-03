@@ -32,6 +32,13 @@ card and any future RAG work depend on it.
 `make evals` is deliberately not part of `make check` yet; wiring it into CI
 is a separate change.
 
+**Prompt versions (#125).** The planner and executor prompts live in
+`core/src/tradvia/prompts/` (`plan.txt`, `exec.txt`, `architect.txt`) with a version and a
+SHA-256 each in `versions.json`. A test fails when a text changes without a new version, so a
+prompt change is always a new version, and every eval report records the versions it measured
+(`"prompts": {"plan": "plan@1", ...}`). Plan comments and pull requests carry the same
+reference (`Prompt: plan@1 · exec@1`), next to the cost and tokens.
+
 ## Consequences
 
 - Scripted runs prove the harness and the expectations, not model quality;
