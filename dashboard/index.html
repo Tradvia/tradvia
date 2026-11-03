@@ -1689,7 +1689,7 @@ async function loadClaims(repo, cards) {
   }));
 }
 
-/* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0009) ---------- */
+/* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0020) ---------- */
 
 const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
   "deploy_stuck", "cost_outlier", "run_dead"];
@@ -2197,7 +2197,7 @@ const VIEWS = ["panel", "settings", "help"];
 function navItems(rights) {
   return [
     { id: "panel", labelKey: "nav.panel", status: "ready" },
-    // #58/ADR 0009: shipped (roles, secrets, GitHub Actions delivery), rendered inline at the
+    // #58/ADR 0019: shipped (roles, secrets, GitHub Actions delivery), rendered inline at the
     // bottom of the panel view (#connections-section) rather than as its own routed view.
     // "soon" only for someone who cannot use the screen yet (no admin role on this project);
     // for an admin the link is live and scrolls there (see scrollToConnectionsIfLinked()).
@@ -2978,7 +2978,7 @@ function renderRuns(runs) {
   }
 }
 
-// Project connections (ADR 0009), admin only. Secrets are write-only: the field is cleared
+// Project connections (ADR 0019), admin only. Secrets are write-only: the field is cleared
 // after saving and the server only ever answers "configured at ... by ...".
 let connState = null;
 let connRepo = null;

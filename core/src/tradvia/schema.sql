@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chat_messages_project_idx ON chat_messages (project_id, id);
--- Web Push (ADR 0009). `endpoint` is the push service's address for one browser. A user keeps
+-- Web Push (ADR 0020). `endpoint` is the push service's address for one browser. A user keeps
 -- one subscription per project; the same browser may serve several projects.
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     login      text NOT NULL,
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS notify_prefs (
     PRIMARY KEY (login, project_id)
 );
 
--- Project connections (ADR 0009): which provider and model each flow role uses, and the
+-- Project connections (ADR 0019): which provider and model each flow role uses, and the
 -- provider secrets. Secrets are stored encrypted only (Fernet, key derived from
 -- TRADVIA_SECRET_KEY); the plain value is never kept and never returned.
 CREATE TABLE IF NOT EXISTS project_connections (

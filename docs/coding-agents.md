@@ -3,7 +3,7 @@
 The planner and the executor of a card are adapters behind one interface,
 `CodingAgent` (`core/src/tradvia/agents.py`, [ADR 0010](adr/0010-coding-agent-adapters.md)).
 The provider of the role chosen on the Connections screen
-([ADR 0009](adr/0009-project-connections.md)) or in `TRADVIA_PLANNER` / `TRADVIA_EXECUTOR`
+([ADR 0019](adr/0019-project-connections.md)) or in `TRADVIA_PLANNER` / `TRADVIA_EXECUTOR`
 selects the adapter. With no provider, behavior is unchanged.
 
 ## Provider × role

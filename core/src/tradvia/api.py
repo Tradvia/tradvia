@@ -818,7 +818,7 @@ def create_app(
         set_cookie(response, SESSION_COOKIE, session.token, session.max_age)  # sliding renewal
         return private(response)
 
-    # --- pending inbox and Web Push (pending.py, push.py, ADR 0009) -------------------------
+    # --- pending inbox and Web Push (pending.py, push.py, ADR 0020) -------------------------
 
     def pending_items(session: Any, repo: str, role: str | None) -> list[dict[str, Any]]:
         """Cards waiting for this person's role; empty without a role or a readable policy."""
@@ -1272,7 +1272,7 @@ def create_app(
         threading.Thread(target=job, name="orchestrator", daemon=True).start()
 
     def chat_model_for(session: Any, repo: str, pid: int) -> orchestrator.Model | None:
-        """The project's own `orchestrator` connection (ADR 0009): an AI provider with its API
+        """The project's own `orchestrator` connection (ADR 0019): an AI provider with its API
         key, or None, and then the chat is off for the project (ADR 0013: no Claude Code or
         subscription fallback). Never raises: an unreadable policy or a connections lookup
         failure is None too, the same as an unset connection.
@@ -1852,7 +1852,7 @@ def create_app(
             return private(Response(status_code=202))
         return private(JSONResponse(reply))
 
-    # --- project connections (connections.py, ADR 0009) --------------------------------------
+    # --- project connections (connections.py, ADR 0019) --------------------------------------
     # Never log or echo the request body here: it carries the secret.
 
     def manage_connections(

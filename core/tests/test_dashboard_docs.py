@@ -127,7 +127,14 @@ def test_docs_page_i18n_and_back_link():
 
 def test_every_adr_is_linked():
     hrefs = " ".join(a.get("href", "") for a in parse(DOCS).links)
-    adrs = sorted(ADR_DIR.glob("000*.md"))
-    assert len(adrs) >= 8
+    adrs = sorted(ADR_DIR.glob("[0-9]*.md"))
+    assert len(adrs) >= 21
     for adr in adrs:
         assert f"docs/adr/{adr.name}" in hrefs, adr.name
+
+
+def test_every_adr_number_is_used_once():
+    from collections import Counter
+
+    numbers = Counter(adr.name[:4] for adr in ADR_DIR.glob("[0-9]*.md"))
+    assert [n for n, c in numbers.items() if c > 1] == []

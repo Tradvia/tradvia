@@ -1,4 +1,4 @@
-# ADR 0009: Web Push with VAPID and a minimal payload
+# ADR 0020: Web Push with VAPID and a minimal payload
 
 - Status: Accepted
 - Date: 2026-10-24

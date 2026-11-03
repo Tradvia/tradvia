@@ -121,7 +121,7 @@ class Store(Protocol):
 
     def project_cost(self, project_id: int) -> dict[str, Any]:
         """`{usd, tokens_in, tokens_out, runs}` summed over the project's recorded runs."""
-    # Project connections (connections.py, ADR 0009). Secrets are ciphertext only.
+    # Project connections (connections.py, ADR 0019). Secrets are ciphertext only.
     def put_connection_role(
         self, project_id: int, role: str, provider: str, model: str, actor: str, now: float
     ) -> None: ...

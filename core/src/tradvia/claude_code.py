@@ -88,7 +88,7 @@ def run_claude(prompt: str, cwd: str, allowed_tools: str, max_turns: int = 20,
     `env` replaces the child's environment and `disallowed_tools` adds `--disallowedTools`;
     both are only passed when given. `env` is used both for the orchestrator's restricted
     environment (orchestrator.py; a full replacement so a popped key like
-    CLAUDE_CODE_OAUTH_TOKEN really is absent) and for project connection secrets (ADR 0009),
+    CLAUDE_CODE_OAUTH_TOKEN really is absent) and for project connection secrets (ADR 0019),
     where the caller merges them on top of `os.environ` before passing them in. Everything
     this function raises or returns is redacted.
     """

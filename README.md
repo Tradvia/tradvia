@@ -78,14 +78,14 @@ node, model run and executor tool call. Optional: `pip install tradvia[otel]`, t
 the extra nothing changes. Status: 🟦 Partial, tested offline with an in-memory exporter;
 not yet verified against a real collector.
 
-**Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0009):
+**Pending inbox and Web Push** ([docs/notifications.md](docs/notifications.md), ADR 0020):
 the panel lists, per project, the cards waiting for you by role (plan ready, agent
 question, PR opened, budget or adjustment limit) with a counter in the header, and can
 send a browser or phone notification (VAPID, no paid service) that carries only the
 project, the card number and the kind of event. Status: ✅ Shipped, tested offline;
 Web Push needs the two VAPID keys on the server. Slack, WhatsApp and e-mail: 🗓️ Planned.
 
-**Connections per project** (ADR 0009): an admin picks the provider and model of
+**Connections per project** (ADR 0019): an admin picks the provider and model of
 the planner, executor, reviewer and orchestrator on the "Connections" screen and
 stores the provider secrets there. Secrets are encrypted in Postgres with a key
 derived from `TRADVIA_SECRET_KEY`, never sent back to the browser, and written as

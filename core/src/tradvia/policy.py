@@ -40,7 +40,7 @@ class Interactions:
     update_branch: str = "maintain"
     # Also approving, rejecting and cancelling deploys, and the post-deploy operation.
     approve_deploy: str = "maintain"
-    # Providers, models and secrets of the project (ADR 0009). Locked to admin: .tradvia.yml
+    # Providers, models and secrets of the project (ADR 0019). Locked to admin: .tradvia.yml
     # may not lower it, because a secret is behind it.
     manage_connections: str = "admin"
 

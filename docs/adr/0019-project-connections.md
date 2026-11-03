@@ -1,4 +1,4 @@
-# ADR 0009: Project connections configured in Tradvia
+# ADR 0019: Project connections configured in Tradvia
 
 - Status: Accepted
 - Date: 2026-10-24

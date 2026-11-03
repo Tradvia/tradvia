@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
-// Service worker for Web Push (docs/notifications.md, ADR 0009).
+// Service worker for Web Push (docs/notifications.md, ADR 0020).
 // The push message has only {project, card, kind}: the text shown here is built from those three
 // values and the labels below. No title, comment or plan text ever travels through the push.
 "use strict";

@@ -3,7 +3,7 @@
 
 When a card needs a person, Tradvia shows it in a **pending inbox** in the panel and,
 if the person turned it on, sends a **Web Push** notification to their browser or phone.
-Decision: [ADR 0009](adr/0009-web-push-notifications.md).
+Decision: [ADR 0020](adr/0020-web-push-notifications.md).
 
 | Capability | Status |
 | --- | --- |
