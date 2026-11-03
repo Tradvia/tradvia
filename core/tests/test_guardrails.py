@@ -87,3 +87,64 @@ def test_documented_false_positive_passes_with_rule_recorded():
     assert gh.prs and gh.branches == ["tradvia/issue-1"]
     assert card["guardrail"]["state"] == "ok"
     assert card["guardrail"]["suppressed"] == ["aws-access-key"]
+
+
+# --- pre-PR review scans only the lines a change adds ------------------------------------------
+
+def test_added_lines_is_a_multiset_difference():
+    from tradvia.guardrails import added_lines
+
+    assert added_lines("a\nb\nc", None) == "a\nb\nc"  # new file: everything
+    assert added_lines("a\nb\nc", "a\nc") == "b"
+    assert added_lines("x\nx\nx", "x") == "x\nx"  # a repeated line beyond the base counts
+    assert added_lines("a", "a\nb") == ""
+
+
+class BaseGitHub(FakeGitHub):
+    """FakeGitHub with a base branch holding docs/x.md."""
+
+    base = "main"
+
+    def __init__(self, base_text):
+        super().__init__()
+        self.base_text = base_text
+
+    def get_file(self, path, ref):
+        assert ref == "main"
+        return self.base_text if path == "docs/x.md" else None
+
+
+def _run_with(gh, content):
+    chat = FakeChat()
+
+    def planner(title, body, number):
+        return {"plan": ["Do it"], "question": "Ok?", "summary": "s",
+                "file_path": "docs/x.md", "file_content": content}
+
+    app = build_graph(gh, chat, planner=planner)
+    _, config = start(app)
+    return chat, app.invoke(Command(resume={"text": "Aprovado", "by": "ana"}), config)
+
+
+def test_a_secret_already_on_the_base_branch_does_not_block_the_pr():
+    old = f"token_value = {FAKE_GH}\n"
+    gh = BaseGitHub(old)
+    _, card = _run_with(gh, old + "a new line\n")
+    assert card["status"] == "IN_REVIEW_PR" and card["guardrail"]["state"] == "ok"
+
+
+def test_a_new_secret_in_a_file_with_old_ones_still_blocks():
+    gh = BaseGitHub(f"old = {FAKE_GH}\n")
+    _, card = _run_with(gh, f"old = {FAKE_GH}\nnew = {FAKE_AWS}\n")
+    assert card["status"] == "WAITING_HUMAN" and gh.prs == []
+    assert [f["rule"] for f in card["guardrail"]["findings"]] == ["aws-access-key"]
+
+
+def test_unreadable_base_scans_the_whole_file():
+    class Broken(BaseGitHub):
+        def get_file(self, path, ref):
+            raise RuntimeError("GitHub down")
+
+    gh = Broken("")
+    _, card = _run_with(gh, f"token_value = {FAKE_GH}\n")
+    assert card["status"] == "WAITING_HUMAN" and gh.prs == []

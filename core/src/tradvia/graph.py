@@ -28,7 +28,7 @@ from .budget import (Budget, check, format_monthly, format_usage, monthly_check,
 from .checkpoints import make_checkpointer
 from .claude_code import StagnationError, _timeout, exec_max_turns
 from .decisions import classify_reply
-from .guardrails import block_message, review
+from .guardrails import added_lines, block_message, review
 from .integrations import Chat, GitHub
 from .llm import architect_plan
 from .policy import Policy, role_of
@@ -97,6 +97,14 @@ def _chat_is_issue_thread(chat: Chat, github: GitHub, number: int) -> bool:
     repo = getattr(chat, "repo", None)
     return (repo is not None and repo == getattr(github, "repo", None)
             and getattr(chat, "issue", None) == number)
+
+
+def _base_content(github: object, path: str) -> str | None:
+    """`path` on the base branch, or raises when it cannot be told (the caller then scans all)."""
+    get, base = getattr(github, "get_file", None), getattr(github, "base", None)
+    if get is None or not base:
+        raise LookupError("no base branch to compare with")
+    return get(path, base)
 
 
 def build_graph(github: GitHub, chat: Chat,
@@ -315,6 +323,14 @@ def build_graph(github: GitHub, chat: Chat,
             return f"criar a branch `tradvia/issue-{number}`{target} e abrir um pull request."
         return f"executar `{action}` no card {card['id']}."
 
+    def _added(path: str, content: str) -> str:
+        """What the pre-PR guardrail scans for one file: only its added lines. If the base
+        version cannot be read, the whole file is scanned (fail closed)."""
+        try:
+            return added_lines(content, _base_content(github, path))
+        except Exception:
+            return content
+
     def risk_gate(card: Card) -> dict:
         """Pass straight through when the policy says free; else announce and suspend."""
         action = card.get("pending_action") or "open_pull_request"
@@ -323,7 +339,9 @@ def build_graph(github: GitHub, chat: Chat,
                  "card/plan": "\n".join(s["title"] for s in card.get("plan", [])),
                  "card/action": _describe_action(card, action)}
         if card.get("file_content"):
-            texts[card.get("file_path") or "card/file_content"] = card["file_content"]
+            path = card.get("file_path")
+            texts[path or "card/file_content"] = (_added(path, card["file_content"]) if path
+                                                  else card["file_content"])
         guard = {"phase": "pre_execution", **review(texts)}
         if guard["state"] == "blocked":
             return block(card, guard)
@@ -473,9 +491,10 @@ def build_graph(github: GitHub, chat: Chat,
                 f"Card `{card['id']}` · estimated cost so far (API-equivalent): "
                 f"${card.get('cost', {}).get('usd', 0) + cost.get('usd', 0):.4f}\n"
                 f"{format_usage(add_usage(card.get('usage'), used), budget)}{extra}")
-        # Guardrail review before any branch or pull request exists.
+        # Guardrail review before any branch or pull request exists. Only the lines the change
+        # adds are scanned: what the base branch already holds was reviewed when it got there.
         guard = {"phase": "pre_pr",
-                 **review({**files, "pull_request/body": body,
+                 **review({**{p: _added(p, c) for p, c in files.items()}, "pull_request/body": body,
                            "pull_request/title": _conventional_title(card["title"])})}
         if guard["state"] == "blocked":
             return {"cost": cost, "usage": used, **block(card, guard)}

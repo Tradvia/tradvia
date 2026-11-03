@@ -17,6 +17,11 @@ personal e-mail). The graph reviews twice:
 1. in `risk_gate`, before anything runs: title, plan, action and `file_content`;
 2. in `open_pr`, before the branch exists: files, pull request title and body.
 
+For a file that already exists on the base branch, both reviews scan only the lines the change
+adds (`guardrails.added_lines`). What the base branch already holds was reviewed when it got
+there, and a fake secret in a test file must not block every later change to that file (#187).
+If the base version cannot be read, the whole file is scanned.
+
 A hit creates no branch or pull request, posts `⛔ ... bloqueado por guardrail: <rule>` in
 the chat, stores `guardrail` (`phase`, `state`, `findings`, `suppressed`) on the card and
 moves it to `WAITING_HUMAN` with the reason in the history. Excerpts are masked.
