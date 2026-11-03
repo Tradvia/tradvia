@@ -152,6 +152,27 @@ def scan_files(files: dict[str, str], *, with_allowed: bool = False) -> list[Fin
     return out
 
 
+def added_lines(new: str, old: str | None) -> str:
+    """The lines of `new` that `old` does not already have (a multiset difference, in order).
+
+    The pre-PR review scans only what a change adds: a fake secret that already sits in a test
+    file on the base branch must not block every later change to that file. A line repeated in
+    `new` more often than in `old` counts as added. `old` None (a new file) keeps everything.
+    """
+    if old is None:
+        return new
+    from collections import Counter
+
+    left = Counter(old.splitlines())
+    out = []
+    for line in new.splitlines():
+        if left[line] > 0:
+            left[line] -= 1
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def review(files: dict[str, str]) -> dict:
     """The `guardrail` card field (minus `phase`): state, blocking findings, allowed rules."""
     found = scan_files(files, with_allowed=True)
