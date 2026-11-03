@@ -19,7 +19,9 @@ from .llm import PlanError, answer_excerpt, parse_answer
 from .stagnation import DEFAULT_REPEAT_LIMIT, StagnationMonitor, reflective_message
 
 PLAN_TOOLS = "Read,Glob,Grep"
-EXEC_TOOLS = "Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test)"
+# `git mv` and `git rm` only, so the agent can rename and delete files (#185); no other git.
+EXEC_TOOLS = ("Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test),"
+              "Bash(git mv:*),Bash(git rm:*)")
 
 PLAN_PROMPT = """You are @Agent-Architect in a software team. Read the repository as needed
 and propose the smallest change that solves the GitHub issue below. Do not modify anything.
@@ -41,7 +43,8 @@ Do not create temporary or verification files in the repository. If you need scr
 use a directory outside the repository (for example a `mktemp -d` path) or write nothing.
 Tradvia creates the branch, makes the commit and opens the pull request. Do not run git
 commands (checkout, commit, push) or open a pull request: only edit the working tree and run
-`make check`. Finish with a short summary of what you changed, with no git or pull request
+`make check`. To rename or delete a file, use `git mv` or `git rm`; those are the only git
+commands allowed. Finish with a short summary of what you changed, with no git or pull request
 steps and no statement about whether a pull request was opened.
 
 Issue #{number}: {title}

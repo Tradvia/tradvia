@@ -517,3 +517,75 @@ def test_litellm_answer_that_is_not_json_is_quoted(monkeypatch):
     monkeypatch.setenv("TRADVIA_OFFLINE", "0")
     with pytest.raises(ValueError, match="The answer began: «Sorry, no plan»"):
         architect_plan("T", "B", 1)
+
+
+# --- renames and deletions reach the pull request (#185) ---------------------------------------
+
+class RemovingGitHub(FakeGitHub):
+    def __init__(self):
+        super().__init__()
+        self.deleted = []
+
+    def delete_file(self, branch, path, message):
+        self.deleted.append((branch, path))
+
+
+def test_executor_may_only_use_git_mv_and_git_rm():
+    from tradvia.claude_code import EXEC_PROMPT, EXEC_TOOLS
+
+    tools = EXEC_TOOLS.split(",")
+    assert "Bash(git mv:*)" in tools and "Bash(git rm:*)" in tools
+    assert [t for t in tools if "git" in t] == ["Bash(git mv:*)", "Bash(git rm:*)"]
+    assert "git mv" in EXEC_PROMPT and "git rm" in EXEC_PROMPT
+
+
+def test_a_rename_sends_the_new_file_and_removes_the_old_one(tmp_path):
+    # `git mv docs/old.md docs/new.md`: git reports "R  docs/new.md\0docs/old.md"
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "renamed", files=["docs/new.md"],
+                                               status=["R  docs/new.md", "docs/old.md"]))
+    gh, chat = RemovingGitHub(), FakeChat()
+    result = approved_card_app(gh, chat, ex, tmp_path)
+    assert result["status"] == "IN_REVIEW_PR"
+    assert gh.files == {("tradvia/issue-1", "docs/new.md"): "content of docs/new.md"}
+    assert gh.deleted == [("tradvia/issue-1", "docs/old.md")]
+    assert "### Removed files\n- `docs/old.md`" in gh.prs[0][2]
+
+
+def test_a_deletion_alone_opens_a_pull_request(tmp_path):
+    ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "deleted", status=[" D docs/gone.md"]))
+    gh, chat = RemovingGitHub(), FakeChat()
+    result = approved_card_app(gh, chat, ex, tmp_path)
+    assert result["status"] == "IN_REVIEW_PR" and gh.files == {}
+    assert gh.deleted == [("tradvia/issue-1", "docs/gone.md")]
+
+
+def test_deleting_or_renaming_a_protected_file_is_blocked(tmp_path):
+    for status in ([" D CODEOWNERS"], ["R  docs/x.yml", ".github/workflows/ci.yml"]):
+        ex = ClaudeCodeExecutor(runner=fake_runner(tmp_path, "x", files=["docs/x.yml"], status=status))
+        gh, chat = RemovingGitHub(), FakeChat()
+        result = approved_card_app(gh, chat, ex, tmp_path)
+        assert result["status"] == "WAITING_HUMAN"
+        assert gh.prs == [] and gh.deleted == [] and gh.branches == []
+
+
+def test_github_rest_delete_file_uses_the_blob_sha_and_skips_a_missing_file():
+    from tradvia.integrations import GitHubREST
+
+    class Resp:
+        def __init__(self, status, body=None):
+            self.status_code, self._body, self.text = status, body or {}, ""
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+    gh = GitHubREST("t", "o/r")
+    calls = []
+    gh.s.get = lambda url, params=None, timeout=None: Resp(200, {"sha": "abc"}) if "here" in url else Resp(404)
+    gh._req = lambda method, path, **kw: calls.append((method, path, kw["json"]))
+    gh.delete_file("b", "docs/here.md", "m")
+    gh.delete_file("b", "docs/gone.md", "m")
+    assert calls == [("DELETE", "/contents/docs/here.md", {"message": "m", "branch": "b", "sha": "abc"})]

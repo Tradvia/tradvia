@@ -19,10 +19,14 @@ The reviewer and orchestrator roles do not use these adapters yet.
 
 ## Restricted tools and limits
 
-Tradvia creates the branch, makes the commit and opens the pull request. No adapter runs git.
+Tradvia creates the branch, makes the commit and opens the pull request. No adapter runs git,
+except `git mv` and `git rm` in the Claude Code executor, so it can rename and delete files:
+the pull request then removes the old paths too (#185). Protected paths (`.github/`,
+`LICENSE.md`, `CLA.md`, `CODEOWNERS`, `.tradvia.yml`) stay blocked for any change, deletion
+included.
 
 - **Claude Code**: `--allowedTools` (`Read,Glob,Grep` to plan; edit tools plus
-  `make check`/`make test` to execute) and `--max-turns`.
+  `make check`/`make test` and `git mv`/`git rm` to execute) and `--max-turns`.
 - **Gemini CLI** (`gemini -p --output-format json`): `--allowed-tools` with read-only tools
   to plan, and file edit plus `make check`/`make test` to execute; no web fetch or search.
   The CLI has no turn flag, so exit code 53 or more tool calls than the limit is reported as
