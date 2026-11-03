@@ -87,6 +87,18 @@ the owner. What is missing is a way for those agents to use the same tools.
   of the protocol is small, so the core keeps no new dependency. Revisit when the HTTP
   endpoint needs an event stream.
 
+## Note: asking a person (`request_human`, #120)
+
+An agent that needs a person (a login with 2FA, a CAPTCHA, a decision only a human can make)
+calls `request_human` with what is needed and, optionally, a `live_url`. Tradvia posts it on the
+card with a hidden marker (`<!-- tradvia:request_human -->`) that only the tool places: agent
+text is stripped of it, repeatedly, so it cannot be forged. While that comment is the card's last
+word, the card is pending as `human_request`, for whoever holds `live_takeover` (maintain by
+default), in the inbox, Web Push and, when a channel is set, Discord. The person answers with
+`POST /api/projects/{owner}/{repo}/cards/{n}/human-done` (session, CSRF, audited), which posts
+"Done — @login finished what the agent asked."; any later comment closes the pending item, and the
+agent goes on when it reads the card. No table and no change to the card graph.
+
 ## Status
 
 | Capability | Status |
@@ -95,6 +107,7 @@ the owner. What is missing is a way for those agents to use the same tools.
 | Collaboration tools (briefing, claim with agent identity, release, progress) and `AGENTS.md` | In progress: offline tests; the panel does not show claims yet |
 | stdio server (`tradvia mcp`) | In progress: offline tests; Claude Code CLI connected against a local API; not yet against production |
 | HTTP endpoint (`/mcp`) for URL clients | In progress: offline tests and `curl` against a local API; not yet run with Manus |
+| `request_human`: an agent asks a person to act, and the panel's "done" (`human_done`) answers it | In progress: offline tests; the panel button is #189 |
 | `review_pr` for agents | Planned: needs its own decision |
 | Edit card and reorder backlog for agents | Planned |
 | Agent pull requests gated beyond CI (protected paths, `Closes #N`) | Planned |

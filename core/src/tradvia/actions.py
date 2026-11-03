@@ -154,6 +154,11 @@ def plan_comment(comments: list[dict[str, Any]], login: str) -> str | None:
     return body if "❓" in body or _PLAN_RE.search(body) else None
 
 
+def done_comment(login: str) -> str:
+    """What the panel posts when a person finished what an agent asked (request_human)."""
+    return f"Done — @{login} finished what the agent asked."
+
+
 def awaiting_plan(comments: list[dict[str, Any]], login: str) -> bool:
     """True only when the last comment by the agent is the plan (comments oldest first)."""
     return plan_comment(comments, login) is not None

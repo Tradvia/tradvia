@@ -10,6 +10,7 @@ const LABELS = {
     pr_opened: "PR aberto para revisão", budget_limit: "limite de orçamento atingido",
     adjust_limit: "limite de ajustes atingido", deploy_stuck: "deploy parado aguardando aprovação",
     cost_outlier: "custo muito acima do normal", run_dead: "execução sem atualização",
+    human_request: "o agente pediu uma ação sua",
     fallback: "um card precisa de você",
   },
   en: {
@@ -17,6 +18,7 @@ const LABELS = {
     pr_opened: "pull request ready for review", budget_limit: "budget limit reached",
     adjust_limit: "adjustment limit reached", deploy_stuck: "deploy stuck waiting for approval",
     cost_outlier: "cost far above normal", run_dead: "run without updates",
+    human_request: "the agent asked for your help",
     fallback: "a card needs you",
   },
 };

@@ -28,6 +28,7 @@ is enough to answer it:
 | `plan_ready` | The agent posted a plan and waits for "Aprovado", "Rejeitado" or "Ajuste" | `approve_plan` (write) |
 | `agent_question` | The agent asked a question (`❓`) and waits | `approve_plan` (write) |
 | `adjust_limit` | The adjustment limit was reached; the card needs a human | `approve_plan` (write) |
+| `human_request` | An agent asked a person to act (`request_human`), with a live session link when it has one. Also sent to Discord when a channel is set | `live_takeover` (maintain) |
 | `pr_opened` | The agent opened a pull request that is still open | `merge_pr` (maintain) |
 | `budget_limit` | The budget limit stopped the card | `budget_control` (admin) |
 
