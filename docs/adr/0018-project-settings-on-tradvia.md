@@ -53,3 +53,4 @@ files.
 |---|---|
 | Budget setting per project, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |
 | Interactions and risk policy as project settings, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |
+| Prompt and model canary (#128): share of cards, candidate prompts, model, revert | In progress: offline tests; checked with a mocked API |

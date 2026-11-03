@@ -182,6 +182,8 @@ it in the thread, and the agent opens the pull request. See
   - Stage 3 (robustness) — versioned prompts: **Shipped** in code (`core/src/tradvia/prompts/`,
     a test fails when a text changes without its version; plan comments, pull requests and
     eval reports name the version, e.g. `Prompt: plan@1`)
+  - Stage 3 (robustness) — prompt and model canary on a share of each project's cards, set
+    on Tradvia with a one-click revert: **In progress** (offline tests; ADR 0016, ADR 0018)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose
