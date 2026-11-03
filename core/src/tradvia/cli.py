@@ -14,6 +14,7 @@ import sys
 
 from langgraph.types import Command
 
+from . import canary, prompts
 from .checkpoints import LOCAL_PROJECT_ID, fork, list_checkpoints, make_checkpointer, thread_config
 from .agents import PROVIDERS as CODING_AGENTS, make_agent
 from .claude_code import ClaudeCodeExecutor, claude_code_plan
@@ -85,6 +86,21 @@ def project_id_of(repo: str) -> int:
     from .store import PgStore
 
     return PgStore(url).ensure_project(repo)
+
+
+def apply_canary(repo: str, issue: int, value: object) -> bool:
+    """Run this card on the project's canary (#128) when it picks it: the candidate prompts, and
+    the canary model for the LiteLLM planner (TRADVIA_PLANNER_MODEL) and Claude Code
+    (ANTHROPIC_MODEL). Returns whether it did. A reverted or broken canary changes nothing."""
+    prompts.reset_canary()
+    active = canary.read_setting(value)
+    if active is None or not canary.chosen(repo, issue, active["percent"]):
+        return False
+    prompts.use_canary(active["prompts"], active["model"])
+    if active["model"]:
+        os.environ["TRADVIA_PLANNER_MODEL"] = active["model"]
+        os.environ["ANTHROPIC_MODEL"] = active["model"]
+    return True
 
 
 def project_setting(repo: str, key: str) -> object:
@@ -167,6 +183,7 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
     try:
         policy = with_budget(policy, project_budget_setting(env("TRADVIA_REPO")))
         policy = with_policy_setting(policy, project_setting(env("TRADVIA_REPO"), POLICY_SETTING))
+        canary_setting = project_setting(env("TRADVIA_REPO"), canary.SETTING_KEY)
     except Exception as e:  # never run without the project's own limits once a store exists
         github.comment(issue, f"Could not read this project's settings from Tradvia "
                               f"({type(e).__name__}). The card was not started; restart it once "
@@ -179,6 +196,7 @@ def run(issue: int, wait_timeout: int, chat_kind: str = "discord") -> dict:
                               f"it needs at least the `{policy.interactions.start_card}` role.")
         return not_started
 
+    apply_canary(env("TRADVIA_REPO"), issue, canary_setting)
     chat = make_chat(chat_kind, issue, policy)
     repo = env("TRADVIA_REPO")
     app = build_graph(github, chat, planner=make_planner(), executor=make_executor(

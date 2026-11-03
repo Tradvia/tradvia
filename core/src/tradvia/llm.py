@@ -86,7 +86,7 @@ def architect_plan(title: str, body: str, number: int) -> dict:
     model = os.getenv("TRADVIA_PLANNER_MODEL", "anthropic/claude-sonnet-5-5")
     resp = litellm.completion(
         model=model,
-        messages=[{"role": "system", "content": ARCHITECT_PROMPT},
+        messages=[{"role": "system", "content": prompts.active_text("architect")},
                   {"role": "user", "content": f"Issue #{number}: {title}\n\n{body}"}],
         max_tokens=2000,
     )
@@ -97,7 +97,7 @@ def architect_plan(title: str, body: str, number: int) -> dict:
         usd = float(litellm.completion_cost(completion_response=resp))
     except Exception:
         usd = 0.0
-    plan["_prompt"] = prompts.ref("architect")
+    plan["_prompt"] = prompts.active_ref("architect")
     plan["_cost"] = {
         "usd": usd,
         "tokens_in": getattr(usage, "prompt_tokens", 0) or 0,

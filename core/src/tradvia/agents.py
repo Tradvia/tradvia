@@ -137,7 +137,7 @@ class CliAgent:
                             f"{redact(detail[:300], secrets)}")
 
     def plan(self, title: str, body: str, number: int, cwd: str = ".", notice: str = "") -> dict:
-        prompt = PLAN_PROMPT.format(number=number, title=title, body=body)
+        prompt = prompts.active_text("plan").format(number=number, title=title, body=body)
         prompt += f"\n\n{notice}" if notice else ""
 
         def ask(text: str) -> Run:
@@ -146,13 +146,13 @@ class CliAgent:
         plan, runs = plan_with_repair(ask, lambda result: result.text, prompt, self.label)
         plan["_cost"] = add_costs([result.cost.as_dict() for result in runs])
         plan["_tool_calls"] = sum(result.tool_calls for result in runs)
-        plan["_prompt"] = prompts.ref("plan")
+        plan["_prompt"] = prompts.active_ref("plan")
         return plan
 
     def execute(self, card: dict, cwd: str = ".", budget_notice: str = "",
                 max_turns: int | None = None, timeout: int | None = None) -> dict:
         steps = "\n".join(f"{s['id']}. {s['title']}" for s in card.get("plan", []))
-        prompt = EXEC_PROMPT.format(number=card["source"]["issue_number"], title=card["title"],
+        prompt = prompts.active_text("exec").format(number=card["source"]["issue_number"], title=card["title"],
                                     body=card.get("description", ""), plan=steps)
         if budget_notice:
             prompt += f"\n\n{budget_notice}"
@@ -167,7 +167,7 @@ class CliAgent:
                 "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"],
                 "usd_reported": cost["usd_reported"], "tokens_reported": cost["tokens_reported"],
                 "tool_calls": result.tool_calls, "summary": result.text.strip(),
-                "prompt": prompts.ref("exec")}
+                "prompt": prompts.active_ref("exec")}
 
 
 def make_agent(provider: str, **kwargs) -> CodingAgent:

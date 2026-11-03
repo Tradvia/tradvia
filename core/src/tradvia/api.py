@@ -76,7 +76,7 @@ from .auth import (
     load_config,
     role_refusal,
 )
-from . import alerts, pending, push
+from . import alerts, canary, pending, prompts, push
 from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
 from . import mcp_server, orchestrator
@@ -1557,6 +1557,84 @@ def create_app(
 
     # --- project settings (ADR 0018): roles per interaction and risk policy -----------------
 
+    def canary_compare(pid: int) -> dict[str, Any]:
+        """Both sides of the project's canary, from the store (#128)."""
+        assert db is not None
+        numbers = [i["number"] for i in db.list_issues(pid, [], "all", 100_000) or []]
+        costs = {(r["issue_number"], r["created_at"]): r["cost_usd"] for r in db.list_plan_costs(pid)}
+        by_card: dict[int, list[dict[str, Any]]] = {}
+        for c in db.list_comments(pid, numbers):
+            row = {**c, "cost_usd": costs.get((c["issue_number"], c["created_at"]))}
+            by_card.setdefault(c["issue_number"], []).append(row)
+        pulls = [{"number": pending.issue_of_branch(p.get("branch")), "merged": bool(p.get("merged_at"))}
+                 for p in db.list_pulls(pid, "all", 100_000) or []]
+        return canary.compare([{"number": n, "comments": cs} for n, cs in by_card.items()], pulls)
+
+    def canary_route(revert: bool) -> Callable[[Request], Any]:
+        """GET: the project's canary, the candidate prompts available and both sides compared.
+        PUT: change it. POST .../revert: percent back to 0, everything else kept. Changing it is
+        for an admin only (it decides which prompt and model run the cards), with a session and
+        CSRF, audited. Stored per project, never in a file (ADR 0018)."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            writes = request.method in ("PUT", "POST")
+            data: Any = None
+            if request.method == "PUT":
+                try:
+                    data = await request.json()
+                except ValueError:
+                    data = None
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                role = auth.role_of(session, repo)
+                if role is None:
+                    return Outcome(403, {"error": f"You have no access to {repo}."})
+                allowed = role == "admin"
+                row = db.get_setting(pid, canary.SETTING_KEY)
+                current = (row or {}).get("value") or {"percent": 0, "prompts": [], "model": None}
+                if writes:
+                    action = "revert_canary" if revert else "set_canary"
+                    if not allowed:
+                        record_audit(pid, session.login, action, None, "denied",
+                                     f"role {role} below admin", None)
+                        return Outcome(403, {"error": f"Your role in {repo} is '{role}'; changing "
+                                                      "the canary needs 'admin'."})
+                    try:
+                        value = (canary.validate_setting({**current, "percent": 0}) if revert
+                                 else canary.validate_setting(data))
+                    except ValueError as e:
+                        if revert:  # a candidate that left the code: revert anyway
+                            value = {"percent": 0, "prompts": [], "model": current.get("model")}
+                        else:
+                            return Outcome(400, {"error": str(e)})
+                    db.set_setting(pid, canary.SETTING_KEY, value, session.login, auth.now())
+                    record_audit(pid, session.login, action, None, "ok",
+                                 f"percent={value['percent']} prompts={','.join(value['prompts']) or '-'} "
+                                 f"model={value['model'] or '-'}", None)
+                    row = db.get_setting(pid, canary.SETTING_KEY)
+                    current = row["value"]
+                return Outcome(200, {
+                    "project": repo, **current,
+                    "candidates": prompts.candidates(), "stable": prompts.refs(),
+                    "compare": canary_compare(pid),
+                    "updated_by": row["updated_by"] if row else None,
+                    "updated_at": row["updated_at"] if row else None,
+                    "can_edit": allowed,
+                })
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     async def policy_route(request: Request) -> Response:
         """GET: the project's roles per interaction and risk policy, for anyone with a role in it.
         PUT: replace them; admin only (it decides who may do everything else, so it is not
@@ -2286,6 +2364,10 @@ def create_app(
                   methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/settings/policy", policy_route,
                   methods=["GET", "PUT"]),
+            Route("/api/projects/{owner}/{repo}/settings/canary", canary_route(False),
+                  methods=["GET", "PUT"]),
+            Route("/api/projects/{owner}/{repo}/settings/canary/revert", canary_route(True),
+                  methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants", grant_route(False),

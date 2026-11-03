@@ -76,6 +76,9 @@
   details.faq .faq-a { padding: 0 0 10px; }
   details.faq .faq-a p { margin: 6px 0; }
   details.faq .faq-a ul { margin: 6px 0; padding-left: 20px; }
+  .canary-compare td, .canary-compare th { padding: 4px 10px; text-align: left; }
+  #settings-canary input[type=number], #settings-canary input[type=text] { background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 4px 8px; font: inherit; }
+  #settings-canary input[type=text] { width: 16em; max-width: 100%; }
   .human-done { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
   .budget-form { display: grid; gap: 8px; max-width: 460px; }
   .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -2027,6 +2030,16 @@ const I18N = {
     "budget.readOnly": "Só quem tem o papel exigido neste projeto (admin, por padrão) altera o orçamento.",
     "budget.updated": "Última alteração por",
     "budget.fileIgnored": "O .tradvia.yml deste repositório ainda tem uma seção budget: ela é ignorada. O orçamento vale só como definido aqui.",
+    "can.title": "Canário de prompt e modelo", "can.intro": "Testa uma versão nova numa parte dos cards deste projeto:",
+    "can.stable": "Versão estável", "can.candidates": "candidatas", "can.noCandidate": "nenhuma versão candidata no código",
+    "can.active": "Canário ativo em {p}% dos cards", "can.metric": "Indicador", "can.sideStable": "Estável", "can.sideCanary": "Canário",
+    "can.cards": "Cards", "can.merged": "PRs integrados", "can.cost": "Custo mediano do plano",
+    "can.percent": "Percentual dos cards no canário (0 desliga)", "can.usePrompt": "Usar a versão candidata {ref}",
+    "can.model": "Modelo no canário (opcional)", "can.save": "Salvar canário", "can.saved": "Canário salvo.",
+    "can.revert": "Reverter para a versão estável", "can.revertConfirm": "Reverter todos os cards para a versão estável? O histórico fica guardado.",
+    "can.reverted": "Revertido: todos os cards voltam à versão estável.",
+    "can.note": "Cada card fica sempre do mesmo lado. O plano e o PR dizem qual versão usaram. Só admin altera.",
+    "can.readOnly": "Só admin deste projeto altera o canário.",
     "pol.title": "Papéis e risco do projeto", "pol.intro": "Vale só para este projeto (repositório):",
     "pol.interactions": "Papel mínimo por ação", "pol.risk": "Aprovação por nível de risco das ações do agente",
     "pol.start_card": "Iniciar card", "pol.approve_plan": "Aprovar plano", "pol.mention_assistant": "Chamar o assistente",
@@ -2180,6 +2193,16 @@ const I18N = {
     "budget.readOnly": "Only someone with the required role in this project (admin by default) changes the budget.",
     "budget.updated": "Last changed by",
     "budget.fileIgnored": "This repository's .tradvia.yml still has a budget section: it is ignored. The budget is only what is set here.",
+    "can.title": "Prompt and model canary", "can.intro": "Tests a new version on a share of this project's cards:",
+    "can.stable": "Stable version", "can.candidates": "candidates", "can.noCandidate": "no candidate version in the code",
+    "can.active": "Canary on for {p}% of the cards", "can.metric": "Metric", "can.sideStable": "Stable", "can.sideCanary": "Canary",
+    "can.cards": "Cards", "can.merged": "Merged PRs", "can.cost": "Median plan cost",
+    "can.percent": "Share of cards on the canary (0 turns it off)", "can.usePrompt": "Use the candidate version {ref}",
+    "can.model": "Model on the canary (optional)", "can.save": "Save canary", "can.saved": "Canary saved.",
+    "can.revert": "Revert to the stable version", "can.revertConfirm": "Revert every card to the stable version? The history is kept.",
+    "can.reverted": "Reverted: every card is back on the stable version.",
+    "can.note": "A card always stays on the same side. Plans and PRs say which version they used. Admin only.",
+    "can.readOnly": "Only an admin of this project changes the canary.",
     "pol.title": "Project roles and risk", "pol.intro": "Applies to this project (repository) only:",
     "pol.interactions": "Minimum role per action", "pol.risk": "Approval per risk level of the agent's actions",
     "pol.start_card": "Start a card", "pol.approve_plan": "Approve a plan", "pol.mention_assistant": "Mention the assistant",
@@ -3441,6 +3464,13 @@ function renderSettings() {
     pol.append(el("h3", t("pol.title")), el("p", t("loading"), "sub"));
     root.append(pol);
     loadPolicySettings(pol);
+
+    // Canary of a new prompt or model on a share of the cards (#128): per project, admin only.
+    const can = el("div", null, "settings-section");
+    can.id = "settings-canary";
+    can.append(el("h3", t("can.title")), el("p", t("loading"), "sub"));
+    root.append(can);
+    loadCanarySettings(can);
   }
 
   if (navRights()) {
@@ -3521,6 +3551,106 @@ function drawBudgetSettings(box, b) {
   if (b.updated_by) {
     box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
       new Date(b.updated_at * 1000).toLocaleString(), "sub"));
+  }
+}
+
+async function loadCanarySettings(box) {
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/settings/canary");
+  if (repo !== getRepo() || !box.isConnected) return;
+  box.replaceChildren(el("h3", t("can.title")));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  drawCanarySettings(box, res.data);
+}
+
+function drawCanarySettings(box, c) {
+  const stable = Object.values(c.stable || {}).join(" · ");
+  const names = Object.keys(c.candidates || {});
+  box.append(el("p", t("can.intro") + " " + c.project, "sub"),
+    el("p", t("can.stable") + ": " + stable + (names.length
+      ? " · " + t("can.candidates") + ": " + Object.values(c.candidates).join(" · ")
+      : " · " + t("can.noCandidate")), "sub"));
+  if (c.percent > 0) {
+    box.append(el("p", t("can.active").replace("{p}", c.percent) +
+      (c.prompts.length ? " · " + c.prompts.join(", ") : "") + (c.model ? " · " + c.model : ""), "msg"));
+  }
+  // both sides next to each other
+  const cmp = c.compare || {};
+  const table = el("table", null, "canary-compare");
+  const head = el("tr");
+  [t("can.metric"), t("can.sideStable"), t("can.sideCanary")].forEach((h) => head.append(el("th", h)));
+  table.append(head);
+  const val = (side, k) => {
+    const v = (cmp[side] || {})[k];
+    return v == null ? "—" : k === "median_plan_usd" ? "$" + Number(v).toFixed(4) : String(v);
+  };
+  for (const [k, label] of [["cards", "can.cards"], ["merged_prs", "can.merged"], ["median_plan_usd", "can.cost"]]) {
+    const tr = el("tr");
+    tr.append(el("td", t(label)), el("td", val("stable", k)), el("td", val("canary", k)));
+    table.append(tr);
+  }
+  const wrap = el("div", null, "tablewrap");
+  wrap.append(table);
+  box.append(wrap);
+  const err = el("div", null, "msg error"); err.hidden = true;
+  if (c.can_edit) {
+    const form = el("form", null, "budget-form");
+    const pct = el("input");
+    Object.assign(pct, { type: "number", min: 0, max: 100, step: 1, value: c.percent || 0 });
+    const prow = el("label", null, "budget-row");
+    prow.append(el("span", t("can.percent")), pct);
+    form.append(prow);
+    const checks = {};
+    for (const n of names) {
+      const row = el("label", null, "budget-row");
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = (c.prompts || []).includes(n);
+      checks[n] = cb;
+      row.append(el("span", t("can.usePrompt").replace("{ref}", c.candidates[n])), cb);
+      form.append(row);
+    }
+    const model = el("input");
+    Object.assign(model, { type: "text", value: c.model || "", placeholder: "anthropic/claude-sonnet-5-5" });
+    const mrow = el("label", null, "budget-row");
+    mrow.append(el("span", t("can.model")), model);
+    form.append(mrow);
+    const save = el("button", t("can.save")); save.type = "submit";
+    form.append(save);
+    const redraw = (data, msg) => {
+      box.replaceChildren(el("h3", t("can.title")));
+      drawCanarySettings(box, data);
+      if (msg) box.append(el("p", msg, "sub"));
+    };
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      save.disabled = true; err.hidden = true;
+      const res = await panelRequest("PUT", "/settings/canary", {
+        percent: Number(pct.value || 0),
+        prompts: names.filter((n) => checks[n].checked),
+        model: model.value.trim() || null,
+      });
+      save.disabled = false;
+      if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+      redraw(res.data, t("can.saved"));
+    });
+    box.append(form);
+    if (c.percent > 0) {
+      const rev = el("button", t("can.revert"), "secondary");
+      rev.type = "button";
+      rev.addEventListener("click", async () => {
+        if (!confirm(t("can.revertConfirm"))) return;
+        rev.disabled = true; err.hidden = true;
+        const res = await panelRequest("POST", "/settings/canary/revert");
+        rev.disabled = false;
+        if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+        redraw(res.data, t("can.reverted"));
+      });
+      box.append(rev);
+    }
+  }
+  box.append(err, el("p", c.can_edit ? t("can.note") : t("can.readOnly"), "note"));
+  if (c.updated_by) {
+    box.append(el("p", t("budget.updated") + " @" + c.updated_by + " · " +
+      new Date(c.updated_at * 1000).toLocaleString(), "sub"));
   }
 }
 

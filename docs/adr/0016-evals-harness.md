@@ -39,6 +39,15 @@ prompt change is always a new version, and every eval report records the version
 (`"prompts": {"plan": "plan@1", ...}`). Plan comments and pull requests carry the same
 reference (`Prompt: plan@1 · exec@1`), next to the cost and tokens.
 
+**Canary (#128).** A prompt may have a *candidate* version (`plan@2.txt`, registered under
+`candidate` in `versions.json`, hash-checked like the stable one). A project's canary, set on
+Tradvia (Settings, Prompt and model canary, admin only; ADR 0018), runs a share of the cards on
+the candidates and, optionally, on another model (LiteLLM planner and Claude Code). The cards are
+picked by number, so a card keeps its side. Plans and PRs say so (`Prompt: plan@2 (canary)`),
+the Settings screen shows both sides next to each other (cards, merged PRs, median plan cost),
+and "Revert" sets the share to 0 in one action, keeping the record and an audit entry. A canary
+should first show its gain in `make evals`.
+
 ## Consequences
 
 - Scripted runs prove the harness and the expectations, not model quality;
