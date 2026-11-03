@@ -15,6 +15,8 @@ from pathlib import Path
 
 import yaml
 
+from tradvia import prompts
+
 from . import Planner, Result, Task, run_task
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
@@ -66,6 +68,7 @@ def run_suite(tasks: list[Task], planner: Planner, label: str) -> dict:
     cost = [r.cost for r in results]
     return {
         "label": label,
+        "prompts": prompts.refs(),  # which prompt versions this report measured (#125)
         "results": [r.as_dict() for r in results],
         "totals": {
             "tasks": len(results),

@@ -14,6 +14,7 @@ import subprocess
 import threading
 from typing import Callable, Mapping, TypeVar
 
+from . import prompts
 from .connections import redact
 from .llm import PlanError, answer_excerpt, parse_answer
 from .stagnation import DEFAULT_REPEAT_LIMIT, StagnationMonitor, reflective_message
@@ -23,36 +24,9 @@ PLAN_TOOLS = "Read,Glob,Grep"
 EXEC_TOOLS = ("Read,Edit,Write,Glob,Grep,Bash(make check),Bash(make test),"
               "Bash(git mv:*),Bash(git rm:*)")
 
-PLAN_PROMPT = """You are @Agent-Architect in a software team. Read the repository as needed
-and propose the smallest change that solves the GitHub issue below. Do not modify anything.
-Tradvia creates the branch, makes the commit and opens the pull request, so the plan must
-contain only code, test and docs changes: no git or pull request steps.
-Answer ONLY with JSON, no markdown fences:
-{{"summary": "<one sentence>",
- "plan": ["<step>", "..."],
- "question": "<one short question for the human to approve or adjust the plan>"}}
-
-Issue #{number}: {title}
-
-{body}"""
-
-EXEC_PROMPT = """You are @Agent-Coder. Implement the approved plan below in the working tree.
-Follow CLAUDE.md, run `make check` when done and fix failures. Do not touch .github/, .git/,
-LICENSE.md, CLA.md or CODEOWNERS.
-Do not create temporary or verification files in the repository. If you need scratch space,
-use a directory outside the repository (for example a `mktemp -d` path) or write nothing.
-Tradvia creates the branch, makes the commit and opens the pull request. Do not run git
-commands (checkout, commit, push) or open a pull request: only edit the working tree and run
-`make check`. To rename or delete a file, use `git mv` or `git rm`; those are the only git
-commands allowed. Finish with a short summary of what you changed, with no git or pull request
-steps and no statement about whether a pull request was opened.
-
-Issue #{number}: {title}
-
-{body}
-
-Approved plan:
-{plan}"""
+# Versioned in prompts/ (#125): edit the .txt file, bump its version in versions.json.
+PLAN_PROMPT = prompts.text("plan")
+EXEC_PROMPT = prompts.text("exec")
 
 
 def _timeout() -> int:
@@ -218,6 +192,7 @@ def claude_code_plan(title: str, body: str, number: int, runner: Callable = subp
     plan, runs = plan_with_repair(ask, lambda data: data.get("result") or "", prompt,
                                   "Claude Code")
     plan["_cost"] = add_costs([{**_cost(data), **_reported(data)} for data in runs])
+    plan["_prompt"] = prompts.ref("plan")
     plan["_tool_calls"] = sum(_count(data, "num_turns") for data in runs)
     return plan
 
@@ -424,6 +399,7 @@ class ClaudeCodeExecutor:
                 "tokens_in": cost["tokens_in"], "tokens_out": cost["tokens_out"],
                 "tokens_cache": cost["tokens_cache"], "duration_s": cost["duration_s"],
                 **_reported(data), "tool_calls": _count(data, "num_turns"),
+                "prompt": prompts.ref("exec"),
                 "summary": str(data.get("result", "")).strip()}
 
 

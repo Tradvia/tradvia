@@ -79,5 +79,6 @@ class Card(TypedDict, total=False):
     cost: Annotated[dict, add_cost]
     usage: Annotated[dict, add_usage]  # budget consumption: steps, minutes, usd
     plan_cost: dict  # cost of the latest plan only: the plan comment reports this one
+    plan_prompt: str  # prompt version of the latest plan, e.g. 'plan@1' (#125)
     history: Annotated[list[dict], operator.add]
     updated_at: str

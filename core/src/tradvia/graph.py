@@ -252,6 +252,7 @@ def build_graph(github: GitHub, chat: Chat,
                                  "summary": p.get("summary", "")},
             "cost": p.get("_cost", {}),
             "plan_cost": p.get("_cost", {}),
+            "plan_prompt": p.get("_prompt") or "",
             "usage": step_usage(1 + int(p.get("_tool_calls") or 0), p.get("_cost") or {}),
         }
 
@@ -263,6 +264,8 @@ def build_graph(github: GitHub, chat: Chat,
         has_cost = any(pc.get(k) for k in ("usd", "tokens_in", "tokens_out", "tokens_cache"))
         cost_lines = (f"\nEstimated cost (API-equivalent): ${pc.get('usd', 0):.4f}\n"
                       f"{tokens_line(pc)}\n") if has_cost else ""
+        if card.get("plan_prompt"):
+            cost_lines += f"{'' if cost_lines else chr(10)}Prompt: {card['plan_prompt']}\n"
         text = (f"🟡 **{card['id']} — {card['title']}**\n{q.get('summary', '')}\n{steps}\n"
                 f"{target}\n❓ {q['text']}\n{cost_lines}"
                 f"Responda **Aprovado**, **Rejeitado** ou escreva um ajuste.")
@@ -483,6 +486,9 @@ def build_graph(github: GitHub, chat: Chat,
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
                      f"{tokens_line(run)}")
+            prompt_refs = [r for r in (card.get("plan_prompt"), run.get("prompt")) if r]
+            if prompt_refs:
+                extra += "\nPrompt: " + " · ".join(prompt_refs)
             if removed:
                 extra += ("\n\n### Removed files\n"
                           + "\n".join(f"- `{r}`" for r in removed))

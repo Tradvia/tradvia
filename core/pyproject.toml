@@ -34,7 +34,8 @@ tradvia = "tradvia.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-tradvia = ["schema.sql", "evals/tasks/*.yaml", "evals/scripts/*.yaml"]
+tradvia = ["schema.sql", "evals/tasks/*.yaml", "evals/scripts/*.yaml", "prompts/*.txt",
+           "prompts/versions.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
