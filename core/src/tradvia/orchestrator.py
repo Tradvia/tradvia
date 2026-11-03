@@ -22,6 +22,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from .actions import (
     ActionError,
@@ -46,6 +47,7 @@ from .backlog import BRANCH_PREFIX, CLAIM_LABEL, READY_LABEL
 from .claude_code import _cost, _positive_env
 from .events import issue_record
 from .llm import _parse_json
+from .pending import HUMAN_REQUEST_MARK
 from .store import Store
 
 AUTHOR = "orchestrator"
@@ -513,10 +515,51 @@ def comment_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if _issue(ctx, number).get("state") == "closed":
         raise ActionError("This card is closed.")
     # The marks above are Tradvia's own; an agent's text cannot forge a claim or a release.
-    body = _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).strip()
+    body = _strip_marks(text)
     ctx.github.comment(ctx.token, ctx.repo, number, f"Progress from @{ctx.login}'s agent:\n\n{body}")
     ctx.add_ref("card", number)
     return {"number": number, "commented": True}
+
+
+def _strip_marks(text: str) -> str:
+    return _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).replace(HUMAN_REQUEST_MARK, "").strip()
+
+
+def _live_url(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > 500:
+        raise ActionError("live_url must be a link of at most 500 characters")
+    url = value.strip()
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+    except ValueError:
+        raise ActionError("live_url is not a valid link") from None
+    if parsed.scheme not in ("http", "https") or not host:
+        raise ActionError("live_url must be an http or https link with a host")
+    return url
+
+
+def request_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Ask a person to act on the card; it stays pending until a human comments."""
+    number = _number(args)
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ActionError("text is required")
+    if len(text) > MAX_PROGRESS:
+        raise ActionError(f"text is too long (at most {MAX_PROGRESS} characters)")
+    url = _live_url(args.get("live_url"))
+    if _issue(ctx, number).get("state") == "closed":
+        raise ActionError("This card is closed.")
+    body = _strip_marks(text)
+    if not body:
+        raise ActionError("text is required")
+    link = f"\n\nLive session: {url}" if url else ""
+    ctx.github.comment(ctx.token, ctx.repo, number,
+                       f"Progress from @{ctx.login}'s agent:\n{HUMAN_REQUEST_MARK}\n{body}{link}")
+    ctx.add_ref("card", number)
+    return {"number": number, "requested": True}
 
 
 AGENTS_FILE = "AGENTS.md"
@@ -529,6 +572,8 @@ WORKFLOW = (
     "Report with comment_card when something changes: progress, a question, a blocker.",
     "Open a pull request that says 'Closes #<N>'. A maintainer reviews and merges it; the "
     "card closes when it merges.",
+    "When only a person can do something, call request_human with what is needed and wait for "
+    "their 'done' comment before going on.",
     "If you stop, release_card with a note, so a person or another agent can take it over.",
 )
 
@@ -731,6 +776,9 @@ TOOLS: dict[str, Tool] = {
                          "note for whoever continues."),
     "comment_card": Tool(comment_card, ("number", "text"), "Report progress, a question or a "
                          "blocker on the card, where people and other agents see it."),
+    "request_human": Tool(request_human, ("number", "text", "live_url"), "Ask a person to act on "
+                          "the card (for example, in a live session) and wait for their 'done' "
+                          "comment."),
     "reply_plan": Tool(reply_plan, ("number", "decision", "text"),
                        "Answer a plan with decision 'adjust' and a text. Nothing else is allowed."),
     "review_pr": Tool(review_pr, ("number", "notes"),
@@ -745,7 +793,8 @@ TOOLS: dict[str, Tool] = {
 AGENT_VIA = "api_token"
 AGENT_TOOLS = ("read_briefing", "read_backlog", "read_cards", "read_card", "read_plan",
                "read_pulls", "read_pull", "read_checks", "read_deploys", "create_card",
-               "start_card", "claim_card", "release_card", "comment_card", "reply_plan")
+               "start_card", "claim_card", "release_card", "comment_card", "request_human",
+               "reply_plan")
 
 
 # Taking and giving back a card belong to a person's own agent, never to the panel chat.
