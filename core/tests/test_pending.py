@@ -56,7 +56,7 @@ def test_every_kind_maps_to_an_interaction():
         "plan_ready": "approve_plan", "agent_question": "approve_plan",
         "adjust_limit": "approve_plan", "pr_opened": "merge_pr", "budget_limit": "budget_control",
         "deploy_stuck": "approve_deploy", "cost_outlier": "budget_control",
-        "run_dead": "approve_plan",
+        "run_dead": "approve_plan", "human_request": "live_takeover",
     }
 
 

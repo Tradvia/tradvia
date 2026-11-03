@@ -18,25 +18,30 @@ PLAN_READY = "plan_ready"
 AGENT_QUESTION = "agent_question"
 PR_OPENED = "pr_opened"
 BUDGET_LIMIT = "budget_limit"
+HUMAN_REQUEST = "human_request"
 ADJUST_LIMIT = "adjust_limit"
 # Proactive alerts (alerts.py): sent by Web Push like the kinds above, but never in the inbox.
 DEPLOY_STUCK = "deploy_stuck"
 COST_OUTLIER = "cost_outlier"
 RUN_DEAD = "run_dead"
 ALERT_KINDS = (DEPLOY_STUCK, COST_OUTLIER, RUN_DEAD)
-KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT) + ALERT_KINDS
+KINDS = (PLAN_READY, AGENT_QUESTION, PR_OPENED, BUDGET_LIMIT, ADJUST_LIMIT, HUMAN_REQUEST) + ALERT_KINDS
 
 # The policy interaction that answers each kind (docs/projects.md).
 ROLE_FOR_KIND = {
     PLAN_READY: "approve_plan",
     AGENT_QUESTION: "approve_plan",
     ADJUST_LIMIT: "approve_plan",
+    HUMAN_REQUEST: "live_takeover",
     PR_OPENED: "merge_pr",
     BUDGET_LIMIT: "budget_control",
     DEPLOY_STUCK: "approve_deploy",
     COST_OUTLIER: "budget_control",
     RUN_DEAD: "approve_plan",
 }
+
+# Placed by the request_human tool (orchestrator.py), never by the agent's own text.
+HUMAN_REQUEST_MARK = "<!-- tradvia:request_human -->"
 
 # graph.py posts "Limite de N ajustes atingido"; the budget stop uses the same style.
 _ADJUST_LIMIT_RE = re.compile(r"Limite de \d+ ajustes atingido", re.I)
@@ -110,7 +115,13 @@ def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
         for p in card.get("pulls") or []
     ):
         return PR_OPENED
-    comment = _last_agent_comment(card.get("comments") or [], login)
+    comments = card.get("comments") or []
+    # request_human (orchestrator.py) posts with the token of the person whose agent asked, so
+    # its comment is not the Tradvia agent's: it counts whoever wrote it, while it is still the
+    # last word on the card. Any later comment (the "feito") closes it.
+    if comments and HUMAN_REQUEST_MARK in (comments[-1].get("body") or ""):
+        return HUMAN_REQUEST
+    comment = _last_agent_comment(comments, login)
     if comment is None:
         return None  # the agent never spoke, or a human already answered
     body = comment.get("body") or ""
