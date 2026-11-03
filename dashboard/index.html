@@ -1691,7 +1691,7 @@ async function loadClaims(repo, cards) {
 
 /* ---------- Pending inbox and notifications (docs/notifications.md, ADR 0020) ---------- */
 
-const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit",
+const PUSH_KINDS = ["plan_ready", "agent_question", "pr_opened", "budget_limit", "adjust_limit", "human_request",
   "deploy_stuck", "cost_outlier", "run_dead"];
 let inboxOpen = false;
 let inboxData = []; // [{ repo, items }] of the projects that have something pending
@@ -1899,6 +1899,7 @@ const I18N = {
     kind_pr_opened: "PR aberto para revisão", kind_budget_limit: "limite de orçamento",
     kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
     kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
+    kind_human_request: "o agente pediu uma ação sua",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -1927,7 +1928,7 @@ const I18N = {
     auditLog: "Auditoria", act_create_card: "criou o card", act_start_card: "iniciou o card",
     act_reply_plan: "respondeu ao plano", act_reorder_backlog: "reordenou o backlog",
     res_ok: "ok", res_denied: "negado", res_failed: "falhou",
-    act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR", act_approve_workflows: "aprovou os workflows do PR",
+    act_merge_pr: "fez o merge do PR", act_update_branch: "atualizou o branch do PR", act_approve_workflows: "aprovou os workflows do PR", act_human_done: "marcou como feito o pedido do agente",
     act_approve_deploy: "aprovou o deploy", act_reject_deploy: "rejeitou o deploy",
     act_cancel_run: "cancelou um deploy substituído", act_post_deploy: "rodou a operação pós-deploy",
     chat: "Conversa com o orquestrador", chatWorking: "orquestrador trabalhando…",
@@ -2049,6 +2050,7 @@ const I18N = {
     kind_pr_opened: "pull request ready for review", kind_budget_limit: "budget limit",
     kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
     kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
+    kind_human_request: "the agent asked for your help",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -2077,7 +2079,7 @@ const I18N = {
     auditLog: "Audit", act_create_card: "created the card", act_start_card: "started the card",
     act_reply_plan: "answered the plan", act_reorder_backlog: "reordered the backlog",
     res_ok: "ok", res_denied: "denied", res_failed: "failed",
-    act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch", act_approve_workflows: "approved the PR's workflows",
+    act_merge_pr: "merged the PR", act_update_branch: "updated the PR branch", act_approve_workflows: "approved the PR's workflows", act_human_done: "marked the agent's request as done",
     act_approve_deploy: "approved the deploy", act_reject_deploy: "rejected the deploy",
     act_cancel_run: "cancelled a replaced deploy", act_post_deploy: "ran the post-deploy operation",
     chat: "Orchestrator conversation", chatWorking: "orchestrator working…",

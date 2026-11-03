@@ -42,6 +42,24 @@ ROLE_FOR_KIND = {
 
 # Placed by the request_human tool (orchestrator.py), never by the agent's own text.
 HUMAN_REQUEST_MARK = "<!-- tradvia:request_human -->"
+_LIVE_SESSION_RE = re.compile(r"^Live session: (https?://\S+)\s*$", re.M)
+
+
+def human_request_comment(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The open request_human comment of a card (comments oldest first), or None.
+
+    It is posted with the token of the person whose agent asked, so it counts whoever wrote it,
+    while it is still the last word on the card: any later comment (the "feito") closes it.
+    Works with store rows and with GitHub's own comments alike (both have `body`)."""
+    if comments and HUMAN_REQUEST_MARK in (comments[-1].get("body") or ""):
+        return comments[-1]
+    return None
+
+
+def live_url_of(comment: dict[str, Any] | None) -> str | None:
+    """The `Live session: <url>` link of a request_human comment, if it has one."""
+    m = _LIVE_SESSION_RE.search((comment or {}).get("body") or "")
+    return m.group(1) if m else None
 
 # graph.py posts "Limite de N ajustes atingido"; the budget stop uses the same style.
 _ADJUST_LIMIT_RE = re.compile(r"Limite de \d+ ajustes atingido", re.I)
@@ -116,10 +134,7 @@ def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
     ):
         return PR_OPENED
     comments = card.get("comments") or []
-    # request_human (orchestrator.py) posts with the token of the person whose agent asked, so
-    # its comment is not the Tradvia agent's: it counts whoever wrote it, while it is still the
-    # last word on the card. Any later comment (the "feito") closes it.
-    if comments and HUMAN_REQUEST_MARK in (comments[-1].get("body") or ""):
+    if human_request_comment(comments) is not None:
         return HUMAN_REQUEST
     comment = _last_agent_comment(comments, login)
     if comment is None:

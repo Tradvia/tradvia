@@ -43,6 +43,7 @@ from .actions import (
     awaiting_plan,
     backlog_string,
     deploy_view,
+    done_comment,
     mark_waits,
     merge_block,
     wait_alert_minutes,
@@ -195,6 +196,14 @@ def _alert_discord() -> Chat | None:
     """The Discord channel for alerts when `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set."""
     bot, channel = os.environ.get("DISCORD_BOT_TOKEN", ""), os.environ.get("DISCORD_CHANNEL_ID", "")
     return DiscordREST(bot, channel) if bot and channel else None
+
+
+def human_request_notice(repo: str, card: dict[str, Any]) -> str:
+    """Discord text for a card whose agent asked a person to act (request_human)."""
+    link = f"https://github.com/{repo}/issues/{card['number']}"
+    url = pending.live_url_of(pending.human_request_comment(card.get("comments") or []))
+    tail = f" · Live session: {url}" if url else ""
+    return f"🙋 Um agente pediu uma ação de uma pessoa · {repo} #{card['number']} · {link}{tail}"
 
 
 def registered_projects() -> list[str]:
@@ -565,22 +574,38 @@ def create_app(
     def pending_before(project_id: int, ops: list[Any]) -> dict[int, str] | None:
         """Pending kinds of the cards a delivery touches, before it is applied (None: no push)."""
         assert db is not None
-        if sender is None:
+        if sender is None and discord is None:
             return None
         try:
             numbers = pending.affected_cards(ops)
-            if not numbers or not db.list_subscriptions(project_id):
+            if not numbers:
+                return None
+            if discord is None and not db.list_subscriptions(project_id):
                 return None
             return pending.kinds_of(db, project_id, numbers)
         except Exception:
             return None
 
     def push_entered(repo: str, project_id: int, ops: list[Any], before: dict[int, str]) -> None:
-        """Notify for the cards that entered a pending kind in this delivery."""
-        assert db is not None and sender is not None
+        """Notify for the cards that entered a pending kind in this delivery: Web Push when it is
+        set up, and a Discord notice for a person request (request_human) when a channel is."""
+        assert db is not None
         after = pending.kinds_of(db, project_id, pending.affected_cards(ops))
         entered = {n: k for n, k in after.items() if before.get(n) != k}
-        push.notify(db, sender, project_id, project_slug(repo), entered, subscriber_can(repo))
+        if sender is not None:
+            try:
+                push.notify(db, sender, project_id, project_slug(repo), entered,
+                            subscriber_can(repo))
+            except Exception:
+                pass
+        asked = [n for n, k in entered.items() if k == pending.HUMAN_REQUEST]
+        if discord is None or not asked:
+            return
+        for card in pending.cards_of(db, project_id, set(asked)):
+            try:
+                discord.post(human_request_notice(repo, card))
+            except Exception:  # never let a chat outage change the answer to GitHub
+                pass
 
     def subscriber_can(repo: str) -> Callable[[str, str], bool]:
         """Whether a subscriber's cached role may answer a kind; fails closed without a session."""
@@ -1137,6 +1162,18 @@ def create_app(
                 raise Conflict("This card is not waiting for a reply to the plan.")
             auth.github.comment(token, repo, number, text)
             return Done(number, f"decision={data.get('decision')}", {"issue_number": number})
+        return work
+
+    def work_human_done(repo: str, number: int, login: str) -> Callable[[str], Done]:
+        """A person says they finished what an agent asked with request_human (#120)."""
+        def work(token: str) -> Done:
+            if auth.github.get_issue(token, repo, number).get("state") == "closed":
+                raise Conflict("This card is closed.")
+            comments = auth.github.list_comments(token, repo, number)
+            if pending.human_request_comment(comments) is None:
+                raise Conflict("This card is not waiting for a person to act on an agent request.")
+            auth.github.comment(token, repo, number, done_comment(login))
+            return Done(number, "human_done", {"issue_number": number})
         return work
 
     def work_backlog(repo: str, data: dict[str, Any]) -> Callable[[str], Done]:
@@ -1713,6 +1750,8 @@ def create_app(
                 work = work_start(repo, number)
             elif action == "reply_plan":
                 work = work_reply(repo, number, data)
+            elif action == "human_done":
+                work = work_human_done(repo, number, session.login)
             elif action == "merge_pr":
                 work = work_merge(repo, number, data)
             elif action == "update_branch":
@@ -2239,6 +2278,8 @@ def create_app(
                   action_route("start_card", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/reply",
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/cards/{n:int}/human-done",
+                  action_route("human_done", "live_takeover"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
                   action_route("reorder_backlog", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/settings/budget", budget_route,
