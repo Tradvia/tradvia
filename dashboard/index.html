@@ -76,6 +76,7 @@
   details.faq .faq-a { padding: 0 0 10px; }
   details.faq .faq-a p { margin: 6px 0; }
   details.faq .faq-a ul { margin: 6px 0; padding-left: 20px; }
+  .human-done { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
   .budget-form { display: grid; gap: 8px; max-width: 460px; }
   .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
   .budget-row input { width: 9em; }
@@ -1227,7 +1228,7 @@ function myRights() {
   return p && p.role ? p : null;
 }
 
-async function panelRequest(method, path, body) {
+async function panelRequest(method, path, body, repo) {
   const headers = { Accept: "application/json" };
   if (method !== "GET") {
     const key = (crypto.randomUUID ? crypto.randomUUID() : "k" + Date.now() + Math.random().toString(36).slice(2))
@@ -1237,7 +1238,7 @@ async function panelRequest(method, path, body) {
     });
   }
   try {
-    const r = await fetch("/api/projects/" + getRepo() + path, {
+    const r = await fetch("/api/projects/" + (repo || getRepo()) + path, {
       method, headers, credentials: "same-origin", body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
     });
     const j = await r.json().catch(() => ({}));
@@ -1724,6 +1725,52 @@ function cardLink(repo, number) {
   return "?repo=" + encodeURIComponent(repo) + "&card=" + number;
 }
 
+// A person request (request_human, #120): the agent's live session link, when it gave one, and
+// "Mark as done". /pending lists only what this person may answer, so being listed is the right
+// to answer; the API checks the live_takeover interaction again.
+function humanDoneControls(host, repo, item) {
+  const box = el("div", null, "human-done");
+  const live = safeHttpUrl(item.live_url);
+  if (live) {
+    const a = el("a", t("humanLive"));
+    a.href = live;
+    a.target = "_blank"; a.rel = "noopener noreferrer";
+    box.append(a, document.createTextNode(" "));
+  }
+  const b = el("button", t("humanDone"));
+  b.type = "button";
+  b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(t("humanDoneConfirm"))) return;
+    box.querySelectorAll(".action-error").forEach((x) => x.remove());
+    b.disabled = true;
+    const res = await panelRequest("POST", "/cards/" + item.number + "/human-done", {}, repo);
+    if (!res.ok) {
+      b.disabled = false;
+      box.append(el("div", res.error, "msg error action-error"));
+      return;
+    }
+    await loadInbox();
+    if (repo === getRepo()) await refresh();
+  });
+  box.append(b);
+  host.append(box);
+}
+
+// The open person request for card `n` of the panel's project, or null.
+async function humanRequestFor(n) {
+  const res = await panelRequest("GET", "/pending");
+  if (!res.ok || !Array.isArray(res.data.items)) return null;
+  return res.data.items.find((it) => it.number === n && it.kind === "human_request") || null;
+}
+
+function safeHttpUrl(u) {
+  try {
+    const url = new URL(String(u || ""));
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch (e) { return null; }
+}
+
 function renderInbox() {
   const root = document.getElementById("inbox-list");
   root.replaceChildren();
@@ -1737,6 +1784,7 @@ function renderInbox() {
       const a = el("a", "#" + it.number + " " + it.title);
       a.href = cardLink(g.repo, it.number);
       li.append(a, el("span", t("kind_" + it.kind) || it.kind, "badge"));
+      if (it.kind === "human_request") humanDoneControls(li, g.repo, it);
       ul.append(li);
     }
     root.append(ul);
@@ -1900,6 +1948,8 @@ const I18N = {
     kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
     kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     kind_human_request: "o agente pediu uma ação sua",
+    humanRequest: "O agente pediu uma pessoa", humanRequestHint: "Faça o que o agente pediu no comentário do card e marque como feito. O agente continua quando ler o card.",
+    humanDone: "Marcar como feito", humanDoneConfirm: "Confirmar que você já fez o que o agente pediu?", humanLive: "Abrir a sessão ao vivo",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
     kpis: "Indicadores", board: "Cards", runs: "Execuções recentes",
     rateLimit: "Limite de requisições da API do GitHub atingido. Tente de novo em alguns minutos.",
@@ -2051,6 +2101,8 @@ const I18N = {
     kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
     kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     kind_human_request: "the agent asked for your help",
+    humanRequest: "The agent asked for a person", humanRequestHint: "Do what the agent asked in the card's comment, then mark it as done. The agent goes on when it reads the card.",
+    humanDone: "Mark as done", humanDoneConfirm: "Confirm that you already did what the agent asked?", humanLive: "Open the live session",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
     kpis: "KPIs", board: "Cards", runs: "Recent runs",
     rateLimit: "GitHub API rate limit reached. Try again in a few minutes.",
@@ -2892,6 +2944,15 @@ function fillDialogRemote(n, state, prs) {
     const box = el("section");
     host.append(box);
     renderApproval(box, n);
+  }
+  if (mine) {  // an agent asked a person to act on this card (request_human)
+    const ask = el("section");
+    host.append(ask);
+    humanRequestFor(n).then((item) => {
+      if (!item || dialogCard !== n || !ask.isConnected) return;
+      ask.append(el("h3", t("humanRequest")), el("p", t("humanRequestHint"), "sub"));
+      humanDoneControls(ask, getRepo(), item);
+    });
   }
   const pr = prs.find((p) => p.state === "open" && branchMatchesIssue(p.head && p.head.ref, n));
   if (pr && mine) {

@@ -158,7 +158,8 @@ def can_answer(policy: Policy, role: str | None, kind: str) -> bool:
 def pending_for(
     role: str | None, policy: Policy, cards: list[dict[str, Any]], agent: str | None = None
 ) -> list[dict[str, Any]]:
-    """`[{number, title, kind}]` of the cards `role` may answer, by card number.
+    """`[{number, title, kind}]` of the cards `role` may answer, by card number. A person request
+    (`human_request`) also carries its `live_url` when the agent gave one.
 
     No role, or an unknown one, never answers anything: the list is empty.
     """
@@ -166,7 +167,12 @@ def pending_for(
     for card in cards:
         kind = pending_kind(card, agent)
         if kind is not None and can_answer(policy, role, kind):
-            out.append({"number": card["number"], "title": card.get("title") or "", "kind": kind})
+            item = {"number": card["number"], "title": card.get("title") or "", "kind": kind}
+            if kind == HUMAN_REQUEST:
+                url = live_url_of(human_request_comment(card.get("comments") or []))
+                if url:
+                    item["live_url"] = url
+            out.append(item)
     return sorted(out, key=lambda c: c["number"])
 
 

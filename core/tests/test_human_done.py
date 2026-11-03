@@ -75,3 +75,15 @@ def test_notice_has_the_card_link_and_the_live_url():
     text = human_request_notice("o/r", {"number": 9, "comments": [LIVE]})
     assert "https://github.com/o/r/issues/9" in text and "https://s.example/x" in text
     assert "Live session" not in human_request_notice("o/r", {"number": 9, "comments": [ASK]})
+
+
+def test_pending_items_carry_the_live_link_of_a_request():
+    from tradvia.policy import Policy
+
+    card = {"number": 9, "title": "c", "state": "open", "pulls": [],
+            "comments": [{"author": "bia", "body": LIVE["body"]}]}
+    (item,) = pending.pending_for("maintain", Policy(), [card])
+    assert item == {"number": 9, "title": "c", "kind": "human_request",
+                    "live_url": "https://s.example/x"}
+    card["comments"] = [{"author": "bia", "body": ASK["body"]}]
+    assert "live_url" not in pending.pending_for("maintain", Policy(), [card])[0]
