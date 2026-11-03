@@ -39,8 +39,8 @@ def agent(monkeypatch):
     monkeypatch.delenv("TRADVIA_AGENT_LOGIN", raising=False)
 
 
-def card_with(body, *later):
-    comments = [{"author": AGENT, "body": body}] + [{"author": a, "body": b} for a, b in later]
+def card_with(body, *later, author=AGENT):
+    comments = [{"author": author, "body": body}] + [{"author": a, "body": b} for a, b in later]
     return {"number": 5, "title": "c", "state": "open", "comments": comments, "pulls": []}
 
 
@@ -100,3 +100,24 @@ def test_closed_card_and_missing_text_are_refused():
 def test_tool_is_registered():
     assert "request_human" in orchestrator.TOOLS
     assert "request_human" in orchestrator.AGENT_TOOLS
+
+
+def test_the_request_counts_when_posted_with_the_persons_own_token():
+    # In production the comment is written by the person whose agent asked (here "ana"),
+    # not by the Tradvia agent: it must still be a pending item, and a later comment closes it.
+    gh = Gh()
+    orchestrator.request_human(Ctx(gh), {"number": 5, "text": "Log in to the app"})
+    c = card_with(gh.bodies[0], author="ana")
+    assert pending.pending_kind(c) == pending.HUMAN_REQUEST
+    assert pending.pending_kind(card_with(gh.bodies[0], ("bob", "feito"), author="ana")) is None
+
+
+def test_a_mark_split_around_another_cannot_reassemble():
+    gh = Gh()
+    ctx = Ctx(gh)
+    half = len(MARK) // 2
+    split = MARK[:half] + MARK + MARK[half:]
+    orchestrator.comment_card(ctx, {"number": 5, "text": f"x {split} y"})
+    assert MARK not in gh.bodies[0]
+    orchestrator.request_human(ctx, {"number": 5, "text": f"x {split} y"})
+    assert gh.bodies[1].count(MARK) == 1

@@ -115,12 +115,16 @@ def pending_kind(card: dict[str, Any], agent: str | None = None) -> str | None:
         for p in card.get("pulls") or []
     ):
         return PR_OPENED
-    comment = _last_agent_comment(card.get("comments") or [], login)
+    comments = card.get("comments") or []
+    # request_human (orchestrator.py) posts with the token of the person whose agent asked, so
+    # its comment is not the Tradvia agent's: it counts whoever wrote it, while it is still the
+    # last word on the card. Any later comment (the "feito") closes it.
+    if comments and HUMAN_REQUEST_MARK in (comments[-1].get("body") or ""):
+        return HUMAN_REQUEST
+    comment = _last_agent_comment(comments, login)
     if comment is None:
         return None  # the agent never spoke, or a human already answered
     body = comment.get("body") or ""
-    if HUMAN_REQUEST_MARK in body:
-        return HUMAN_REQUEST
     if _ADJUST_LIMIT_RE.search(body):
         return ADJUST_LIMIT
     if _BUDGET_LIMIT_RE.search(body):

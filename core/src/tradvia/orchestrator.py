@@ -522,7 +522,13 @@ def comment_card(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _strip_marks(text: str) -> str:
-    return _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).replace(HUMAN_REQUEST_MARK, "").strip()
+    """Agent text without Tradvia's own marks. Repeated until nothing changes, so a mark split
+    around another one (`<!-- trad<!-- ... -->via:...`) cannot reassemble after one pass."""
+    while True:
+        out = _AGENT_MARK.sub("", _CLAIM_MARK.sub("", text)).replace(HUMAN_REQUEST_MARK, "")
+        if out == text:
+            return out.strip()
+        text = out
 
 
 def _live_url(value: Any) -> str | None:
