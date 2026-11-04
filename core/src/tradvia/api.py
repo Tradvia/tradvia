@@ -102,6 +102,7 @@ DEFAULT_PER_PAGE = 30
 MAX_DIFF = 200_000
 MAX_DEPLOY_RUNS = 20
 MAX_COMMENT = 500
+MAX_STEER = 2000  # a steering message to a running card (#99); the executor keeps the same cap
 CHAT_HISTORY = 100
 VIA_API_TOKEN = "api_token"
 # What a bearer API token may do (ADR 0009); everything else needs a signed-in session.
@@ -1164,6 +1165,21 @@ def create_app(
             return Done(number, f"decision={data.get('decision')}", {"issue_number": number})
         return work
 
+    def work_steer(repo: str, number: int, data: dict[str, Any]) -> Callable[[str], Done]:
+        """A message to the agent running this card (#99, ADR 0021): a comment on the card with
+        the person's own token. The run reads it between segments; it cannot approve anything."""
+        def work(token: str) -> Done:
+            text = data.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ActionError("text is required")
+            if len(text) > MAX_STEER:
+                raise ActionError(f"text is too long (at most {MAX_STEER} characters)")
+            if auth.github.get_issue(token, repo, number).get("state") == "closed":
+                raise Conflict("This card is closed.")
+            auth.github.comment(token, repo, number, text.strip())
+            return Done(number, "steer", {"issue_number": number})
+        return work
+
     def work_human_done(repo: str, number: int, login: str) -> Callable[[str], Done]:
         """A person says they finished what an agent asked with request_human (#120)."""
         def work(token: str) -> Done:
@@ -1894,6 +1910,8 @@ def create_app(
                 work = work_start(repo, number)
             elif action == "reply_plan":
                 work = work_reply(repo, number, data)
+            elif action == "steer_run":
+                work = work_steer(repo, number, data)
             elif action == "human_done":
                 work = work_human_done(repo, number, session.login)
             elif action == "merge_pr":
@@ -2490,6 +2508,8 @@ def create_app(
                   action_route("start_card", "start_card"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/reply",
                   action_route("reply_plan", "approve_plan"), methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/cards/{n:int}/steer",
+                  action_route("steer_run", "approve_plan"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/cards/{n:int}/human-done",
                   action_route("human_done", "live_takeover"), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/backlog",
