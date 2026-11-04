@@ -116,10 +116,14 @@ def test_docs_link_lives_in_the_same_menu_as_help():
 
 
 def test_docs_page_i18n_and_back_link():
+    import json
+
     html = DOCS.read_text(encoding="utf-8")
-    keys = set(re.findall(r'data-i18n="(\w+)"', html))
-    for key in keys:
-        assert html.count(f"{key}:") >= 2, key
+    keys = set(re.findall(r'data-i18n(?:-html)?="([\w.]+)"', html))
+    assert len(keys) > 50
+    for code in ("pt", "en", "es"):
+        strings = json.loads((ROOT / "dashboard" / "i18n" / f"{code}.json").read_text(encoding="utf-8"))
+        assert keys <= set(strings), (code, sorted(keys - set(strings)))
     back = [a for a in parse(DOCS).links if a.get("id") == "back-link"]
     assert back and back[0]["href"] == "./"
     assert "tradvia.lang" in html and "tradvia.lang" in INDEX.read_text(encoding="utf-8")
