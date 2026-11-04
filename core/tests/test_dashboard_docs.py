@@ -126,11 +126,21 @@ def test_docs_page_i18n_and_back_link():
 
 
 def test_every_adr_is_linked():
-    hrefs = " ".join(a.get("href", "") for a in parse(DOCS).links)
+    # Into the in-app manual (ADR 0011), not to GitHub: reading an ADR never leaves Tradvia.
+    hrefs = {a.get("href", "") for a in parse(DOCS).links}
     adrs = sorted(ADR_DIR.glob("[0-9]*.md"))
     assert len(adrs) >= 21
     for adr in adrs:
-        assert f"docs/adr/{adr.name}" in hrefs, adr.name
+        assert f"manual/adr/{adr.stem}.html" in hrefs, adr.name
+    assert "manual/" in hrefs
+    assert not [h for h in hrefs if re.search(r"github\.com/.+/docs/.+\.md", h)]
+
+
+def test_help_view_reads_the_manual_not_github():
+    html = INDEX.read_text(encoding="utf-8")
+    assert '"manual/readme.html"' in html and '"manual/dashboard-kpis.html"' in html
+    assert '"manual/projects.html"' in html and '"manual/#g-adr"' in html
+    assert "/blob/main/docs/projects.md" not in html and "/tree/main/docs/adr" not in html
 
 
 def test_every_adr_number_is_used_once():

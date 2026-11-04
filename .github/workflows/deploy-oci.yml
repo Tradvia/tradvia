@@ -7,7 +7,8 @@ name: deploy-oci
 on:
   push:
     branches: [main]
-    paths: ["infra/oci/**", "dashboard/**", "core/**", ".github/workflows/deploy-oci.yml"]
+    paths: ["infra/oci/**", "dashboard/**", "core/**", "docs/**", "README.md", "CONTRIBUTING.md",
+            ".github/workflows/deploy-oci.yml"]
   workflow_dispatch:
     inputs:
       backfill:
@@ -73,6 +74,17 @@ jobs:
             "$TRADVIA_DOMAIN" "$ACME_EMAIL" "$POSTGRES_PASSWORD" "$GITHUB_TOKEN" "$TRADVIA_WEBHOOK_SECRET" \
             "$TRADVIA_GITHUB_APP_CLIENT_ID" "$TRADVIA_GITHUB_APP_CLIENT_SECRET" "$TRADVIA_SECRET_KEY" \
             | ssh oci 'umask 077 && cat > /opt/tradvia/.env'
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Render the manual (ADR 0011)
+        run: |
+          # The only dependency is the Markdown renderer, pinned, and it lives in this step:
+          # the pages are static files next to the dashboard, the API never renders anything.
+          python -m pip install --quiet "markdown-it-py==4.0.0"
+          PYTHONPATH=core/src python -m tradvia.manual build --out dashboard/manual
 
       - name: Upload compose, Caddyfile and dashboard
         run: |

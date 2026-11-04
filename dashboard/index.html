@@ -2082,7 +2082,7 @@ const I18N = {
     "settings.prefs": "Preferências", "settings.language": "Idioma", "settings.theme": "Tema",
     "theme.dark": "Escuro", "theme.light": "Claro", "theme.system": "Sistema",
     "help.title": "Ajuda", "help.intro": "Perguntas frequentes sobre como usar o Tradvia. Busque por uma palavra ou escolha um tema.", "help.search": "Buscar na ajuda (ex.: aprovar plano, token, orçamento)", "help.all": "Todos", "help.none": "Nada encontrado. Tente outra palavra.", "help.more": "Mais documentação", "help.docsNote": "status real de cada funcionalidade", "help.readme": "README", "help.kpis": "Indicadores do painel",
-    "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)",
+    "help.projects": "Projetos", "help.adr": "Decisões de arquitetura (ADRs)", "help.manual": "Manual completo (guias e ADRs, com busca)",
     costNote: "Custos são estimativas equivalentes à API (não são a fatura). Tokens vêm do uso informado pelo Claude Code; cards sem custo registrado ficam fora das somas.",
     freeOnly: "Só cards livres",
     claimedBy: "Com", claimedUnknown: "um colaborador (abrir o card para ver)", claimSkills: "Especialidades",
@@ -2259,7 +2259,7 @@ const I18N = {
     "settings.prefs": "Preferences", "settings.language": "Language", "settings.theme": "Theme",
     "theme.dark": "Dark", "theme.light": "Light", "theme.system": "System",
     "help.title": "Help", "help.intro": "Frequently asked questions on how to use Tradvia. Search for a word or pick a topic.", "help.search": "Search help (e.g. approve plan, token, budget)", "help.all": "All", "help.none": "Nothing found. Try another word.", "help.more": "More documentation", "help.docsNote": "real status of each capability", "help.readme": "README", "help.kpis": "Dashboard KPIs",
-    "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)",
+    "help.projects": "Projects", "help.adr": "Architecture decisions (ADRs)", "help.manual": "Full manual (guides and ADRs, with search)",
     costNote: "Costs are API-equivalent estimates, not an invoice. Tokens come from the usage reported by Claude Code; cards without a recorded cost are left out of the sums.",
     freeOnly: "Only free cards",
     claimedBy: "With", claimedUnknown: "a collaborator (open the card to see)", claimSkills: "Specialties",
@@ -3500,7 +3500,7 @@ function renderSettings() {
     const ex = el("a", t("settings.example"));
     ex.href = base + "/blob/main/docs/tradvia.example.yml";
     const pr = el("a", t("settings.projectsDoc"));
-    pr.href = base + "/blob/main/docs/projects.md";
+    pr.href = "manual/projects.html";
     links.append(ex, document.createTextNode(" · "), pr);
     roles.append(links);
   }
@@ -4015,16 +4015,15 @@ function renderHelp() {
   const li0 = el("li");
   li0.append(docs, document.createTextNode(" — " + t("help.docsNote")));
   ul.append(li0);
-  const base = safeGithubUrl("https://github.com/" + getRepo());
-  if (base) {
-    for (const [key, path] of [["help.readme", "/blob/main/README.md"], ["help.kpis", "/blob/main/docs/dashboard-kpis.md"],
-      ["help.projects", "/blob/main/docs/projects.md"], ["help.adr", "/tree/main/docs/adr"]]) {
-      const a = el("a", t(key));
-      a.href = base + path;
-      const li = el("li");
-      li.append(a);
-      ul.append(li);
-    }
+  // Tradvia's own manual, rendered at deploy time (ADR 0011): read here, not on GitHub.
+  for (const [key, path] of [["help.manual", "manual/"], ["help.readme", "manual/readme.html"],
+    ["help.kpis", "manual/dashboard-kpis.html"], ["help.projects", "manual/projects.html"],
+    ["help.adr", "manual/#g-adr"]]) {
+    const a = el("a", t(key));
+    a.href = path;
+    const li = el("li");
+    li.append(a);
+    ul.append(li);
   }
   more.append(ul);
   root.append(more);

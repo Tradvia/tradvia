@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 # Common tasks. Works the same in Codespaces, a Dev Container or a local venv.
-.PHONY: help setup test evals boundary check run-offline
+.PHONY: help setup test evals boundary check run-offline manual
 
 help:
 	@echo "make setup        install core in editable mode with dev tools"
@@ -9,6 +9,7 @@ help:
 	@echo "make boundary    check that core/ never imports ee/"
 	@echo "make check        test + boundary (what CI runs)"
 	@echo "make run-offline ISSUE=N   run the agent flow on issue N with the offline planner"
+	@echo "make manual       render docs/ into dashboard/manual/ (what the deploy publishes)"
 
 setup:
 	python -m pip install --upgrade pip
@@ -32,3 +33,6 @@ check: test boundary
 run-offline:
 	@test -n "$(ISSUE)" || (echo "usage: make run-offline ISSUE=<number>" && exit 1)
 	cd core && TRADVIA_OFFLINE=1 tradvia --issue $(ISSUE)
+
+manual:
+	PYTHONPATH=core/src python -m tradvia.manual build

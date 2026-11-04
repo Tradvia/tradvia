@@ -14,6 +14,7 @@ Thumbs.db
 license-keys/
 
 # Build output and dependencies
+dashboard/manual/
 dist/
 build/
 out/

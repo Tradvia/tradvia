@@ -59,6 +59,7 @@
     <a href="#guide" data-i18n="guideTitle"></a>
     <a href="#troubleshooting" data-i18n="navTroubleshoot"></a>
     <a href="#technical" data-i18n="navTechnical"></a>
+    <a href="manual/" data-i18n="navManual"></a>
   </nav>
   <p class="sub"><span class="pt">Status reais, espelhando a ADR 0007 e o README. Só o que está Shipped está disponível; In progress, Partial e Planned não são descritos como disponíveis.</span><span class="en">Real status, mirroring ADR 0007 and the README. Only Shipped means available; In progress, Partial and Planned are never described as available.</span></p>
 
@@ -87,11 +88,11 @@
       </article>
       <article class="card" data-capability="kpis">
         <h3><span class="pt">KPIs</span><span class="en">KPIs</span> <span class="badge shipped">Shipped</span> <span class="sub">#36</span></h3>
-        <p><span class="pt">Taxa de sucesso, duração mediana, PRs mesclados e custo por card, lidos do store. Veja <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Custos são estimativas, não fatura.</span><span class="en">Success rate, median duration, merged PRs and cost per card, read from the store. See <a href="https://github.com/Tradvia/tradvia/blob/main/docs/dashboard-kpis.md">dashboard-kpis.md</a>. Costs are estimates, not an invoice.</span></p>
+        <p><span class="pt">Taxa de sucesso, duração mediana, PRs mesclados e custo por card, lidos do store. Veja <a href="manual/dashboard-kpis.html">dashboard-kpis.md</a>. Custos são estimativas, não fatura.</span><span class="en">Success rate, median duration, merged PRs and cost per card, read from the store. See <a href="manual/dashboard-kpis.html">dashboard-kpis.md</a>. Costs are estimates, not an invoice.</span></p>
       </article>
       <article class="card" data-capability="connections" data-ref="58">
         <h3><span class="pt">Conexões</span><span class="en">Connections</span> <span class="badge partial">Partial</span> <span class="sub">#58</span></h3>
-        <p><span class="pt">Tela "Conexões" (role admin): provedor e modelo por papel do fluxo (planner/executor/reviewer/orchestrator), e o segredo de cada provedor de IA (chave de API ou o token da assinatura do Claude Code). Hoje só o papel <code>orchestrator</code> (o chat) de fato usa a escolha; os outros papéis ainda leem só a configuração, sem aplicá-la. O chat só funciona com uma IA configurada por chave de API (Anthropic, OpenAI ou Gemini); sem ela, fica desligado e o painel diz o motivo. O token da assinatura do Claude Code serve só ao executor, nunca ao chat. Chave de API é o único método para Anthropic/Gemini/OpenAI — nenhum dos três oferece hoje um login via navegador equivalente ao da assinatura do Claude Code para apps de terceiros (ver <a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0019-project-connections.md">ADR 0019</a>).</span><span class="en">The "Connections" screen (admin role): provider and model per flow role (planner/executor/reviewer/orchestrator), and each AI provider's secret (an API key, or the Claude Code subscription token). Today only the <code>orchestrator</code> role (the chat) actually uses the choice; the other roles still only read the configuration, without applying it. The chat works only with an AI provider configured with an API key (Anthropic, OpenAI or Gemini); without one it is off and the panel says why. The Claude Code subscription token runs the executor only, never the chat. An API key is the only method for Anthropic/Gemini/OpenAI — none of the three currently offers a browser login for third-party apps the way the Claude Code subscription does (see <a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0019-project-connections.md">ADR 0019</a>).</span></p>
+        <p><span class="pt">Tela "Conexões" (role admin): provedor e modelo por papel do fluxo (planner/executor/reviewer/orchestrator), e o segredo de cada provedor de IA (chave de API ou o token da assinatura do Claude Code). Hoje só o papel <code>orchestrator</code> (o chat) de fato usa a escolha; os outros papéis ainda leem só a configuração, sem aplicá-la. O chat só funciona com uma IA configurada por chave de API (Anthropic, OpenAI ou Gemini); sem ela, fica desligado e o painel diz o motivo. O token da assinatura do Claude Code serve só ao executor, nunca ao chat. Chave de API é o único método para Anthropic/Gemini/OpenAI — nenhum dos três oferece hoje um login via navegador equivalente ao da assinatura do Claude Code para apps de terceiros (ver <a href="manual/adr/0019-project-connections.html">ADR 0019</a>).</span><span class="en">The "Connections" screen (admin role): provider and model per flow role (planner/executor/reviewer/orchestrator), and each AI provider's secret (an API key, or the Claude Code subscription token). Today only the <code>orchestrator</code> role (the chat) actually uses the choice; the other roles still only read the configuration, without applying it. The chat works only with an AI provider configured with an API key (Anthropic, OpenAI or Gemini); without one it is off and the panel says why. The Claude Code subscription token runs the executor only, never the chat. An API key is the only method for Anthropic/Gemini/OpenAI — none of the three currently offers a browser login for third-party apps the way the Claude Code subscription does (see <a href="manual/adr/0019-project-connections.html">ADR 0019</a>).</span></p>
       </article>
       <article class="card" data-capability="signin" data-ref="45">
         <h3><span class="pt">Login</span><span class="en">Sign-in</span> <span class="badge shipped">Shipped</span> <span class="sub">#45</span></h3>
@@ -109,7 +110,7 @@
     <ol class="steps">
       <li data-step="create" data-ref="46">
         <strong><span class="pt">Criar o card</span><span class="en">Create the card</span></strong> <span class="badge shipped">Shipped</span>
-        <p><span class="pt">Crie o card no painel do Tradvia. Também dá para começar por uma issue no GitHub: mencione <code>@claude</code> ou aplique os labels descritos em <a href="https://github.com/Tradvia/tradvia/blob/main/docs/hello-world.md">hello-world.md</a>.</span><span class="en">Create the card in the Tradvia dashboard. You can also start from a GitHub issue: mention <code>@claude</code> or apply the labels described in <a href="https://github.com/Tradvia/tradvia/blob/main/docs/hello-world.md">hello-world.md</a>.</span></p>
+        <p><span class="pt">Crie o card no painel do Tradvia. Também dá para começar por uma issue no GitHub: mencione <code>@claude</code> ou aplique os labels descritos em <a href="manual/hello-world.html">hello-world.md</a>.</span><span class="en">Create the card in the Tradvia dashboard. You can also start from a GitHub issue: mention <code>@claude</code> or apply the labels described in <a href="manual/hello-world.html">hello-world.md</a>.</span></p>
       </li>
       <li data-step="plan">
         <strong><span class="pt">Aprovar o plano</span><span class="en">Approve the plan</span></strong> <span class="badge in-progress">In progress</span>
@@ -173,36 +174,37 @@
     <p class="sub"><span class="pt">Os endpoints existem no código; isso não torna a funcionalidade Shipped (veja os status acima).</span><span class="en">The endpoints exist in the code; that does not make the capability Shipped (see the statuses above).</span></p>
     <h3>ADRs</h3>
     <ul>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0001-open-core-licensing.md">ADR 0001 · Open-core licensing</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0002-positioning-multi-view-orchestration.md">ADR 0002 · Positioning, multi-view orchestration</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0003-agentops-hybrid-execution-control-plane.md">ADR 0003 · AgentOps hybrid execution control plane</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0004-access-follows-project-configurable-interactions.md">ADR 0004 · Access follows project, configurable interactions</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0005-hosting-on-oci-always-free.md">ADR 0005 · Hosting on OCI Always Free</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0006-autonomous-multi-agent-orchestration.md">ADR 0006 · Autonomous multi-agent orchestration</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0007-tradvia-as-the-single-interaction-surface.md">ADR 0007 · Tradvia as the single interaction surface</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0008-sessions-csrf-and-project-roles.md">ADR 0008 · Sessions, CSRF and project roles</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0009-programmatic-activity-api.md">ADR 0009 · Programmatic API for activities (API tokens)</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0010-coding-agent-adapters.md">ADR 0010 · Coding agent adapters</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0011-in-app-manual-and-scalable-i18n.md">ADR 0011 · In-app manual and scalable i18n</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0012-agent-communication-git-and-mcp.md">ADR 0012 · Agents talk to the orchestrator through git and MCP</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0013-chat-needs-an-api-key.md">ADR 0013 · The chat runs only on an AI provider with an API key</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0014-ai-manager-below-the-owner.md">ADR 0014 · An AI manager below the project's owner</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0015-command-and-data-guardrails.md">ADR 0015 · Command and data guardrails</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0016-evals-harness.md">ADR 0016 · An evals harness with golden tasks, scripted by default</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0017-distributed-tracing.md">ADR 0017 · Distributed tracing of card runs</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0018-project-settings-on-tradvia.md">ADR 0018 · Project settings live on Tradvia, per project (budget first)</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0019-project-connections.md">ADR 0019 · Project connections configured in Tradvia</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0020-web-push-notifications.md">ADR 0020 · Web Push with VAPID and a minimal payload</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0021-live-chat-with-executing-agents.md">ADR 0021 · Live chat with executing agents</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0022-session-driver-interface.md">ADR 0022 · Session driver interface (hosted browser first)</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/adr/0023-third-party-ideas-and-code.md">ADR 0023 · Bringing in ideas and code from other projects</a></li>
+      <li><a href="manual/adr/0001-open-core-licensing.html">ADR 0001 · Open-core licensing</a></li>
+      <li><a href="manual/adr/0002-positioning-multi-view-orchestration.html">ADR 0002 · Positioning, multi-view orchestration</a></li>
+      <li><a href="manual/adr/0003-agentops-hybrid-execution-control-plane.html">ADR 0003 · AgentOps hybrid execution control plane</a></li>
+      <li><a href="manual/adr/0004-access-follows-project-configurable-interactions.html">ADR 0004 · Access follows project, configurable interactions</a></li>
+      <li><a href="manual/adr/0005-hosting-on-oci-always-free.html">ADR 0005 · Hosting on OCI Always Free</a></li>
+      <li><a href="manual/adr/0006-autonomous-multi-agent-orchestration.html">ADR 0006 · Autonomous multi-agent orchestration</a></li>
+      <li><a href="manual/adr/0007-tradvia-as-the-single-interaction-surface.html">ADR 0007 · Tradvia as the single interaction surface</a></li>
+      <li><a href="manual/adr/0008-sessions-csrf-and-project-roles.html">ADR 0008 · Sessions, CSRF and project roles</a></li>
+      <li><a href="manual/adr/0009-programmatic-activity-api.html">ADR 0009 · Programmatic API for activities (API tokens)</a></li>
+      <li><a href="manual/adr/0010-coding-agent-adapters.html">ADR 0010 · Coding agent adapters</a></li>
+      <li><a href="manual/adr/0011-in-app-manual-and-scalable-i18n.html">ADR 0011 · In-app manual and scalable i18n</a></li>
+      <li><a href="manual/adr/0012-agent-communication-git-and-mcp.html">ADR 0012 · Agents talk to the orchestrator through git and MCP</a></li>
+      <li><a href="manual/adr/0013-chat-needs-an-api-key.html">ADR 0013 · The chat runs only on an AI provider with an API key</a></li>
+      <li><a href="manual/adr/0014-ai-manager-below-the-owner.html">ADR 0014 · An AI manager below the project's owner</a></li>
+      <li><a href="manual/adr/0015-command-and-data-guardrails.html">ADR 0015 · Command and data guardrails</a></li>
+      <li><a href="manual/adr/0016-evals-harness.html">ADR 0016 · An evals harness with golden tasks, scripted by default</a></li>
+      <li><a href="manual/adr/0017-distributed-tracing.html">ADR 0017 · Distributed tracing of card runs</a></li>
+      <li><a href="manual/adr/0018-project-settings-on-tradvia.html">ADR 0018 · Project settings live on Tradvia, per project (budget first)</a></li>
+      <li><a href="manual/adr/0019-project-connections.html">ADR 0019 · Project connections configured in Tradvia</a></li>
+      <li><a href="manual/adr/0020-web-push-notifications.html">ADR 0020 · Web Push with VAPID and a minimal payload</a></li>
+      <li><a href="manual/adr/0021-live-chat-with-executing-agents.html">ADR 0021 · Live chat with executing agents</a></li>
+      <li><a href="manual/adr/0022-session-driver-interface.html">ADR 0022 · Session driver interface (hosted browser first)</a></li>
+      <li><a href="manual/adr/0023-third-party-ideas-and-code.html">ADR 0023 · Bringing in ideas and code from other projects</a></li>
     </ul>
     <h3><span class="pt">Mais documentação</span><span class="en">More documentation</span></h3>
     <ul>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/github-app.md">GitHub App</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/deploy-oci.md">Deploy on OCI</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/docs/projects.md">Projects</a></li>
-      <li><a href="https://github.com/Tradvia/tradvia/blob/main/CONTRIBUTING.md">CONTRIBUTING</a></li>
+      <li><a href="manual/" data-i18n="navManual"></a>: <span class="pt">todos os guias e ADRs, com sumário e busca, lidos aqui no Tradvia</span><span class="en">every guide and ADR, with contents and search, read here in Tradvia</span></li>
+      <li><a href="manual/github-app.html">GitHub App</a></li>
+      <li><a href="manual/deploy-oci.html">Deploy on OCI</a></li>
+      <li><a href="manual/projects.html">Projects</a></li>
+      <li><a href="manual/contributing.html">CONTRIBUTING</a></li>
       <li><code>make check</code>: <span class="pt">testes offline e fronteira de licença</span><span class="en">offline tests and license boundary</span></li>
     </ul>
   </section>
@@ -211,10 +213,10 @@
 const I18N = {
   pt: { title: "Documentação", back: "← Voltar ao painel", navCapabilities: "Funcionalidades e status",
     guideTitle: "Como executar uma tarefa no Tradvia", navTroubleshoot: "Painel vazio",
-    troubleshootTitle: "Painel vazio ou sem cards", navTechnical: "Documentação técnica" },
+    troubleshootTitle: "Painel vazio ou sem cards", navTechnical: "Documentação técnica", navManual: "Manual completo" },
   en: { title: "Documentation", back: "← Back to the dashboard", navCapabilities: "Capabilities and status",
     guideTitle: "How to run a task in Tradvia", navTroubleshoot: "Empty panel",
-    troubleshootTitle: "Empty panel or no cards", navTechnical: "Technical docs" },
+    troubleshootTitle: "Empty panel or no cards", navTechnical: "Technical docs", navManual: "Full manual" },
 };
 let lang = (navigator.language || "").toLowerCase().startsWith("pt") ? "pt" : "en";
 try { const saved = localStorage.getItem("tradvia.lang"); if (saved === "pt" || saved === "en") lang = saved; } catch (err) { /* ignore */ }
