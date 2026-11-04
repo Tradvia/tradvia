@@ -146,10 +146,28 @@ Where the implementation differs from the decision above, and why:
 - The deploy also runs when only `docs/**`, `README.md` or `CONTRIBUTING.md` change, so the
   manual is never older than `main`.
 
+## As built (part 2, #101)
+
+- `dashboard/i18n/<lang>.json` holds flat, namespaced keys: `docs.*` for the docs page,
+  `manual.*` for the manual's labels, `lang.label`/`lang.html`/`lang.name` for the language
+  itself. `pt`, `en` and `es` ship with the same keys; a test fails on any missing or extra key.
+- `docs.html` has no strings of its own any more: elements carry `data-i18n` (text) or
+  `data-i18n-html` (text with `<code>`, `<strong>`, `<em>` or a link to the manual, GitHub or
+  an anchor). The page fetches the chosen language plus `en` as the fallback, and rebuilds
+  that small markup element by element: nothing is inserted as raw HTML.
+- The manual reads its labels from the same files at build time, and its language selector
+  lists every file found: adding a language is one JSON file (plus one `<option>` in
+  `docs.html`), which a test proves with a fourth language.
+- The capability status words (Shipped, In progress, Partial, Planned) stay in English in
+  every language: they are the CLAUDE.md terms, and the badges are checked against ADR 0007.
+- Not in this part: the main panel (`index.html`) still has its own inline `pt`/`en`
+  dictionary and help FAQ (row 2b below).
+
 ## Delivery
 
 | Order | Capability | Status |
 |---|---|---|
 | 1 | `python -m tradvia.manual build`, static `dashboard/manual/`, wired into `deploy-oci.yml` (#101) | Shipped |
-| 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together) | Planned |
+| 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together): the docs page and the manual (#101) | Shipped |
+| 2b | The main panel (`index.html`, its inline `pt`/`en` dictionary and help FAQ) moved to the same files, adding `es` | Planned |
 | 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind | Planned |
