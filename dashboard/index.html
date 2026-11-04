@@ -93,7 +93,8 @@
   .help-section ul { margin: 0; padding-left: var(--s5); }
   h2 { font-size: 13px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
   .sub { color: var(--muted); font-size: 12px; }
-  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
+  .controls .auth { overflow-wrap: anywhere; }
   button, select {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
