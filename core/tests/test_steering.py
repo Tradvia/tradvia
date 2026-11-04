@@ -193,10 +193,10 @@ def test_steering_needs_the_role_csrf_text_and_an_open_card(store, gh, clock):
 
 
 def test_the_dialog_has_the_message_box_in_both_languages():
+    from panel_i18n import has_everywhere
+
     from pathlib import Path
 
     html = (Path(__file__).resolve().parents[2] / "dashboard" / "index.html").read_text(encoding="utf-8")
-    pt, en = html[html.index("  pt: {"):html.index("  en: {")], html[html.index("  en: {"):]
-    for key in ("steerTitle", "steerHint", "steerSend", "steerSent", "act_steer_run"):
-        assert f"{key}:" in pt and f"{key}:" in en, key
+    assert has_everywhere("steerTitle", "steerHint", "steerSend", "steerSent", "act_steer_run")
     assert '"/cards/" + n + "/steer"' in html

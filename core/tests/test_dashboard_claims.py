@@ -53,7 +53,9 @@ def test_board_cards_are_ready_plus_claimed_once_and_never_a_pull_request():
 
 
 def test_the_board_and_backlog_wiring_is_in_the_page():
+    from panel_i18n import has_everywhere
+
     html = HTML.read_text(encoding="utf-8")
     assert '"/issues?labels=" + CLAIM_LABEL' in html and "await loadClaims(repo, cards)" in html
-    assert html.count("freeOnly:") == 2 and html.count("claimedBy:") == 2
+    assert has_everywhere("freeOnly", "claimedBy")
     assert "if (backlogFreeOnly && b.status !== \"pronto\") continue;" in html

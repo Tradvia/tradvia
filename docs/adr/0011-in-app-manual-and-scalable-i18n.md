@@ -160,8 +160,15 @@ Where the implementation differs from the decision above, and why:
   `docs.html`), which a test proves with a fourth language.
 - The capability status words (Shipped, In progress, Partial, Planned) stay in English in
   every language: they are the CLAUDE.md terms, and the badges are checked against ADR 0007.
-- Not in this part: the main panel (`index.html`) still has its own inline `pt`/`en`
-  dictionary and help FAQ (row 2b below).
+- Part 2b moved the main panel too: its 441 strings live under `app.*` and the help FAQ
+  under `app.faq.*` (topic, question, answer with one line per paragraph or `- ` bullet), all
+  in `pt`, `en` and `es`. `index.html` fetches English and the chosen language before its
+  first render, and a language picked later is fetched once, on demand; `t()` falls back to
+  English for a missing key. Tests check that every literal `t("…")` key exists, that
+  placeholders such as `{n}` match across languages, and that the FAQ names each button the
+  way the panel labels it.
+- The service worker (`sw.js`) keeps its handful of push labels inline, now in the three
+  languages: it shows a notification from a push event and does not fetch the panel's files.
 
 ## Delivery
 
@@ -169,5 +176,5 @@ Where the implementation differs from the decision above, and why:
 |---|---|---|
 | 1 | `python -m tradvia.manual build`, static `dashboard/manual/`, wired into `deploy-oci.yml` (#101) | Shipped |
 | 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together): the docs page and the manual (#101) | Shipped |
-| 2b | The main panel (`index.html`, its inline `pt`/`en` dictionary and help FAQ) moved to the same files, adding `es` | Planned |
+| 2b | The main panel (`index.html`, its inline `pt`/`en` dictionary and help FAQ) moved to the same files, adding `es` (#101) | Shipped |
 | 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind | Planned |

@@ -90,3 +90,34 @@ def test_a_new_language_is_one_file(tmp_path):
     assert "Rechercher dans le manuel" in page
     order = re.findall(r'<option value="(\w+)">', page)
     assert order[:3] == ["pt", "en", "es"] and order[-1] == "fr"
+
+
+def test_placeholders_are_the_same_in_every_language():
+    files = locales()
+    for key, en_value in files["en"].items():
+        expected = sorted(re.findall(r"\{\w+\}", en_value))
+        for code, strings in files.items():
+            assert sorted(re.findall(r"\{\w+\}", strings[key])) == expected, (code, key)
+
+
+def test_the_panel_has_no_dictionary_of_its_own_and_offers_every_language():
+    html = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
+    assert "  pt: {" not in html and "  en: {" not in html
+    assert 'fetch("i18n/" + code + ".json")' in html
+    header = html[html.index('<select id="lang"'):]
+    header = header[:header.index("</select>")]
+    files = {p.stem for p in I18N.glob("*.json")}
+    assert set(re.findall(r'<option value="(\w+)">', header)) == files
+    prefs = re.search(r"const PREF_LANGS = \[([^\]]*)\]", html).group(1)
+    assert set(re.findall(r'"(\w+)"', prefs)) == files
+    settings = re.search(r'settingsSelect\(t\("settings.language"\), prefs.lang, (\[\[.*?\]\])', html).group(1)
+    assert set(re.findall(r'\["(\w+)", ', settings)) == files
+
+
+def test_every_key_the_panel_asks_for_exists():
+    # t("literal") calls only; computed keys ("kind_" + kind, "faq." + id) are covered elsewhere.
+    html = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
+    asked = set(re.findall(r'\bt\("([\w.]+)"\)', html))
+    asked |= set(re.findall(r'data-i18n(?:-placeholder)?="([\w.]+)"', html))
+    en = {k[len("app."):] for k in locales()["en"] if k.startswith("app.")}
+    assert asked and asked <= en, sorted(asked - en)

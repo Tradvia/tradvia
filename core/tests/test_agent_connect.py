@@ -60,8 +60,10 @@ def test_tokens_are_listed_per_project(signed, gh):
 
 
 def test_the_panel_has_the_connect_screen_in_both_languages():
+    from panel_i18n import has_everywhere
+
     html = DASHBOARD.read_text(encoding="utf-8")
     assert 'id="agent-section"' in html and "renderAgentConnect();" in html
-    assert html.count("agentTitle:") == 2 and html.count("agentOnce:") == 2
+    assert has_everywhere("agentTitle", "agentOnce")
     # the token is never put into a URL, storage or the generated snippets
     assert "localStorage.setItem(\"agent" not in html and '"${TRADVIA_TOKEN}"' in html
