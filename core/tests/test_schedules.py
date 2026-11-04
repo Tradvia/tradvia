@@ -197,10 +197,10 @@ def test_only_an_admin_changes_them_and_input_is_validated(signed, store):
 
 
 def test_the_settings_screen_has_the_schedules_in_both_languages():
+    from panel_i18n import has_everywhere
+
     from pathlib import Path
 
     html = (Path(__file__).resolve().parents[2] / "dashboard" / "index.html").read_text(encoding="utf-8")
-    pt, en = html[html.index("  pt: {"):html.index("  en: {")], html[html.index("  en: {"):]
-    for key in ("sch.title", "sch.noToken", "sch.save", "sch.note", "sch.weekly", "sch.monthly"):
-        assert f'"{key}"' in pt and f'"{key}"' in en, key
+    assert has_everywhere("sch.title", "sch.noToken", "sch.save", "sch.note", "sch.weekly", "sch.monthly")
     assert '"/settings/schedules"' in html

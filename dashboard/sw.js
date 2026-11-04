@@ -21,10 +21,19 @@ const LABELS = {
     human_request: "the agent asked for your help",
     fallback: "a card needs you",
   },
+  es: {
+    plan_ready: "plan listo para aprobar", agent_question: "el agente hizo una pregunta",
+    pr_opened: "PR abierto para revisión", budget_limit: "límite de presupuesto alcanzado",
+    adjust_limit: "límite de ajustes alcanzado", deploy_stuck: "deploy detenido esperando aprobación",
+    cost_outlier: "costo muy por encima de lo normal", run_dead: "ejecución sin actualizaciones",
+    human_request: "el agente pidió una acción tuya",
+    fallback: "un card te necesita",
+  },
 };
 
 function labelsFor() {
-  return /^pt/i.test(self.navigator.language || "") ? LABELS.pt : LABELS.en;
+  const code = String(self.navigator.language || "").slice(0, 2).toLowerCase();
+  return LABELS[code] || LABELS.en;
 }
 
 // Keeps only plain values of the expected shape; anything else is dropped.

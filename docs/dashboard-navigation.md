@@ -32,7 +32,7 @@ The server still checks the role on every action; the menu only hides what you c
   `.tradvia.yml` (see [`tradvia.example.yml`](tradvia.example.yml) and
   [`projects.md`](projects.md)).
 - **Notifications**: Planned (#47), shown as "soon".
-- **Preferences**: language (PT-BR/EN) and theme (dark/light/system).
+- **Preferences**: language (PT-BR/EN/ES, from `dashboard/i18n/`) and theme (dark/light/system).
 
 ## Preference keys
 

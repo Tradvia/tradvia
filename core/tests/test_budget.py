@@ -285,12 +285,14 @@ def test_card_in_progress_finishes_its_own_budget_when_the_month_runs_out(tmp_pa
 
 
 def test_dashboard_renders_the_monthly_budget_with_both_languages():
+    from panel_i18n import has_everywhere
+
     from pathlib import Path
 
     html = (Path(__file__).resolve().parents[2] / "dashboard" / "index.html").read_text(
         encoding="utf-8")
     assert "monthlyBudgetKpi()" in html and "mb.cap_usd" in html and "mb.spent_usd" in html
-    assert html.count("monthlyBudget:") == 2  # pt and en
+    assert has_everywhere("monthlyBudget")
 
 
 def test_per_card_limit_is_unchanged_with_a_monthly_ceiling():

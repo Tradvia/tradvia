@@ -149,9 +149,10 @@ def test_only_an_admin_changes_it_and_input_is_validated(signed, store, with_can
 
 
 def test_the_settings_screen_has_the_canary_in_both_languages():
+    from panel_i18n import has_everywhere
+
     from pathlib import Path
 
     html = (Path(__file__).resolve().parents[2] / "dashboard" / "index.html").read_text(encoding="utf-8")
-    for key in ("can.title", "can.percent", "can.revert", "can.revertConfirm", "can.sideCanary"):
-        assert html.count(f'"{key}":') == 2, key  # pt and en
+    assert has_everywhere("can.title", "can.percent", "can.revert", "can.revertConfirm", "can.sideCanary")
     assert '"/settings/canary/revert"' in html and '"/settings/canary"' in html
