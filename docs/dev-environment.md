@@ -17,6 +17,7 @@ Create codespace on main**, or use the badge in the README. The container runs
 ```bash
 make test                 # core test suite, offline, no API keys
 make check                # tests + license boundary, same as CI
+make manual               # render docs/ into dashboard/manual/, as the deploy does
 ```
 
 **Local:** install Docker and VS Code with the *Dev Containers* extension, clone

@@ -117,10 +117,39 @@ Two different things, two different fixes:
   translation that falls behind its English source is flagged, not
   silently stale.
 
+## As built (part 1, #101)
+
+Where the implementation differs from the decision above, and why:
+
+- **A module, not a script.** The renderer is `core/src/tradvia/manual.py`, run as
+  `python -m tradvia.manual build` (or `make manual`), instead of `scripts/build-manual.py`.
+  Living in `core/` puts it under `core-tests` like every other piece of code; it is still
+  never imported by the API, and it imports the Markdown library only inside `renderer()`.
+- **Full pages, not fragments.** Every document becomes a complete page
+  (`dashboard/manual/adr/0011-….html`, `dashboard/manual/deploy-oci.html`) with the list of
+  documents, the page's own contents and stable heading anchors (GitHub-style, deduplicated),
+  so a section link works without JavaScript. `dashboard/manual/index.html` is the table of
+  contents; `index.json` keeps path, page, title, section and headings, plus each section's
+  plain text for the search.
+- **Search is full text, per section.** It loads `index.json` on the first keystroke and
+  lists matching sections (page › heading, with a snippet), accent-insensitive.
+- **What is rendered:** `README.md`, `CONTRIBUTING.md`, `docs/*.md`, `docs/adr/*.md` and
+  any other `docs/**/*.md` except `docs/i18n/` (reserved for part 3's translations). A link
+  between two of them stays in the manual; a link to any other file of the repository goes
+  to GitHub.
+- **Dependency:** `markdown-it-py` (MIT), pinned to an exact version in the deploy step and
+  `>=3` in the `dev`/`manual` extras for the tests. Raw HTML in Markdown is escaped, and
+  images from other hosts become links, since the panel's CSP does not load them.
+- **Chrome in three languages already.** The manual's own labels (search, contents, back)
+  ship in `pt`, `en` and `es`, sharing the panel's `tradvia.lang` choice; the content is
+  the English source with a visible note until part 3 brings translations.
+- The deploy also runs when only `docs/**`, `README.md` or `CONTRIBUTING.md` change, so the
+  manual is never older than `main`.
+
 ## Delivery
 
 | Order | Capability | Status |
 |---|---|---|
-| 1 | `scripts/build-manual.py`, static `dashboard/manual/`, wired into `deploy-oci.yml` | Planned |
+| 1 | `python -m tradvia.manual build`, static `dashboard/manual/`, wired into `deploy-oci.yml` (#101) | Shipped |
 | 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together) | Planned |
 | 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind | Planned |
