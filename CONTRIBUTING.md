@@ -38,6 +38,10 @@ propose one that the agent can take with the `agent:ready` label.
    - in `core/`: `SPDX-License-Identifier: FSL-1.1-ALv2`
    - in `ee/`: `SPDX-License-Identifier: LicenseRef-Tradvia-Commercial`
 4. Run `scripts/check-license-boundary.sh` locally.
+   Bringing in an idea, a dependency or code from another project follows
+   [ADR 0023](docs/adr/0023-third-party-ideas-and-code.md): reimplement ideas, check the
+   exact license of a dependency and pin it, keep small copied pieces in
+   `core/vendor/<project>/` with their `LICENSE` and a `NOTICE` entry, and never fork.
 5. Open a pull request against `main`. `main` is protected: changes land only
    through reviewed pull requests with green checks, merged by squash.
 
