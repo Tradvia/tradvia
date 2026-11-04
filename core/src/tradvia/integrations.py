@@ -180,6 +180,22 @@ class GitHubIssueChat:
                 return None
             time.sleep(self.poll_s)
 
+    def steering_messages(self, since_iso: str) -> list[dict]:
+        """Comments posted on the card since `since_iso` by people allowed to approve plans
+        (write by default), oldest first: the steering messages of a running card (#99, ADR
+        0021). Bots and outsiders are ignored, as for plan replies."""
+        r = self.s.get(self._url(), params={"per_page": 100, "since": since_iso}, timeout=TIMEOUT)
+        r.raise_for_status()
+        out = []
+        for c in sorted(r.json(), key=lambda c: c["id"]):
+            user = c.get("user") or {}
+            if user.get("type") == "Bot" or (c.get("created_at") or "") < since_iso:
+                continue
+            login = user.get("login", "")
+            if self.policy.allows("approve_plan", role_of(self, login)):
+                out.append({"id": str(c["id"]), "text": c.get("body") or "", "by": login})
+        return out
+
     def _refusal(self, login: str, role: str | None) -> str:
         minimum = self.policy.interactions.approve_plan
         who = f"papel `{role}`" if role else "nenhum papel (não é colaborador)"

@@ -25,6 +25,12 @@ the pull request then removes the old paths too (#185). Protected paths (`.githu
 `LICENSE.md`, `CLA.md`, `CODEOWNERS`, `.tradvia.yml`) stay blocked for any change, deletion
 included.
 
+Steering (#99, ADR 0021): with the Claude Code executor, people allowed to answer plans can
+send a message to a running card (card dialog, or a comment on the issue). The run goes in
+segments of `TRADVIA_STEER_EVERY_TURNS` turns (default 5) on one session (`--resume`) and
+delivers new messages between segments, inside the card's turn, time and cost limits. The
+Gemini and Codex adapters run without steering for now.
+
 - **Claude Code**: `--allowedTools` (`Read,Glob,Grep` to plan; edit tools plus
   `make check`/`make test` and `git mv`/`git rm` to execute) and `--max-turns`.
 - **Gemini CLI** (`gemini -p --output-format json`): `--allowed-tools` with read-only tools

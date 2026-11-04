@@ -1,6 +1,6 @@
 # ADR 0021: Live chat with executing agents
 
-- Status: Proposed
+- Status: Accepted (phase 1, 2026-11-04)
 - Date: 2026-10-24
 
 ## Context
@@ -82,6 +82,29 @@ relaxed by this ADR.
 running a card" (§1) and "the orchestrator can do more" are independent
 axes; this ADR only changes the first.
 
+### As built (phase 1, #99)
+
+Two details differ from the proposal above, for reasons found while building it:
+
+- **Segments instead of a check before every tool call.** `claude -p` takes no input while it
+  runs, and a run stopped mid-turn reports no cost. So the executor runs the card on one Claude
+  Code session in segments of `TRADVIA_STEER_EVERY_TURNS` turns (default 5, not 3: each segment
+  is a resume of the session), with `--max-turns` per segment and `--resume <session_id>`
+  between them. After each segment it reads the new messages; with none, the session just
+  continues. Every segment ends normally, so its cost and turns are counted, and the card's
+  turn and time limits apply to the sum. A message that arrives after the agent finished gets
+  one more segment, within the same limits.
+- **Where messages come from.** A steering message is a comment on the card's issue, posted
+  after the run started by someone allowed to answer plans (`approve_plan`, write by default),
+  the same rule as plan replies: bots and outsiders are ignored. The panel's card dialog has
+  "Message to the agent" while the agent works (`POST /cards/{n}/steer`, session, CSRF,
+  audited), which posts that comment with the person's own token.
+
+Each message goes to the model as its own turn, labeled as a human steering message and as
+untrusted input that cannot approve, merge or deploy, capped at 2,000 characters. The card
+thread says when a message reached the agent, and the pull request lists the messages
+delivered during the run.
+
 ## Deferred: an operator session
 
 The owner's second ask — a Tradvia-hosted conversation with the reach of an
@@ -130,6 +153,6 @@ are for.
 
 | Order | Card | Capability | Status |
 |---|---|---|---|
-| 1 | #99 | Live steering messages reach a card's current run (phase 1: async) | Planned |
+| 1 | #99 | Live steering messages reach a card's current run (phase 1: async segments) | In progress: offline tests with a scripted Claude Code; not yet run against the real CLI |
 | 2 | — | Persistent per-run agent process (phase 2, follow-up ADR) | Planned |
 | 3 | — | Operator session with repository-wide reach (separate ADR, not scoped yet) | Planned |

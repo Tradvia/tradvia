@@ -1957,6 +1957,9 @@ const I18N = {
     kind_adjust_limit: "limite de ajustes", kind_deploy_stuck: "deploy parado",
     kind_cost_outlier: "custo fora da curva", kind_run_dead: "execução sem atualização",
     kind_human_request: "o agente pediu uma ação sua",
+    steerTitle: "Mensagem para o agente", steerHint: "O agente está trabalhando neste card. A mensagem chega a ele entre um trecho e outro da execução (a cada poucos turnos), como orientação da equipe. Ela não aprova, não faz merge nem deploy.",
+    steerPlaceholder: "Ex.: use a biblioteca que já existe em core/src/tradvia/budget.py", steerSend: "Enviar ao agente", steerSent: "Enviada. Ela aparece no card quando chegar ao agente.",
+    act_steer_run: "mandou uma mensagem ao agente",
     humanRequest: "O agente pediu uma pessoa", humanRequestHint: "Faça o que o agente pediu no comentário do card e marque como feito. O agente continua quando ler o card.",
     humanDone: "Marcar como feito", humanDoneConfirm: "Confirmar que você já fez o que o agente pediu?", humanLive: "Abrir a sessão ao vivo",
     title: "Execuções", refresh: "Atualizar", autoRefresh: "automático", loading: "Carregando…",
@@ -2131,6 +2134,9 @@ const I18N = {
     kind_adjust_limit: "adjustment limit", kind_deploy_stuck: "stuck deploy",
     kind_cost_outlier: "cost outlier", kind_run_dead: "run without updates",
     kind_human_request: "the agent asked for your help",
+    steerTitle: "Message to the agent", steerHint: "The agent is working on this card. The message reaches it between two segments of the run (every few turns), as guidance from the team. It does not approve, merge or deploy anything.",
+    steerPlaceholder: "E.g.: use the helper that already exists in core/src/tradvia/budget.py", steerSend: "Send to the agent", steerSent: "Sent. The card says when it reaches the agent.",
+    act_steer_run: "sent a message to the agent",
     humanRequest: "The agent asked for a person", humanRequestHint: "Do what the agent asked in the card's comment, then mark it as done. The agent goes on when it reads the card.",
     humanDone: "Mark as done", humanDoneConfirm: "Confirm that you already did what the agent asked?", humanLive: "Open the live session",
     title: "Runs", refresh: "Refresh", autoRefresh: "auto", loading: "Loading…",
@@ -2995,6 +3001,29 @@ function fillDialogRemote(n, state, prs) {
     const box = el("section");
     host.append(box);
     renderApproval(box, n);
+  }
+  if (state === "AGENT_WORKING" && mine && mine.can_approve) {  // steer the running agent (#99)
+    const box = el("section");
+    box.append(el("h3", t("steerTitle")), el("p", t("steerHint"), "sub"));
+    const text = el("textarea");
+    Object.assign(text, { rows: 3, maxLength: 2000, placeholder: t("steerPlaceholder") });
+    const send = el("button", t("steerSend"));
+    send.type = "button";
+    send.addEventListener("click", async () => {
+      const v = text.value.trim();
+      if (!v) return;
+      box.querySelectorAll(".action-error, .steer-ok").forEach((x) => x.remove());
+      send.disabled = true;
+      const res = await panelRequest("POST", "/cards/" + n + "/steer", { text: v });
+      send.disabled = false;
+      if (!res.ok) { box.append(el("div", res.error, "msg error action-error")); return; }
+      text.value = "";
+      box.append(el("div", t("steerSent"), "sub steer-ok"));
+    });
+    const acts = el("div", null, "acts");
+    acts.append(send);
+    box.append(text, acts);
+    host.append(box);
   }
   if (mine) {  // an agent asked a person to act on this card (request_human)
     const ask = el("section");

@@ -119,6 +119,24 @@ def build_graph(github: GitHub, chat: Chat,
     exec_params = inspect.signature(executor.execute).parameters if executor else {}
     takes_on_tool = "on_tool" in exec_params
     takes_limits = "max_turns" in exec_params and "timeout" in exec_params
+    # Steering (#99, ADR 0021): only when the executor and the chat both support it.
+    takes_steer = "steer" in exec_params and hasattr(chat, "steering_messages")
+
+    def make_steer(card_id: str) -> Callable[[], list[dict]]:
+        """New messages people sent to this run since it started, each delivered once; the card
+        thread says when one reached the agent."""
+        since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        seen: set[str] = set()
+
+        def steer() -> list[dict]:
+            fresh = [m for m in chat.steering_messages(since) if m["id"] not in seen]
+            seen.update(m["id"] for m in fresh)
+            if fresh:
+                who = ", ".join(sorted({"@" + m["by"] for m in fresh}))
+                chat.post(f"📨 **{card_id}** — mensagem de {who} entregue ao agente durante a "
+                          "execução.")
+            return fresh
+        return steer
 
     def traced(name: str, agent: str):
         """Run a node inside the span `node.<name>` of the card trace (logic unchanged)."""
@@ -421,6 +439,8 @@ def build_graph(github: GitHub, chat: Chat,
                 kwargs.update(max_turns=turns, timeout=seconds)
             if level == "warn":
                 kwargs["budget_notice"] = warning_notice(card.get("usage"), budget)
+            if takes_steer:
+                kwargs["steer"] = make_steer(card["id"])
             try:
                 with tracer.span("model.executor",
                                  model=model_name(executor, type(executor).__name__)) as sp:
@@ -486,6 +506,9 @@ def build_graph(github: GitHub, chat: Chat,
             extra = (f"\n\n### Claude Code\n{run['summary']}\n\n"
                      f"Estimated cost (API-equivalent): ${run['cost_usd']:.4f} · {run['duration_s']:.0f}s\n"
                      f"{tokens_line(run)}")
+            if run.get("steering"):
+                extra += ("\n\n### Steering messages delivered during the run\n"
+                          + "\n".join(f"- @{m['by']}: {m['text']}" for m in run["steering"]))
             prompt_refs = [r for r in (card.get("plan_prompt"), run.get("prompt")) if r]
             if prompt_refs:
                 extra += "\nPrompt: " + " · ".join(prompt_refs)
