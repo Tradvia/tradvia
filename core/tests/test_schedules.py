@@ -89,10 +89,12 @@ def url(repo=A):
 
 
 @pytest.fixture
-def signed(client, monkeypatch):
+def signed(store, gh, clock, monkeypatch):
+    # The app reads the server token when it is created: set it first.
     monkeypatch.setenv("GITHUB_TOKEN", SERVER_TOKEN)
-    login(client)  # ana: admin of A, read in B
-    return client
+    c = make_client(store, gh, clock)
+    login(c)  # ana: admin of A, read in B
+    return c
 
 
 def put(c, body, repo=A, csrf=True):
@@ -156,7 +158,7 @@ def test_a_refusal_is_shown_on_settings_until_a_card_is_created(store, gh, monke
     app.state.schedule_tick(ts("2026-11-05T06:30"))
     from starlette.testclient import TestClient
     from test_auth import ORIGIN
-    tc = TestClient(app, base_url=ORIGIN, follow_redirects=False)
+    tc = TestClient(app, base_url=ORIGIN, follow_redirects=False)  # this app has the token
     login(tc)
     (item,) = tc.get(url()).json()["items"]
     assert "403" in item["last_error"] and "Issues: Read and write" in item["last_error"]
