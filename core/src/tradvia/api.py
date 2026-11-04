@@ -76,7 +76,7 @@ from .auth import (
     load_config,
     role_refusal,
 )
-from . import alerts, canary, pending, prompts, push
+from . import alerts, canary, pending, prompts, push, schedules
 from .integrations import Chat, DiscordREST
 from .backlog import READY_LABEL, backlog_status
 from . import mcp_server, orchestrator
@@ -1635,6 +1635,72 @@ def create_app(
             return private(JSONResponse(out.body, status_code=out.status))
         return handler
 
+    def schedules_route() -> Callable[[Request], Any]:
+        """GET: the project's recurring cards (#133) with the next run of each. PUT: replace
+        them; admin only, with a session and CSRF, audited. Stored per project, never in a file
+        (ADR 0018). Saving starts a new or changed schedule at its current slot."""
+        async def handler(request: Request) -> Response:
+            repo = f"{request.path_params['owner']}/{request.path_params['repo']}"
+            if auth is None or db is None or repo not in repos:
+                return _not_found()
+            session, failure = await caller(request, False)
+            if session is None:
+                return failure
+            data: Any = None
+            if request.method == "PUT":
+                try:
+                    data = await request.json()
+                except ValueError:
+                    data = None
+
+            def work() -> Outcome:
+                pid = project_id_of(repo)
+                role = auth.role_of(session, repo)
+                if role is None:
+                    return Outcome(403, {"error": f"You have no access to {repo}."})
+                allowed = role == "admin"
+                now_s = auth.now()
+                row = db.get_setting(pid, schedules.SETTING_KEY)
+                items = schedules.read_setting(row["value"] if row else None)
+                state_row = db.get_setting(pid, schedules.STATE_KEY)
+                state = (state_row or {}).get("value") or {}
+                if request.method == "PUT":
+                    if not allowed:
+                        record_audit(pid, session.login, "set_schedules", None, "denied",
+                                     f"role {role} below admin", None)
+                        return Outcome(403, {"error": f"Your role in {repo} is '{role}'; changing "
+                                                      "recurring cards needs 'admin'."})
+                    try:
+                        value = schedules.validate_setting(data)
+                    except ValueError as e:
+                        return Outcome(400, {"error": str(e)})
+                    state = schedules.baseline(value["items"], items, state, now_s)
+                    db.set_setting(pid, schedules.STATE_KEY, state, session.login, now_s)
+                    db.set_setting(pid, schedules.SETTING_KEY, value, session.login, now_s)
+                    record_audit(pid, session.login, "set_schedules", None, "ok",
+                                 " ".join(f"{i['id']}:{i['every']}" for i in value["items"]) or "-",
+                                 None)
+                    items = value["items"]
+                    row = db.get_setting(pid, schedules.SETTING_KEY)
+                return Outcome(200, {
+                    "project": repo,
+                    "items": [{**i, "last_slot": state.get(i["id"]),
+                               "next_slot": schedules.slot_id(schedules.next_slot(i, now_s)),
+                               "last_error": schedule_errors.get((repo, i["id"]))}
+                              for i in items],
+                    "server_token": bool(token),
+                    "updated_by": row["updated_by"] if row else None,
+                    "updated_at": row["updated_at"] if row else None,
+                    "can_edit": allowed,
+                })
+
+            try:
+                out = await run_in_threadpool(work)
+            except Exception:
+                return private(_store_unavailable())
+            return private(JSONResponse(out.body, status_code=out.status))
+        return handler
+
     async def policy_route(request: Request) -> Response:
         """GET: the project's roles per interaction and risk policy, for anyone with a role in it.
         PUT: replace them; admin only (it decides who may do everything else, so it is not
@@ -2310,6 +2376,72 @@ def create_app(
             if found:
                 alerts.deliver(found, sender, discord, db, pid, slug, subscriber_can(repo))
 
+    # Last failure of each schedule in this process, `(repo, id) -> text`, shown on Settings: a
+    # read-only server token makes GitHub refuse every card, and that must not stay silent.
+    schedule_errors: dict[tuple[str, str], str] = {}
+
+    def schedule_tick(at: float | None = None) -> list[int]:
+        """Create the cards whose schedule is due (#133), not started. The slot is written
+        before the issue exists, so the same slot never creates a card twice; if GitHub refuses
+        the issue, the slot is given back and the next round tries again."""
+        assert db is not None
+        created: list[int] = []
+        if auth is None or not token:
+            return created
+        now_s = clock() if at is None else at
+        for repo in repos:
+            try:
+                pid = project_id_of(repo)
+                row = db.get_setting(pid, schedules.SETTING_KEY)
+                items = schedules.read_setting(row["value"] if row else None)
+                if not items:
+                    continue
+                state_row = db.get_setting(pid, schedules.STATE_KEY)
+                state = dict((state_row or {}).get("value") or {})
+            except Exception:
+                continue
+            for item, slot in schedules.due(items, state, now_s):
+                previous = state.get(item["id"])
+                state[item["id"]] = slot
+                try:
+                    db.set_setting(pid, schedules.STATE_KEY, state, "schedule", now_s)
+                except Exception:
+                    break  # cannot claim the slot: create nothing this round
+                title, body = schedules.card_text(item, slot)
+                try:
+                    issue = auth.github.create_issue(token, repo, title, body)
+                except Exception as e:
+                    code = getattr(e, "status", None) or getattr(e, "status_code", None)
+                    schedule_errors[(repo, item["id"])] = (
+                        f"GitHub refused the card ({code or type(e).__name__}); the server token "
+                        "needs Issues: Read and write")
+                    state[item["id"]] = previous
+                    try:
+                        db.set_setting(pid, schedules.STATE_KEY,
+                                       {k: v for k, v in state.items() if v is not None},
+                                       "schedule", now_s)
+                    except Exception:
+                        pass
+                    continue
+                schedule_errors.pop((repo, item["id"]), None)
+                number = issue.get("number")
+                created.append(number)
+                try:
+                    record_audit(pid, "schedule", "schedule_card", number, "ok",
+                                 f"{item['id']} {slot}", None)
+                except Exception:
+                    pass
+        return created
+
+    def schedule_loop() -> None:
+        interval = alerts.alert_interval(os.environ.get("TRADVIA_ALERT_INTERVAL_S"))
+        while True:
+            time.sleep(interval)
+            try:
+                schedule_tick()
+            except Exception:
+                pass
+
     def alert_loop() -> None:
         interval = alerts.alert_interval(os.environ.get("TRADVIA_ALERT_INTERVAL_S"))
         while True:
@@ -2329,6 +2461,8 @@ def create_app(
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         if alerts_on:
             start_alerts()
+        if db is not None and auth is not None and token:  # recurring cards need the server token
+            threading.Thread(target=schedule_loop, name="schedules", daemon=True).start()
         yield
 
     app = Starlette(
@@ -2368,6 +2502,8 @@ def create_app(
                   methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/settings/canary/revert", canary_route(True),
                   methods=["POST"]),
+            Route("/api/projects/{owner}/{repo}/settings/schedules", schedules_route(),
+                  methods=["GET", "PUT"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_route(False), methods=["POST"]),
             Route("/api/projects/{owner}/{repo}/tokens", token_list, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/tokens/{token_id:int}/grants", grant_route(False),
@@ -2417,6 +2553,7 @@ def create_app(
         ]
     )
     app.state.alert_tick = tick
+    app.state.schedule_tick = schedule_tick
     return app
 
 

@@ -184,6 +184,9 @@ it in the thread, and the agent opens the pull request. See
     eval reports name the version, e.g. `Prompt: plan@1`)
   - Stage 3 (robustness) — prompt and model canary on a share of each project's cards, set
     on Tradvia with a one-click revert: **In progress** (offline tests; ADR 0016, ADR 0018)
+  - Stage 4 (automation) — recurring cards: a schedule set on Tradvia creates a card on time,
+    never starts it: **In progress** (offline tests with a fake clock; needs a server token with
+    Issues: Read and write in production)
 - [ ] **Phase 2 — Session workers & takeover:** browser/CLI workers in
       Firecracker MicroVMs with session mutex, live takeover over WebRTC,
       multi-account pool with budget breakers, MCP, Docker Compose

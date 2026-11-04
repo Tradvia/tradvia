@@ -54,3 +54,4 @@ files.
 | Budget setting per project, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |
 | Interactions and risk policy as project settings, Settings screen, audit, agent reads it | In progress: offline tests; checked with a mocked API |
 | Prompt and model canary (#128): share of cards, candidate prompts, model, revert | In progress: offline tests; checked with a mocked API |
+| Recurring cards (#133): daily, weekly or monthly in UTC, created and never started, once per slot | In progress: offline tests with a fake clock; checked with a mocked API; production needs a server token with Issues: Read and write |
