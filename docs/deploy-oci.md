@@ -136,6 +136,11 @@ access to Issues, Pull requests and Actions on `Tradvia/tradvia`. A maintainer
 wires it into the deploy workflow as `GITHUB_TOKEN` in `.env`. Without it the
 API works at the anonymous GitHub limit. The token is never returned or logged.
 
+Recurring cards (#133, Settings → Recurring cards) are created with this same token, because no
+person is signed in when a schedule fires. For them it needs **Issues: Read and write**; with the
+read-only token GitHub refuses the card, nothing is created, and the Settings screen shows the
+refusal next to the schedule.
+
 | Capability | Status |
 |---|---|
 | Read-only GitHub proxy with cache | Shipped |

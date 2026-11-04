@@ -79,6 +79,11 @@
   .canary-compare td, .canary-compare th { padding: 4px 10px; text-align: left; }
   #settings-canary input[type=number], #settings-canary input[type=text] { background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 4px 8px; font: inherit; }
   #settings-canary input[type=text] { width: 16em; max-width: 100%; }
+  .schedules { display: grid; gap: 10px; margin: 8px 0; }
+  .schedule { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: grid; gap: 6px; }
+  .schedule > button { justify-self: start; }
+  #settings-schedules input[type=text], #settings-schedules input[type=number], #settings-schedules textarea { background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 4px 8px; font: inherit; max-width: 100%; }
+  #settings-schedules input[type=text], #settings-schedules textarea { width: 22em; }
   .human-done { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
   .budget-form { display: grid; gap: 8px; max-width: 460px; }
   .budget-row { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -2031,6 +2036,17 @@ const I18N = {
     "budget.readOnly": "Só quem tem o papel exigido neste projeto (admin, por padrão) altera o orçamento.",
     "budget.updated": "Última alteração por",
     "budget.fileIgnored": "O .tradvia.yml deste repositório ainda tem uma seção budget: ela é ignorada. O orçamento vale só como definido aqui.",
+    "sch.title": "Cards recorrentes", "sch.intro": "Cards criados num horário fixo, sem iniciar, neste projeto:",
+    "sch.noToken": "O servidor não tem token do GitHub (TRADVIA_GITHUB_TOKEN): nenhum card recorrente será criado.",
+    "sch.none": "Nenhum agendamento ainda.", "sch.add": "Novo agendamento", "sch.save": "Salvar agendamentos",
+    "sch.saved": "Agendamentos salvos.", "sch.remove": "Remover", "sch.off": "desligado",
+    "sch.id": "Identificador", "sch.cardTitle": "Título do card", "sch.cardBody": "Descrição do card",
+    "sch.every": "Frequência", "sch.hour": "Hora (UTC)", "sch.weekday": "Dia da semana", "sch.day": "Dia do mês (1–28)",
+    "sch.enabled": "Ligado", "sch.daily": "todo dia", "sch.weekEvery": "toda semana", "sch.monthEvery": "todo mês",
+    "sch.weekly": "semanal ({d})", "sch.monthly": "mensal, dia {n}", "sch.next": "Próximo", "sch.last": "Último criado",
+    "sch.mon": "segunda", "sch.tue": "terça", "sch.wed": "quarta", "sch.thu": "quinta", "sch.fri": "sexta", "sch.sat": "sábado", "sch.sun": "domingo",
+    "sch.note": "O card é só criado: iniciá-lo e aprovar o plano continuam com uma pessoa, dentro do orçamento. O mesmo horário nunca cria dois cards. Só admin altera.",
+    "sch.readOnly": "Só admin deste projeto altera os cards recorrentes.",
     "can.title": "Canário de prompt e modelo", "can.intro": "Testa uma versão nova numa parte dos cards deste projeto:",
     "can.stable": "Versão estável", "can.candidates": "candidatas", "can.noCandidate": "nenhuma versão candidata no código",
     "can.active": "Canário ativo em {p}% dos cards", "can.metric": "Indicador", "can.sideStable": "Estável", "can.sideCanary": "Canário",
@@ -2194,6 +2210,17 @@ const I18N = {
     "budget.readOnly": "Only someone with the required role in this project (admin by default) changes the budget.",
     "budget.updated": "Last changed by",
     "budget.fileIgnored": "This repository's .tradvia.yml still has a budget section: it is ignored. The budget is only what is set here.",
+    "sch.title": "Recurring cards", "sch.intro": "Cards created at a set time, not started, in this project:",
+    "sch.noToken": "The server has no GitHub token (TRADVIA_GITHUB_TOKEN): no recurring card will be created.",
+    "sch.none": "No schedule yet.", "sch.add": "New schedule", "sch.save": "Save schedules",
+    "sch.saved": "Schedules saved.", "sch.remove": "Remove", "sch.off": "off",
+    "sch.id": "Identifier", "sch.cardTitle": "Card title", "sch.cardBody": "Card description",
+    "sch.every": "Frequency", "sch.hour": "Hour (UTC)", "sch.weekday": "Weekday", "sch.day": "Day of month (1–28)",
+    "sch.enabled": "On", "sch.daily": "every day", "sch.weekEvery": "every week", "sch.monthEvery": "every month",
+    "sch.weekly": "weekly ({d})", "sch.monthly": "monthly, day {n}", "sch.next": "Next", "sch.last": "Last created",
+    "sch.mon": "Monday", "sch.tue": "Tuesday", "sch.wed": "Wednesday", "sch.thu": "Thursday", "sch.fri": "Friday", "sch.sat": "Saturday", "sch.sun": "Sunday",
+    "sch.note": "The card is only created: starting it and approving its plan stay with a person, within the budget. The same time never creates two cards. Only an admin changes this.",
+    "sch.readOnly": "Only an admin of this project changes recurring cards.",
     "can.title": "Prompt and model canary", "can.intro": "Tests a new version on a share of this project's cards:",
     "can.stable": "Stable version", "can.candidates": "candidates", "can.noCandidate": "no candidate version in the code",
     "can.active": "Canary on for {p}% of the cards", "can.metric": "Metric", "can.sideStable": "Stable", "can.sideCanary": "Canary",
@@ -3472,6 +3499,13 @@ function renderSettings() {
     can.append(el("h3", t("can.title")), el("p", t("loading"), "sub"));
     root.append(can);
     loadCanarySettings(can);
+
+    // Recurring cards (#133): created on time, never started; per project, admin only.
+    const sch = el("div", null, "settings-section");
+    sch.id = "settings-schedules";
+    sch.append(el("h3", t("sch.title")), el("p", t("loading"), "sub"));
+    root.append(sch);
+    loadScheduleSettings(sch);
   }
 
   if (navRights()) {
@@ -3552,6 +3586,108 @@ function drawBudgetSettings(box, b) {
   if (b.updated_by) {
     box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
       new Date(b.updated_at * 1000).toLocaleString(), "sub"));
+  }
+}
+
+async function loadScheduleSettings(box) {
+  const repo = getRepo();
+  const res = await panelRequest("GET", "/settings/schedules");
+  if (repo !== getRepo() || !box.isConnected) return;
+  box.replaceChildren(el("h3", t("sch.title")));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  drawScheduleSettings(box, res.data);
+}
+
+const SCH_WEEKDAYS = ["sch.mon", "sch.tue", "sch.wed", "sch.thu", "sch.fri", "sch.sat", "sch.sun"];
+
+function scheduleWhen(s) {
+  const h = String(s.hour).padStart(2, "0") + ":00 UTC";
+  if (s.every === "week") return t("sch.weekly").replace("{d}", t(SCH_WEEKDAYS[s.weekday])) + " · " + h;
+  if (s.every === "month") return t("sch.monthly").replace("{n}", s.day) + " · " + h;
+  return t("sch.daily") + " · " + h;
+}
+
+function drawScheduleSettings(box, d) {
+  box.append(el("p", t("sch.intro") + " " + d.project, "sub"));
+  if (!d.server_token) box.append(el("p", t("sch.noToken"), "msg"));
+  let items = (d.items || []).map((i) => ({ ...i }));
+  const list = el("div", null, "schedules");
+  const err = el("div", null, "msg error"); err.hidden = true;
+  const save = el("button", t("sch.save"));
+  save.type = "button";
+  const strip = (i) => {
+    const out = { id: i.id, title: i.title, body: i.body || "", every: i.every, hour: Number(i.hour), enabled: i.enabled !== false };
+    if (i.every === "week") out.weekday = Number(i.weekday || 0);
+    if (i.every === "month") out.day = Number(i.day || 1);
+    return out;
+  };
+  const draw = () => {
+    list.replaceChildren();
+    if (!items.length) list.append(el("p", t("sch.none"), "sub"));
+    items.forEach((s, idx) => {
+      const card = el("div", null, "schedule");
+      if (!d.can_edit) {
+        card.append(el("strong", s.title), el("div", scheduleWhen(s) + (s.enabled === false ? " · " + t("sch.off") : ""), "sub"));
+      } else {
+        const form = el("div", null, "budget-form");
+        const field = (label, input) => { const r = el("label", null, "budget-row"); r.append(el("span", t(label)), input); form.append(r); return input; };
+        const text = (v, ph, max) => { const x = el("input"); Object.assign(x, { type: "text", value: v || "", placeholder: ph || "", maxLength: max }); return x; };
+        const num = (v, min, max) => { const x = el("input"); Object.assign(x, { type: "number", min, max, step: 1, value: v }); return x; };
+        const sel = (v, opts) => { const x = el("select"); for (const [val, lab] of opts) { const o = el("option", lab); o.value = val; x.append(o); } x.value = String(v); return x; };
+        const id = field("sch.id", text(s.id, "auditoria-semanal", 40));
+        const title = field("sch.cardTitle", text(s.title, "", 200));
+        const body = el("textarea"); body.value = s.body || ""; body.maxLength = 4000; body.rows = 3;
+        field("sch.cardBody", body);
+        const every = field("sch.every", sel(s.every, [["day", t("sch.daily")], ["week", t("sch.weekEvery")], ["month", t("sch.monthEvery")]]));
+        const hour = field("sch.hour", num(s.hour, 0, 23));
+        const wd = field("sch.weekday", sel(s.weekday || 0, SCH_WEEKDAYS.map((k, n) => [n, t(k)])));
+        const day = field("sch.day", num(s.day || 1, 1, 28));
+        const on = el("input"); on.type = "checkbox"; on.checked = s.enabled !== false;
+        field("sch.enabled", on);
+        const sync = () => {
+          Object.assign(s, { id: id.value.trim(), title: title.value, body: body.value, every: every.value,
+            hour: hour.value, weekday: wd.value, day: day.value, enabled: on.checked });
+          wd.parentNode.style.display = s.every === "week" ? "" : "none";
+          day.parentNode.style.display = s.every === "month" ? "" : "none";
+        };
+        form.addEventListener("input", sync); form.addEventListener("change", sync); sync();
+        const remove = el("button", t("sch.remove")); remove.type = "button";
+        remove.addEventListener("click", () => { items.splice(idx, 1); draw(); });
+        card.append(form, remove);
+      }
+      const facts = [];
+      if (s.next_slot) facts.push(t("sch.next") + ": " + s.next_slot);
+      if (s.last_slot) facts.push(t("sch.last") + ": " + s.last_slot);
+      if (facts.length) card.append(el("div", facts.join(" · "), "sub"));
+      if (s.last_error) card.append(el("div", s.last_error, "msg error"));
+      list.append(card);
+    });
+  };
+  draw();
+  box.append(list);
+  if (d.can_edit) {
+    const add = el("button", t("sch.add")); add.type = "button";
+    add.addEventListener("click", () => {
+      items.push({ id: "", title: "", body: "", every: "week", hour: 9, weekday: 0, day: 1, enabled: true });
+      draw();
+    });
+    save.addEventListener("click", async () => {
+      save.disabled = true; err.hidden = true;
+      const res = await panelRequest("PUT", "/settings/schedules", { items: items.map(strip) });
+      save.disabled = false;
+      if (!res.ok) { err.textContent = res.error; err.hidden = false; return; }
+      box.replaceChildren(el("h3", t("sch.title")));
+      drawScheduleSettings(box, res.data);
+      box.append(el("p", t("sch.saved"), "sub"));
+    });
+    const acts = el("div", null, "acts");
+    acts.append(add, save);
+    box.append(acts, err);
+  }
+  box.append(el("p", d.can_edit ? t("sch.note") : t("sch.readOnly"), "note"));
+  if (d.updated_by) {
+    box.append(el("p", t("budget.updated") + " @" + d.updated_by + " · " +
+      new Date(d.updated_at * 1000).toLocaleString(), "sub"));
   }
 }
 
