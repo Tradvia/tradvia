@@ -170,6 +170,29 @@ Where the implementation differs from the decision above, and why:
 - The service worker (`sw.js`) keeps its handful of push labels inline, now in the three
   languages: it shows a notification from a push event and does not fetch the panel's files.
 
+## As built (part 3, #101)
+
+- **A tree per language.** English stays at `dashboard/manual/`; every other language of
+  `dashboard/i18n/` gets the same pages under `dashboard/manual/<lang>/`, with its own labels,
+  contents and search index. The language selector opens the same page in the other tree,
+  and a page opened in a language other than the reader's (`tradvia.lang`, else the browser)
+  sends them to their tree, so links from the panel and the docs page land in the right one.
+- **Translations** live in `docs/i18n/<lang>/`, mirroring `docs/` (`README.md` and
+  `CONTRIBUTING.md` at the folder's top). A document written in another language than
+  English declares it (`docs/glossario.md` is Portuguese), and its English rendering is a
+  translation like any other.
+- **Fallback:** without a translation, the page shows the original with a visible note.
+- **Staleness without git history:** each translation starts with
+  `<!-- tradvia-translation source="…" source-sha256="…" -->`, the fingerprint of the source
+  it was made from. When the source changes, the page carries an "out of date" note until
+  someone updates the translation and runs `python -m tradvia.manual stamp <file>`.
+  The deploy runs `python -m tradvia.manual check`, which lists missing, out-of-date and
+  invalid translations as warnings; `--strict` turns them into a failure. Tests require
+  every translation to be valid (a known source, a header); being out of date is flagged on
+  the page and in the deploy, not a test failure, so an English edit never blocks a pull request.
+- HTML comments in Markdown (license headers) are no longer shown as text; any other raw
+  HTML is still shown as text, never as markup.
+
 ## Delivery
 
 | Order | Capability | Status |
@@ -177,4 +200,4 @@ Where the implementation differs from the decision above, and why:
 | 1 | `python -m tradvia.manual build`, static `dashboard/manual/`, wired into `deploy-oci.yml` (#101) | Shipped |
 | 2 | `dashboard/i18n/{pt,en,es}.json` replacing hand-duplicated spans (all three ship together): the docs page and the manual (#101) | Shipped |
 | 2b | The main panel (`index.html`, its inline `pt`/`en` dictionary and help FAQ) moved to the same files, adding `es` (#101) | Shipped |
-| 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind | Planned |
+| 3 | Manual content — guide pages and ADRs — translated into `pt`/`en`/`es` as `docs/i18n/<lang>/...`, English fallback and staleness check when a translation is missing or behind (#101) | In progress: trees, fallback and staleness shipped; translations in batches |

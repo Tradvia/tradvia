@@ -579,6 +579,7 @@
  "manual.onPage": "En esta página",
  "manual.search": "Buscar en el manual",
  "manual.source": "Fuente en GitHub",
+ "manual.stale": "Traducción posiblemente desactualizada: el texto original cambió después de ella. Ante la duda, consulta la fuente original.",
  "manual.status": "Estado y guía rápida",
- "manual.untranslated": "Esta página aún no tiene traducción; se muestra el texto original."
+ "manual.untranslated": "Esta página aún no tiene traducción al español; se muestra el texto original."
 }

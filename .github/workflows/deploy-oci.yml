@@ -85,6 +85,8 @@ jobs:
           # the pages are static files next to the dashboard, the API never renders anything.
           python -m pip install --quiet "markdown-it-py==4.0.0"
           PYTHONPATH=core/src python -m tradvia.manual build --out dashboard/manual
+          # Out-of-date or invalid translations show up as warnings on this run (never a failure).
+          PYTHONPATH=core/src python -m tradvia.manual check
 
       - name: Upload compose, Caddyfile and dashboard
         run: |
