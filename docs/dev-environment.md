@@ -20,6 +20,11 @@ make check                # tests + license boundary, same as CI
 make manual               # render docs/ into dashboard/manual/, as the deploy does
 ```
 
+To translate a page of the manual, write it under `docs/i18n/<lang>/` with the same path as
+in `docs/` (for example `docs/i18n/pt/projects.md`), keep the links as they are in the source,
+then run `PYTHONPATH=core/src python -m tradvia.manual stamp docs/i18n/pt/projects.md`.
+`python -m tradvia.manual check` lists what is missing or out of date.
+
 **Local:** install Docker and VS Code with the *Dev Containers* extension, clone
 the repository and choose **Reopen in Container**. Without Docker:
 

@@ -144,12 +144,13 @@ def test_translations_folder_is_not_a_page_of_its_own():
 def test_pages_carry_the_three_languages_search_and_the_way_back(built):
     out, _ = built
     page = (out / "adr" / "0011-in-app-manual-and-scalable-i18n.html").read_text(encoding="utf-8")
-    for code in ("pt", "en", "es"):
+    for code in ("pt", "es"):
         assert f'<option value="{code}">' in page
+    assert '<option value="en" selected>' in page and '<html lang="en">' in page
     assert 'id="search"' in page and 'data-root="../"' in page
     assert 'href="../../"' in page  # back to the dashboard, at /runs/
     assert 'href="../../docs.html"' in page  # the status page stays the source of real status
-    assert 'id="untranslated"' in page
+    assert 'id="untranslated"' not in page  # English is this page's own language
     assert "tradvia.lang" in page
     index = (out / "index.html").read_text(encoding="utf-8")
     assert 'id="g-adr"' in index and 'data-root=""' in index

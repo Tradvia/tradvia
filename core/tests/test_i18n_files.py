@@ -14,7 +14,7 @@ I18N = ROOT / "dashboard" / "i18n"
 DOCS = ROOT / "dashboard" / "docs.html"
 REQUIRED = {"pt", "en", "es"}
 # Keys whose value may be empty in a language: English needs no "not translated yet" note.
-MAY_BE_EMPTY = {("en", "manual.untranslated")}
+MAY_BE_EMPTY: set = set()
 
 
 def locales():
@@ -87,8 +87,10 @@ def test_a_new_language_is_one_file(tmp_path):
     manual.build(tmp_path, tmp_path / "out", i18n=i18n)
     page = (tmp_path / "out" / "a.html").read_text(encoding="utf-8")
     assert '<option value="fr">FR</option>' in page
-    assert "Rechercher dans le manuel" in page
-    order = re.findall(r'<option value="(\w+)">', page)
+    # The new language gets its own tree, with its labels and English for the rest.
+    french = (tmp_path / "out" / "fr" / "a.html").read_text(encoding="utf-8")
+    assert "Rechercher dans le manuel" in french and '<html lang="fr">' in french
+    order = re.findall(r'<option value="(\w+)"', page)
     assert order[:3] == ["pt", "en", "es"] and order[-1] == "fr"
 
 
