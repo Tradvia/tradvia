@@ -90,7 +90,7 @@ expired gets no push until they sign in again.
 Only the **project**, the **card number** and the **kind of event**, for example
 "tradvia-tradvia · #47 · plan ready to approve". The message never carries a card title,
 comment, plan text, branch or any other content from GitHub: the service worker builds the
-text from those three values and fixed labels (Portuguese or English by browser language).
+text from those three values and fixed labels (Portuguese, English or Spanish by browser language).
 The push service (Google, Mozilla, Apple) sees the encrypted payload and the endpoint only.
 Clicking opens the card in the panel, where the usual sign in and role checks apply.
 
