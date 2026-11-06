@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-03
+- Amended by: [ADR 0024](0024-browser-sessions-on-our-own-host.md) (the first driver runs on our own host)
 
 ## Context
 
