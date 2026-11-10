@@ -70,6 +70,7 @@ from .auth import (
     STATE_TTL,
     Auth,
     AuthError,
+    ConnectRefused,
     GitHubIdentity,
     PolicyUnreadable,
     Session,
@@ -78,6 +79,7 @@ from .auth import (
 )
 from . import alerts, canary, pending, prompts, push, schedules
 from .integrations import Chat, DiscordREST
+from .backfill import backfill as load_repository, github_get_json
 from .backlog import READY_LABEL, backlog_status
 from . import mcp_server, orchestrator
 from .budget import SETTINGS_KEY, monthly_check, settings_budget, settings_view, store_month_spend, \
@@ -399,10 +401,37 @@ def create_app(
     deploy_wait_alert = wait_alert_minutes(os.environ.get("TRADVIA_DEPLOY_WAIT_ALERT_MINUTES"))
     token = os.environ.get("GITHUB_TOKEN", "")
     patterns = allowed_patterns(repos)
+    # Any owner/repo shape; whether the project is served is checked against `repos`, which
+    # grows when a project is connected from the panel (#210).
     store_route = re.compile(
-        r"repos/(?P<repo>" + "|".join(re.escape(r) for r in repos) + r")/"
+        r"repos/(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/"
         r"(?:(?P<kind>issues|pulls|backlog)|actions/workflows/(?P<wf>agent|claude)\.yml/runs)"
     )
+    connected = {"loaded": False, "tried": 0.0}
+    connected_lock = threading.Lock()
+
+    def serve_repo(repo: str) -> None:
+        """Start serving a project: every `repo in repos` check and the proxy see it at once."""
+        with connected_lock:
+            if repo not in repos:
+                repos.append(repo)
+                patterns.extend(allowed_patterns(repo))
+
+    def load_connected(force: bool = False) -> None:
+        """Projects connected from the panel, read once from the store (retried every 30 s
+        while the database cannot be reached). Never raises."""
+        if db is None or (connected["loaded"] and not force):
+            return
+        if not force and time.monotonic() - connected["tried"] < 30:
+            return
+        connected["tried"] = time.monotonic()
+        try:
+            rows = db.connected_projects()
+        except Exception:
+            return
+        for row in rows:
+            serve_repo(row["external_id"])
+        connected["loaded"] = True
     cache: OrderedDict[str, _Entry] = OrderedDict()
     project_ids: dict[str, int] = {}
 
@@ -655,7 +684,7 @@ def create_app(
         path = "repos/" + request.path_params["path"]
         raw = request.scope.get("raw_path") or b""
         m = store_route.fullmatch(path)
-        if b"%" in raw.split(b"?", 1)[0] or not m:
+        if b"%" in raw.split(b"?", 1)[0] or not m or m.group("repo") not in repos:
             return _not_found()
         if m.group("kind") == "backlog":
             if not safe_path(path):
@@ -743,6 +772,8 @@ def create_app(
         A cookie that maps to no live session counts as anonymous. Webhooks carry their own
         signature and are not affected.
         """
+        if not connected["loaded"]:
+            await run_in_threadpool(load_connected)
         cookie = request.cookies.get(SESSION_COOKIE)
         if (
             auth is None
@@ -1777,6 +1808,106 @@ def create_app(
             return private(_store_unavailable())
         return private(JSONResponse(out.body, status_code=out.status))
 
+    # --- connecting a repository from the panel (#210, ADR 0025) ----------------------------
+
+    REPO_NAME = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
+
+    def connectable(session: Any) -> list[dict[str, Any]]:
+        """The repositories the person may connect: reached through the Tradvia App's
+        installations, with the admin permission. Raises ConnectRefused."""
+        assert auth is not None
+        token = auth.user_token(session)
+        if not token:
+            raise ConnectRefused("Your GitHub sign-in is no longer valid. Sign in again.")
+        return auth.github.installation_repos(token)
+
+    async def connect_route(request: Request) -> Response:
+        """GET: repositories the signed-in person can connect, and which are already served.
+        POST {"repo"}: connect one. Only with a session (never an API token), CSRF, the
+        repository's admin permission on GitHub; audited. The project is registered in the
+        store, its webhook created and its issues, pull requests and runs loaded."""
+        if auth is None or db is None:
+            return _not_found()
+        session, failure = await caller(request, False)
+        if session is None:
+            return failure
+        data: Any = None
+        if request.method == "POST":
+            try:
+                data = await request.json()
+            except ValueError:
+                data = None
+        if not hasattr(auth.github, "installation_repos"):
+            return private(JSONResponse({"error": "Connecting repositories is not available here."},
+                                        status_code=501))
+
+        def listing() -> Outcome:
+            try:
+                found = connectable(session)
+            except ConnectRefused as e:
+                return Outcome(502, {"error": str(e)})
+            return Outcome(200, {"repositories": [
+                {**r, "connected": r["repo"] in repos} for r in sorted(found, key=lambda r: r["repo"].lower())
+            ], "install_url": app_install_url()})
+
+        def connect() -> Outcome:
+            repo = data.get("repo") if isinstance(data, dict) else None
+            if not isinstance(repo, str) or not REPO_NAME.fullmatch(repo) or ".." in repo:
+                return Outcome(400, {"error": "Send {\"repo\": \"owner/name\"}."})
+            try:
+                found = {r["repo"]: r for r in connectable(session)}
+            except ConnectRefused as e:
+                return Outcome(502, {"error": str(e)})
+            match = found.get(repo) or next((r for k, r in found.items() if k.lower() == repo.lower()), None)
+            if match is None:
+                return Outcome(404, {"error": f"The Tradvia GitHub App is not installed on {repo}, or "
+                                              "you cannot see it. Install the App on the repository first.",
+                                     "install_url": app_install_url()})
+            repo = match["repo"]
+            if not match["admin"]:
+                return Outcome(403, {"error": f"Connecting {repo} needs the 'admin' permission on it."})
+            already = repo in repos
+            pid = db.connect_project(repo, session.login, clock())
+            serve_repo(repo)
+            hook, hook_error = "skipped", None
+            secret = os.environ.get("TRADVIA_WEBHOOK_SECRET", "")
+            domain = os.environ.get("TRADVIA_DOMAIN", "")
+            if secret and domain and hasattr(auth.github, "ensure_webhook"):
+                try:
+                    hook = auth.github.ensure_webhook(auth.user_token(session), repo,
+                                                      f"https://{domain}{WEBHOOK_PATH}", secret)
+                except ConnectRefused as e:
+                    hook, hook_error = "failed", str(e)
+            token = auth.user_token(session)
+
+            def load() -> None:
+                try:
+                    counts = load_repository(db, github_get_json(token or ""), repo, labels=None)
+                    record_audit(pid, session.login, "load_project", None, "ok",
+                                 " ".join(f"{k}={v}" for k, v in counts.items()), None)
+                except Exception:
+                    record_audit(pid, session.login, "load_project", None, "failed",
+                                 "loading issues and pull requests failed", None)
+
+            record_audit(pid, session.login, "connect_project", None, "ok",
+                         f"{'again ' if already else ''}webhook={hook}", None)
+            (spawn or start_thread)(load)
+            body: dict[str, Any] = {"repo": repo, "connected": True, "webhook": hook,
+                                    "loading": True, "already": already}
+            if hook_error:
+                body["webhook_error"] = hook_error
+            return Outcome(200, body)
+
+        try:
+            out = await run_in_threadpool(listing if request.method == "GET" else connect)
+        except Exception:
+            return private(_store_unavailable())
+        return private(JSONResponse(out.body, status_code=out.status))
+
+    def app_install_url() -> str | None:
+        slug = os.environ.get("TRADVIA_GITHUB_APP_SLUG", "").strip()
+        return f"https://github.com/apps/{slug}/installations/new" if re.fullmatch(r"[a-z0-9-]{1,60}", slug) else None
+
     # --- project settings (ADR 0018): the budget, per project, on Tradvia --------------------
 
     async def budget_route(request: Request) -> Response:
@@ -2477,6 +2608,7 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        await run_in_threadpool(load_connected)
         if alerts_on:
             start_alerts()
         if db is not None and auth is not None and token:  # recurring cards need the server token
@@ -2493,6 +2625,7 @@ def create_app(
             Route("/api/auth/me", auth_me, methods=["GET"]),
             Route(WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/api/projects", projects, methods=["GET"]),
+            Route("/api/connect/repositories", connect_route, methods=["GET", "POST"]),
             Route("/api/push/key", push_key, methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/pending", user_route(pending_view), methods=["GET"]),
             Route("/api/projects/{owner}/{repo}/push/subscription",

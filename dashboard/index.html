@@ -3179,6 +3179,16 @@ function renderSettings() {
   if (navRights()) root.append(roles);
   else root.append(el("p", t("settings.signInHint"), "sub"));
 
+  // Connect another repository (#210, ADR 0025): any signed-in person sees the repositories
+  // the Tradvia App reaches; only an admin of a repository connects it.
+  if (navRights()) {
+    const con = el("div", null, "settings-section");
+    con.id = "settings-connect";
+    con.append(el("h3", t("proj.title")), el("p", t("loading"), "sub"));
+    root.append(con);
+    loadConnectRepos(con);
+  }
+
   // The project's budget (ADR 0018): set here, per project, never in .tradvia.yml.
   if (myRights()) {
     const budget = el("div", null, "settings-section");
@@ -3288,6 +3298,77 @@ function drawBudgetSettings(box, b) {
     box.append(el("p", t("budget.updated") + " @" + b.updated_by + " · " +
       new Date(b.updated_at * 1000).toLocaleString(), "sub"));
   }
+}
+
+async function connectRequest(method, body) {
+  const headers = { Accept: "application/json" };
+  if (method !== "GET") Object.assign(headers, { "Content-Type": "application/json", "X-Tradvia-CSRF": authState.csrf });
+  try {
+    const r = await fetch("/api/connect/repositories", {
+      method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? { ok: true, data: j } : { ok: false, error: j.error || t("actionFailed"), data: j };
+  } catch (e) {
+    return { ok: false, error: t("actionFailed"), data: {} };
+  }
+}
+
+async function loadConnectRepos(box) {
+  const res = await connectRequest("GET");
+  if (!box.isConnected) return;
+  box.replaceChildren(el("h3", t("proj.title")), el("p", t("proj.intro"), "sub"));
+  if (!res.ok) { box.append(el("p", res.error, "msg error")); return; }
+  const msg = el("div", null, "msg"); msg.hidden = true;
+  const list = res.data.repositories || [];
+  if (!list.length) box.append(el("p", t("proj.none"), "sub"));
+  const ul = el("ul", null, "connect-list");
+  for (const r of list) {
+    const li = el("li");
+    li.append(el("strong", r.repo), document.createTextNode(" "));
+    if (r.connected) {
+      const open = el("a", t("proj.open"));
+      open.href = "?repo=" + encodeURIComponent(r.repo);
+      li.append(el("span", t("proj.connected"), "sub"), document.createTextNode(" · "), open);
+    } else if (!r.admin) {
+      li.append(el("span", t("proj.needsAdmin"), "sub"));
+    } else {
+      const b = el("button", t("proj.connect"));
+      b.type = "button";
+      b.onclick = async () => {
+        b.disabled = true;
+        b.textContent = t("proj.connecting");
+        const out = await connectRequest("POST", { repo: r.repo });
+        msg.hidden = false;
+        if (!out.ok) {
+          msg.className = "msg error";
+          msg.textContent = out.error;
+          b.disabled = false;
+          b.textContent = t("proj.connect");
+          return;
+        }
+        msg.className = "msg";
+        msg.textContent = t("proj.done").replace("{repo}", out.data.repo)
+          + (out.data.webhook === "failed" ? " " + t("proj.webhookFailed") + " " + (out.data.webhook_error || "") : "");
+        await loadProjects();
+        loadConnectRepos(box);
+      };
+      li.append(b);
+    }
+    ul.append(li);
+  }
+  box.append(ul, msg);
+  const install = safeHttpUrl(res.data.install_url);
+  if (install) {
+    const a = el("a", t("proj.install"));
+    a.href = install;
+    a.target = "_blank";
+    a.rel = "noopener";
+    const p = el("p");
+    p.append(a);
+    box.append(p);
+  }
+  box.append(el("p", t("proj.note"), "note"));
 }
 
 async function loadScheduleSettings(box) {

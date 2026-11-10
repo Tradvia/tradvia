@@ -49,7 +49,9 @@ def _pages(get: GetJson, path: str, params: dict[str, str], key: str | None = No
             return
 
 
-def backfill(store: Store, get: GetJson, repo: str) -> dict[str, int]:
+def backfill(store: Store, get: GetJson, repo: str, labels: str | None = "agent:ready") -> dict[str, int]:
+    """Load the repository's issues (with `labels`, or all of them when None), their comments,
+    pull requests and agent runs into the store. A connected project loads every issue (#210)."""
     project_id = store.ensure_project(repo)
     counts = {"issues": 0, "comments": 0, "pull_requests": 0, "workflow_runs": 0}
 
@@ -57,7 +59,8 @@ def backfill(store: Store, get: GetJson, repo: str) -> dict[str, int]:
         getattr(store, UPSERT_METHODS[kind])(project_id, rec)
         counts[counter] += 1
 
-    issues = _pages(get, f"repos/{repo}/issues", {"labels": "agent:ready", "state": "all"})
+    params = {"state": "all", **({"labels": labels} if labels else {})}
+    issues = _pages(get, f"repos/{repo}/issues", params)
     for issue in issues:
         if "pull_request" in issue:
             continue
