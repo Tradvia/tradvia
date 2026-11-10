@@ -202,6 +202,27 @@ class GitHubIdentity(Protocol):
         Raises PolicyUnreadable on 401/403."""
 
 
+class ConnectRefused(Exception):
+    """GitHub refused a step of connecting a repository; the message is safe to show."""
+
+
+# The events the panel's store reads (docs/deploy-oci.md, Webhooks).
+WEBHOOK_EVENTS = ("issues", "issue_comment", "pull_request", "workflow_run")
+
+
+def _connect_refusal(status: int, step: str) -> str:
+    if status == 401:
+        return "Your GitHub sign-in is no longer valid. Sign in again."
+    if step == "hook" and status in (403, 404):
+        return ("GitHub refused the webhook: the Tradvia GitHub App needs the Webhooks: Read and "
+                "write permission, accepted on this repository's installation.")
+    if status in (403, 404):
+        return "GitHub refused to list the App's installations for your account."
+    if status == 422:
+        return "GitHub refused the webhook settings."
+    return f"GitHub answered HTTP {status}; try again in a moment."
+
+
 class PolicyUnreadable(Exception):
     """`.tradvia.yml` cannot be read with the user's token: the interaction is refused."""
 
@@ -332,6 +353,56 @@ class HttpGitHub:
             raise RoleLookupFailed(_lookup_refusal(r))
         data = r.json()
         return data.get("permission"), data.get("role_name")
+
+    def installation_repos(self, token: str) -> list[dict[str, Any]]:
+        """Repositories the person reaches through the Tradvia App's installations:
+        `[{repo, private, admin}]`. Raises ConnectRefused when GitHub refuses the listing."""
+        out: list[dict[str, Any]] = []
+        try:
+            r = self._get(token, "/user/installations?per_page=100")
+            if r.status_code != 200:
+                raise ConnectRefused(_connect_refusal(r.status_code, "list"))
+            for inst in (r.json().get("installations") or [])[:20]:
+                for page in range(1, 11):
+                    rr = self._get(token, f"/user/installations/{int(inst['id'])}/repositories"
+                                          f"?per_page=100&page={page}")
+                    if rr.status_code != 200:
+                        raise ConnectRefused(_connect_refusal(rr.status_code, "list"))
+                    repos = rr.json().get("repositories") or []
+                    for repo in repos:
+                        out.append({"repo": repo["full_name"], "private": bool(repo.get("private")),
+                                    "admin": bool((repo.get("permissions") or {}).get("admin"))})
+                    if len(repos) < 100:
+                        break
+        except ConnectRefused:
+            raise
+        except Exception:  # never echo: the error may carry request headers
+            raise ConnectRefused("GitHub is unavailable; try again in a moment.") from None
+        return out
+
+    def ensure_webhook(self, token: str, repo: str, url: str, secret: str) -> str:
+        """`exists` or `created`: the repository's webhook to Tradvia. Raises ConnectRefused."""
+        try:
+            r = self._get(token, f"/repos/{repo}/hooks?per_page=100")
+            if r.status_code != 200:
+                raise ConnectRefused(_connect_refusal(r.status_code, "hook"))
+            if any((h.get("config") or {}).get("url") == url for h in r.json() or []):
+                return "exists"
+            r = requests.post(
+                GITHUB_API + f"/repos/{repo}/hooks",
+                headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}"},
+                json={"name": "web", "active": True, "events": list(WEBHOOK_EVENTS),
+                      "config": {"url": url, "content_type": "json", "secret": secret,
+                                 "insecure_ssl": "0"}},
+                timeout=UPSTREAM_TIMEOUT,
+            )
+            if r.status_code != 201:
+                raise ConnectRefused(_connect_refusal(r.status_code, "hook"))
+            return "created"
+        except ConnectRefused:
+            raise
+        except Exception:  # never echo: the request body carries the webhook secret
+            raise ConnectRefused("GitHub is unavailable; try again in a moment.") from None
 
     def get_file(self, token: str, repo: str, path: str, ref: str) -> str | None:
         try:

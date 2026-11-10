@@ -34,9 +34,30 @@ changes nothing.
 
 ## Registering projects
 
-`TRADVIA_PROJECTS` is a comma separated list of `owner/repo` (default: `TRADVIA_REPO`,
-which defaults to `Tradvia/tradvia`). Only those repositories are accepted; each one
-gets a `projects` row the first time it is used.
+A project is served when it is **connected from the panel** or listed in `TRADVIA_PROJECTS`.
+
+**From the panel** (Settings > Connect a repository, #210, ADR 0025). Status: **In progress**
+(tested offline; in production it needs the App permission below). The screen lists the
+repositories where the Tradvia GitHub App is installed and the signed-in person can see.
+An admin of a repository connects it:
+
+- the project is stored with who connected it and when (`projects.connected_by`,
+  `projects.connected_at`), and the API serves it at once and after every restart;
+- the repository's webhook to `https://$TRADVIA_DOMAIN/api/webhooks/github` is created with
+  `TRADVIA_WEBHOOK_SECRET` (events: issues, issue comments, pull requests, workflow runs).
+  This needs the App permission **Webhooks: Read and write**; without it the project is
+  still connected and the screen says what is missing;
+- every issue (not only `agent:ready`), its comments, the pull requests and the agent runs
+  are loaded in the background with the person's own token;
+- each step is in the project's audit log (`connect_project`, `load_project`).
+
+`GET /api/connect/repositories` lists the repositories; `POST` with `{"repo": "owner/name"}`
+connects one. Both need a signed-in session (never an API token), and `POST` needs CSRF.
+Disconnecting is **Planned**.
+
+**From the environment.** `TRADVIA_PROJECTS` is a comma separated list of `owner/repo`
+(default: `TRADVIA_REPO`, which defaults to `Tradvia/tradvia`). Each one gets a `projects`
+row the first time it is used.
 
 - **Webhook**: the project comes from `repository.full_name`. A repository that is
   not registered is answered `202` and nothing is written.

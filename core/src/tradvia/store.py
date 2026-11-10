@@ -50,6 +50,12 @@ class Store(Protocol):
     def list_projects(self) -> list[dict[str, Any]]:
         """`[{id, slug, kind, external_id}]` of every known project."""
 
+    def connect_project(self, external_id: str, login: str, at: float) -> int:
+        """Mark `owner/repo` as connected from the panel (created if missing); its id."""
+
+    def connected_projects(self) -> list[dict[str, Any]]:
+        """`[{external_id, connected_by, connected_at}]` of the projects connected from the panel."""
+
     def apply(self, project_id: int, delivery_id: str, event: str, ops: list[Op]) -> bool:
         """Record the delivery and all upserts in ONE transaction.
 
@@ -273,7 +279,22 @@ class MemoryStore:
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [dict(p) for p in self.projects.values()]
+            return [{k: p[k] for k in ("id", "slug", "kind", "external_id")} for p in self.projects.values()]
+
+    def connect_project(self, external_id: str, login: str, at: float) -> int:
+        pid = self.ensure_project(external_id)
+        with self._lock:
+            row = self.projects[external_id]
+            if not row.get("connected_at"):
+                row["connected_by"], row["connected_at"] = login, _epoch_iso(at)
+        return pid
+
+    def connected_projects(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [{"external_id": p["external_id"], "connected_by": p["connected_by"],
+                     "connected_at": p["connected_at"]}
+                    for p in sorted(self.projects.values(), key=lambda p: p["external_id"])
+                    if p.get("connected_at")]
 
     def _upsert(self, project_id: int, kind: str, rec: dict[str, Any]) -> None:
         table = self.tables[_TABLES[kind]]
@@ -779,6 +800,19 @@ _ENSURE_PROJECT_SQL = """
     RETURNING id
 """
 _LIST_PROJECTS_SQL = "SELECT id, slug, kind, external_id FROM projects ORDER BY external_id"
+# The first connection is kept: connecting again never rewrites who connected it.
+_CONNECT_PROJECT_SQL = """
+    INSERT INTO projects (slug, kind, external_id, connected_by, connected_at)
+    VALUES (%s, 'github_repo', %s, %s, to_timestamp(%s))
+    ON CONFLICT (external_id) DO UPDATE SET
+        connected_by = COALESCE(projects.connected_by, excluded.connected_by),
+        connected_at = COALESCE(projects.connected_at, excluded.connected_at)
+    RETURNING id
+"""
+_CONNECTED_PROJECTS_SQL = """
+    SELECT external_id, connected_by, connected_at FROM projects
+    WHERE connected_at IS NOT NULL ORDER BY external_id
+"""
 
 _LIST_ISSUES_SQL = """
     SELECT number, title, state, state_reason, labels, author, html_url,
@@ -1119,6 +1153,19 @@ class PgStore:
         with self._conn() as conn:
             rows = conn.execute(_LIST_PROJECTS_SQL).fetchall()
         return [{"id": r[0], "slug": r[1], "kind": r[2], "external_id": r[3]} for r in rows]
+
+    def connect_project(self, external_id: str, login: str, at: float) -> int:
+        with self._conn() as conn:
+            with conn.transaction():
+                row = conn.execute(_CONNECT_PROJECT_SQL, (project_slug(external_id), external_id,
+                                                          login, at)).fetchone()
+        return row[0]
+
+    def connected_projects(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(_CONNECTED_PROJECTS_SQL).fetchall()
+        return [{"external_id": r[0], "connected_by": r[1],
+                 "connected_at": r[2].isoformat() if r[2] else None} for r in rows]
 
     def apply(self, project_id: int, delivery_id: str, event: str, ops: list[Op]) -> bool:
         with self._conn() as conn:

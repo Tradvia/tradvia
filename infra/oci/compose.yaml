@@ -39,6 +39,8 @@ services:
       TRADVIA_GITHUB_APP_CLIENT_ID: ${TRADVIA_GITHUB_APP_CLIENT_ID:-}
       TRADVIA_GITHUB_APP_CLIENT_SECRET: ${TRADVIA_GITHUB_APP_CLIENT_SECRET:-}
       TRADVIA_SECRET_KEY: ${TRADVIA_SECRET_KEY:-}
+      # The App's URL name, for the "install on another repository" link (#210). Optional.
+      TRADVIA_GITHUB_APP_SLUG: ${TRADVIA_GITHUB_APP_SLUG:-}
     depends_on:
       db:
         condition: service_healthy

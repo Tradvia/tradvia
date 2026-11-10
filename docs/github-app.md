@@ -52,6 +52,9 @@ for them. Design: ADR 0008.
      secrets when an admin saves or removes a provider secret. Without it the
      secret is still saved in Tradvia and the screen says it could not be written
      to GitHub Actions.
+   - **Webhooks**: Read and write. Connecting a repository from the panel (#210, ADR 0025):
+     Tradvia lists the repository's hooks and creates the one to `/api/webhooks/github`.
+     Without it the project is still connected, and the screen names this permission.
    - **Checks**: Read-only. `GET /commits/{sha}/check-runs`: the `core-tests`,
      `license-boundary` and `cla` checks on the PR screen and before a merge.
    - **Metadata**: Read-only (mandatory)

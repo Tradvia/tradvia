@@ -15,6 +15,11 @@ INSERT INTO projects (slug, kind, external_id)
 VALUES ('tradvia-tradvia', 'github_repo', 'Tradvia/tradvia')
 ON CONFLICT DO NOTHING;
 
+-- Projects connected from the panel (#210, ADR 0025): who connected it and when. A project
+-- with connected_at is served by the API next to the ones in TRADVIA_PROJECTS.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS connected_by text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS connected_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS deliveries (
     id          text PRIMARY KEY,
     event       text NOT NULL,
